@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 智能视频中台 Pro - 暗黑专业版</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body { background-color: #0b0f19; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; min-height: 100vh; overflow-x: hidden; }
+        .panel { background-color: #171c28; border: 1px solid #2d3748; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); }
+        .panel-header { border-bottom: 1px solid #2d3748; padding: 1rem 1.25rem; font-weight: bold; color: #a0aec0; display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.875rem; }
+        .panel-body { padding: 1.25rem; }
+        .input-dark { background-color: #0b0f19; border: 1px solid #4a5568; color: #e2e8f0; border-radius: 0.5rem; padding: 0.75rem; width: 100%; transition: all 0.2s; }
+        .input-dark:focus { outline: none; border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3); }
+        .btn-primary { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); color: white; font-weight: bold; border-radius: 0.75rem; padding: 1rem; width: 100%; transition: transform 0.2s, box-shadow 0.2s; }
+        .btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(168, 85, 247, 0.4); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-success { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; font-weight: bold; border-radius: 0.75rem; padding: 1rem; width: 100%; transition: transform 0.2s, box-shadow 0.2s; }
+        .btn-success:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4); }
+        .btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
+        .preset-item { background-color: #0b0f19; border: 1px solid #4a5568; border-radius: 0.5rem; cursor: pointer; transition: all 0.2s; }
+        .preset-item:hover { border-color: #8b5cf6; }
+        .preset-selected { border-color: #a855f7 !important; background-color: rgba(168, 85, 247, 0.1) !important; box-shadow: 0 0 0 1px #a855f7; }
+        .tab-active { color: #a855f7; border-bottom: 2px solid #a855f7; }
+        .tab-inactive { color: #718096; cursor: pointer; }
+        .tab-inactive:hover { color: #a0aec0; }
+        
+        /* 滚动条暗黑美化 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0b0f19; }
+        ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #718096; }
+    </style>
+</head>
+<body class="p-6">
+    <div id="app" class="max-w-[1600px] mx-auto space-y-6">
+        
+        <!-- Header -->
+        <header class="flex items-center justify-between pb-4 border-b border-gray-800">
+            <div>
+                <h1 class="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">AI 视频全链路工作站</h1>
+                <p class="text-gray-400 text-sm mt-1">从数字人生成到多轨智能剪辑，一站式出片</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="relative flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span></span>
+                <span class="text-green-400 text-sm font-medium">引擎在线</span>
+            </div>
+        </header>
+
+        <!-- Main Grid Layout -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            <!-- Column 1: Config & Text (3/12) -->
+            <div class="lg:col-span-3 space-y-6">
+                
+                <div class="panel">
+                    <div class="panel-header justify-between">
+                        <span>📝 1. 核心口播文案</span>
+                        <button @click="optimizeText" :disabled="optimizingText" class="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1 rounded-full transition-colors flex items-center gap-1 disabled:opacity-50">
+                            <span v-if="!optimizingText">✨ AI 爆款润色</span>
+                            <span v-else>⏳ 润色中...</span>
+                        </button>
+                    </div>
+                    <div class="panel-body">
+                        <textarea v-model="genData.text" rows="5" class="input-dark resize-none" placeholder="输入数字人需要口播的台词..."></textarea>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header"><span>⚙️ 2. 高级参数配置</span></div>
+                    <div class="panel-body space-y-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-400 mb-1">🔗 云端 ComfyUI / AutoDL 接口地址</label>
+                            <input type="text" v-model="genData.serverUrl" class="input-dark text-sm">
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-400 mb-1">✂️ 尾部裁剪 (秒)</label>
+                                <input type="number" step="0.1" v-model="genData.trimSeconds" class="input-dark text-sm text-center" title="例如 -1.5 强行切除尾部发呆画面">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-400 mb-1">⏱️ 最大时长 (秒)</label>
+                                <input type="number" min="1" max="180" v-model="genData.maxDuration" class="input-dark text-sm text-center">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Column 2: Digital Human Assets (4/12) -->
+            <div class="lg:col-span-4 space-y-6">
+                
+                <div class="panel">
+                    <div class="panel-header flex justify-between">
+                        <span>🎤 3. 声音克隆/预设</span>
+                        <div class="flex gap-3 text-xs">
+                            <span @click="audioMode = 'preset'" :class="audioMode === 'preset' ? 'tab-active' : 'tab-inactive'">预设库</span>
+                            <span @click="audioMode = 'upload'" :class="audioMode === 'upload' ? 'tab-active' : 'tab-inactive'">本地上传</span>
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <div v-if="audioMode === 'preset'" class="space-y-2 max-h-40 overflow-y-auto pr-1">
+                            <div v-if="presetLists.audio.length === 0" class="text-xs text-gray-500 text-center py-4">暂无预设文件</div>
+                            <div v-for="file in presetLists.audio" :key="file" @click="genData.audioPreset = file" :class="['preset-item p-2 flex items-center gap-2 text-sm', genData.audioPreset === file ? 'preset-selected' : '']">
+                                🎵 <span class="truncate">{{ file }}</span>
+                            </div>
+                        </div>
+                        <div v-if="audioMode === 'upload'" class="h-32">
+                            <label class="flex flex-col items-center justify-center w-full h-full border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-purple-500 bg-[#0b0f19] transition-colors">
+                                <span class="text-2xl mb-1">🎧</span>
+                                <span class="text-xs text-gray-400">点击上传参考音频</span>
+                                <span class="text-xs text-purple-400 mt-1 truncate max-w-[90%]">{{ genFileName.audio || '' }}</span>
+                                <input type="file" @change="handleGenUpload($event, 'audio')" accept="audio/*" class="hidden" />
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header flex justify-between">
+                        <span>🖼️ 4. 驱动形象照片</span>
+                        <div class="flex gap-3 text-xs">
+                            <span @click="imageMode = 'preset'" :class="imageMode === 'preset' ? 'tab-active' : 'tab-inactive'">预设库</span>
+                            <span @click="imageMode = 'upload'" :class="imageMode === 'upload' ? 'tab-active' : 'tab-inactive'">本地上传</span>
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <div v-if="imageMode === 'preset'" class="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto pr-1">
+                            <div v-if="presetLists.image.length === 0" class="col-span-3 text-xs text-gray-500 text-center py-4">暂无预设图片</div>
+                            <div v-for="file in presetLists.image" :key="file" @click="genData.imagePreset = file" :class="['preset-item overflow-hidden relative', genData.imagePreset === file ? 'preset-selected' : '']">
+                                <img :src="'/presets/image/' + file" class="w-full h-16 object-cover opacity-80 hover:opacity-100">
+                            </div>
+                        </div>
+                        <div v-if="imageMode === 'upload'" class="h-32">
+                            <label class="flex flex-col items-center justify-center w-full h-full border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-blue-500 bg-[#0b0f19] transition-colors">
+                                <span class="text-2xl mb-1">👤</span>
+                                <span class="text-xs text-gray-400">点击上传正面照片</span>
+                                <span class="text-xs text-blue-400 mt-1 truncate max-w-[90%]">{{ genFileName.image || '' }}</span>
+                                <input type="file" @change="handleGenUpload($event, 'image')" accept="image/*" class="hidden" />
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <button @click="submitGenerate" :disabled="genLoading || editLoading" class="btn-primary flex justify-center items-center gap-2">
+                    <span v-if="!genLoading">▶ 启动数字人渲染引擎</span>
+                    <span v-else class="animate-pulse">⏳ 正在连接云端渲染中...</span>
+                </button>
+
+                <div v-if="genResultVideo" class="mt-4 border border-green-500/30 rounded-lg overflow-hidden relative">
+                    <div class="absolute top-0 left-0 bg-green-500 text-xs px-2 py-1 text-black font-bold z-10">渲染成功</div>
+                    <video :src="genResultVideo" controls class="w-full"></video>
+                </div>
+
+            </div>
+
+            <!-- Column 3: AI Director & Output (5/12) -->
+            <div class="lg:col-span-5 space-y-6">
+                
+                <div class="panel border-purple-500/30">
+                    <div class="panel-header bg-purple-900/20 text-purple-300 border-purple-500/30">
+                        <span class="text-lg">🎬 5. AI 导演自动剪辑工作台</span>
+                    </div>
+                    <div class="panel-body space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <!-- 主轨上传 -->
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-400 mb-1">轨1: 数字人底板 (aiman)</label>
+                                <label class="flex flex-col items-center justify-center h-24 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-green-400 bg-[#0b0f19] transition-colors relative">
+                                    <span class="text-xl mb-1">🗣️</span>
+                                    <span class="text-[10px] text-green-400 truncate w-full px-2 text-center absolute bottom-2">{{ editFileName.aiman || '点击上传 mp4' }}</span>
+                                    <input type="file" @change="handleEditUpload($event, 'aiman')" accept="video/mp4" class="hidden" />
+                                </label>
+                            </div>
+                            <!-- 副轨上传 -->
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-400 mb-1">轨2: 空镜头素材 (material)</label>
+                                <label class="flex flex-col items-center justify-center h-24 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-blue-400 bg-[#0b0f19] transition-colors relative">
+                                    <span class="text-xl mb-1">🎥</span>
+                                    <span class="text-[10px] text-blue-400 truncate w-full px-2 text-center absolute bottom-2">{{ editFileName.material || '点击上传 mp4' }}</span>
+                                    <input type="file" @change="handleEditUpload($event, 'material')" accept="video/mp4" class="hidden" />
+                                </label>
+                            </div>
+                        </div>
+
+                        
+                        <div class="flex items-center gap-2 mt-2 mb-2 px-1">
+                            <input type="checkbox" id="withSubtitles" v-model="editData.withSubtitles" class="w-4 h-4 text-green-600 bg-gray-800 border-gray-600 rounded focus:ring-green-500 focus:ring-2">
+                            <label for="withSubtitles" class="text-sm font-medium text-gray-300 cursor-pointer select-none">🔤 自动烧录 AI 中文精翻字幕</label>
+                        </div>
+                        <button @click="submitEdit" :disabled="editLoading || genLoading" class="btn-success flex justify-center items-center gap-2 mt-2">
+                            <span v-if="!editLoading">🪄 一键触发 AI 视听对齐与合成</span>
+                            <span v-else class="animate-pulse">🧠 AI 导演正在拉片与思考...</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 全局进度条展示 -->
+                <div v-if="loadingGlobal" class="panel bg-[#171c28] border-blue-500/50 relative overflow-hidden">
+                    <div class="panel-body">
+                        <div class="flex justify-between text-xs font-bold text-blue-300 mb-2">
+                            <span class="truncate pr-4">{{ statusText }}</span>
+                            <span>{{ progressPercent }}%</span>
+                        </div>
+                        <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+                            <div class="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300" :style="{ width: progressPercent + '%' }"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 最终成品展示 -->
+                <div v-if="finalVideoUrl" class="panel border-green-500/50 relative overflow-hidden">
+                    <div class="panel-header bg-green-900/20 text-green-400 border-green-500/30 flex justify-between items-center">
+                        <span>✨ 最终成片交付</span>
+                        <div class="flex gap-2">
+                            <button @click="convertVideo('9:16')" :disabled="converting" class="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1 rounded transition-colors disabled:opacity-50">📱 转 9:16</button>
+                            <button @click="convertVideo('16:9')" :disabled="converting" class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded transition-colors disabled:opacity-50">🖥️ 转 16:9</button>
+                            <a :href="finalVideoUrl" download class="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1 rounded transition-colors">📥 下载原片</a>
+                          </div>
+                    </div>
+                    <div class="bg-black flex justify-center items-center min-h-[200px]">
+                        <video :src="finalVideoUrl" controls autoplay class="max-h-[350px] w-auto" :class="{'opacity-50': converting}"></video>
+                        <div v-if="converting" class="absolute inset-0 flex items-center justify-center bg-black/50 text-white font-bold animate-pulse">
+                            ⏳ 正在裁剪转换视频比例，请稍候...
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                // UI 状态
+                const audioMode = ref('preset');
+                const imageMode = ref('preset');
+                const presetLists = ref({ audio: [], image: [] });
+                
+                // Gen Data
+                const genData = ref({ 
+                    text: '', audio: null, image: null, audioPreset: '', imagePreset: '', 
+                    serverUrl: 'https://u920820-82c4-2ba7d3b1.westc.seetacloud.com:8443', trimSeconds: 0, maxDuration: 10 
+                });
+                const genFileName = ref({ audio: '', image: '' });
+                const genLoading = ref(false);
+                const genResultVideo = ref(null);
+
+                // Edit Data
+                const editData = ref({ aiman: null, material: null, withSubtitles: true });
+                const editFileName = ref({ aiman: '', material: '' });
+                const editLoading = ref(false);
+                const optimizingText = ref(false);
+                const converting = ref(false);
+
+                // Global Status
+                const loadingGlobal = ref(false);
+                const progressPercent = ref(0);
+                const statusText = ref('等待任务...');
+                const finalVideoUrl = ref(null);
+
+                const fetchPresets = async () => {
+                    try {
+                        const res = await axios.get('/api/presets');
+                        if (res.data.success) {
+                            presetLists.value = res.data;
+                            if(res.data.audio.length > 0) genData.value.audioPreset = res.data.audio[0];
+                            if(res.data.image.length > 0) genData.value.imagePreset = res.data.image[0];
+                        }
+                    } catch (e) { console.error("无法加载预设列表", e); }
+                };
+                
+                onMounted(() => { fetchPresets(); });
+
+                
+                const optimizeText = async () => {
+                    if (!genData.value.text) return alert("请先输入基础文案！");
+                    optimizingText.value = true;
+                    try {
+                        const res = await axios.post('/api/optimize-text', { text: genData.value.text });
+                        if (res.data.text) genData.value.text = res.data.text;
+                    } catch (err) { alert("润色失败: " + err.message); }
+                    finally { optimizingText.value = false; }
+                };
+
+                const convertVideo = async (ratio) => {
+                    converting.value = true;
+                    try {
+                        const res = await axios.post('/api/convert-video', { ratio });
+                        if (res.data.videoUrl) finalVideoUrl.value = res.data.videoUrl;
+                    } catch (err) { alert("转换失败: " + err.message); }
+                    finally { converting.value = false; }
+                };
+
+                const handleGenUpload = (e, type) => {
+                    const file = e.target.files[0];
+                    if (file) { genData.value[type] = file; genFileName.value[type] = file.name; }
+                };
+
+                const handleEditUpload = (e, type) => {
+                    const file = e.target.files[0];
+                    if (file) { editData.value[type] = file; editFileName.value[type] = file.name; }
+                };
+
+                const setupSSE = (clientId) => {
+                    loadingGlobal.value = true;
+                    progressPercent.value = 0;
+                    statusText.value = '正在连线服务器...';
+                    const sse = new EventSource(`/api/progress?clientId=${clientId}`);
+                    sse.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'progress') { progressPercent.value = data.percent; statusText.value = data.msg; }
+                        else if (data.type === 'status') { statusText.value = data.msg; }
+                    };
+                    return sse;
+                };
+
+                const submitGenerate = async () => {
+                    if (!genData.value.text) return alert('请输入文案！');
+                    const useAudioPreset = audioMode.value === 'preset';
+                    const useImagePreset = imageMode.value === 'preset';
+                    if (useAudioPreset && !genData.value.audioPreset) return alert('请选择预设音色！');
+                    if (!useAudioPreset && !genData.value.audio) return alert('请上传音频！');
+                    if (useImagePreset && !genData.value.imagePreset) return alert('请选择预设照片！');
+                    if (!useImagePreset && !genData.value.image) return alert('请上传图片！');
+
+                    const clientId = 'gen_' + Math.random().toString(36).substring(2);
+                    const sse = setupSSE(clientId);
+                    genLoading.value = true;
+                    genResultVideo.value = null;
+
+                    try {
+                        const data = new FormData();
+                        data.append('text', genData.value.text);
+                        data.append('clientId', clientId);
+                        data.append('serverUrl', genData.value.serverUrl);
+                        data.append('trimSeconds', genData.value.trimSeconds);
+                        data.append('maxDuration', genData.value.maxDuration);
+                        data.append('useAudioPreset', useAudioPreset);
+                        data.append('useImagePreset', useImagePreset);
+                        
+                        if(useAudioPreset) data.append('audioPreset', genData.value.audioPreset);
+                        else data.append('audio', genData.value.audio);
+                        
+                        if(useImagePreset) data.append('imagePreset', genData.value.imagePreset);
+                        else data.append('image', genData.value.image);
+
+                        const res = await axios.post('/api/generate', data);
+                        if(res.data.videoUrl) genResultVideo.value = res.data.videoUrl;
+                    } catch (err) { alert('生成失败: ' + err.message); } 
+                    finally { sse.close(); genLoading.value = false; setTimeout(()=>{loadingGlobal.value=false}, 1000); }
+                };
+
+                const submitEdit = async () => {
+                    if (!editData.value.aiman || !editData.value.material) return alert('⚠️ 请在主轨和副轨各上传一个 mp4 视频！');
+                    const clientId = 'edit_' + Math.random().toString(36).substring(2);
+                    const sse = setupSSE(clientId);
+                    editLoading.value = true;
+                    finalVideoUrl.value = null;
+
+                    try {
+                        const data = new FormData();
+                        data.append('clientId', clientId);
+                        data.append('aiman', editData.value.aiman);
+                        data.append('material', editData.value.material);
+                        data.append('withSubtitles', editData.value.withSubtitles);
+
+                        const res = await axios.post('/api/run-pipeline', data);
+                        if(res.data.videoUrl) finalVideoUrl.value = res.data.videoUrl + '?t=' + Date.now();
+                    } catch (err) { alert('剪辑失败: ' + (err.response?.data?.error || err.message)); } 
+                    finally { sse.close(); editLoading.value = false; setTimeout(()=>{loadingGlobal.value=false}, 1000); }
+                };
+
+                return {
+                    audioMode, imageMode, presetLists, genData, genFileName, genLoading, genResultVideo,
+                    editData, editFileName, editLoading, finalVideoUrl,
+                    loadingGlobal, progressPercent, statusText,
+                    handleGenUpload, handleEditUpload, submitGenerate, submitEdit, optimizeText, convertVideo, optimizingText, converting
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
