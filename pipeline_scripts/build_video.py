@@ -26,9 +26,23 @@ try:
             srt_content += f"{seg['subtitle_text']}\n\n"
     with open('subtitles.srt', 'w', encoding='utf-8') as f:
         f.write(srt_content)
+    
     print("   ✅ SRT 字幕生成成功！")
+    
+    # 额外生成一份给动态竖屏脚本用的 JSON 字幕
+    try:
+        with open('director.json', 'r', encoding='utf-8') as f:
+            director = json.load(f)
+        sub_json_data = [{"time": [seg['start_time'], seg['end_time']], "text": seg['subtitle_text']} for seg in director]
+        with open('subtitles.json', 'w', encoding='utf-8') as f:
+            json.dump(sub_json_data, f, ensure_ascii=False, indent=2)
+        print("   ✅ 动态竖屏 JSON 字幕也已生成！")
+    except Exception as e:
+        print(f"   ❌ 生成动态竖屏字幕JSON失败: {e}")
+
 except Exception as e:
     print(f"   ❌ 生成字幕失败: {e}")
+    director = [] # 确保 director 变量存在
 
 # 自动获取数字人视频(aiman.mp4)的原始分辨率，防止素材被拉伸变形
 def get_video_size(filename):

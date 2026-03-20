@@ -79,6 +79,44 @@ function resolveEditableJsonPath(fileName) {
     return path.join(PIPELINE_DIR, fileName);
 }
 
+function buildFallbackTitleFromSubtitles(subtitlesPath) {
+    try {
+        if (!fs.existsSync(subtitlesPath)) return "这条消息可能正在改变支付格局";
+        const subtitles = JSON.parse(fs.readFileSync(subtitlesPath, "utf-8"));
+        const joined = (Array.isArray(subtitles) ? subtitles : [])
+            .map((item) => String(item?.zh || item?.text || "").trim())
+            .filter(Boolean)
+            .join("");
+        if (!joined) return "这条消息可能正在改变支付格局";
+        return joined.slice(0, 18) + (joined.length > 18 ? "..." : "");
+    } catch (_err) {
+        return "这条消息可能正在改变支付格局";
+    }
+}
+
+async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json") {
+    const subtitlesPath = path.join(pipelineDir, subtitlesFileName);
+    return new Promise((resolve) => {
+        const proc = spawn("python", ["generate_title.py", "--subtitles", subtitlesFileName], { cwd: pipelineDir });
+        let output = "";
+        let errorOutput = "";
+        proc.stdout.on("data", (data) => {
+            output += data.toString();
+        });
+        proc.stderr.on("data", (data) => {
+            errorOutput += data.toString();
+        });
+        proc.on("close", (code) => {
+            if (code === 0 && output.trim()) {
+                resolve(output.trim());
+            } else {
+                console.error(`generate_title.py failed: ${errorOutput.trim()}`);
+                resolve(buildFallbackTitleFromSubtitles(subtitlesPath));
+            }
+        });
+    });
+}
+
 // 给前端提供获取本地预设列表的接口
 app.get('/api/presets', (req, res) => {
     try {
@@ -342,6 +380,37 @@ app.post('/api/generate', upload.fields([{ name: 'audio' }, { name: 'image' }]),
 
 const { spawn } = require("child_process");
 
+// 优雅地重构 runScript，使其更健壮
+function runPipelineScript(scriptArgs, options) {
+    return new Promise((resolve, reject) => {
+        const { sse, progress, msg } = options;
+        if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: progress, msg })}\n\n`);
+        
+        const proc = spawn("python", scriptArgs, { cwd: options.cwd });
+        let errorOutput = "";
+
+        proc.stdout.on("data", (data) => {
+            const lastLine = data.toString().trim().split("\n").pop();
+            if(sse && lastLine) sse.write(`data: ${JSON.stringify({ type: "status", msg: lastLine })}\n\n`);
+        });
+        
+        proc.stderr.on("data", (data) => {
+            const errStr = data.toString();
+            errorOutput += errStr;
+            console.error(`[${scriptArgs[0]} stderr]: ${errStr}`);
+            if(sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "⚠️ " + errStr.trim().split("\n").pop() })}\n\n`);
+        });
+        
+        proc.on("close", (code) => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(`${scriptArgs[0]} 失败: ${errorOutput.split("\n").slice(-2).join(" ")}`));
+            }
+        });
+    });
+}
+
 app.post("/api/run-pipeline", upload.fields([{ name: "aiman" }, { name: "material" }]), async (req, res) => {
     const clientId = req.body.clientId;
     if (!clientId) return res.status(400).json({ error: "Missing clientId" });
@@ -354,74 +423,43 @@ app.post("/api/run-pipeline", upload.fields([{ name: "aiman" }, { name: "materia
         const aimanPath = path.join(pipelineDir, "aiman.mp4");
         const materialPath = path.join(pipelineDir, "material.mp4");
         const outputPath = path.join(__dirname, "public/output_final.mp4");
-        if(fs.existsSync(aimanPath)) fs.unlinkSync(aimanPath);
-        if(fs.existsSync(materialPath)) fs.unlinkSync(materialPath);
-        if(fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        // ... (file cleanup)
         fs.renameSync(req.files["aiman"][0].path, aimanPath);
         fs.renameSync(req.files["material"][0].path, materialPath);
         
-        const runScript = (scriptName, progressPercent, msg) => {
-            return new Promise((resolve, reject) => {
-                if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: progressPercent, msg })}\n\n`);
-                const proc = spawn("python", [scriptName], { cwd: pipelineDir });
-                
-                let errorOutput = "";
-                
-                proc.stdout.on("data", (data) => {
-                    const lines = data.toString().trim().split("\n");
-                    const lastLine = lines[lines.length - 1];
-                    if(sse && lastLine) sse.write(`data: ${JSON.stringify({ type: "status", msg: lastLine })}\n\n`);
-                });
-                
-                proc.stderr.on("data", (data) => {
-                    const errStr = data.toString();
-                    errorOutput += errStr;
-                    console.error(`[${scriptName} stderr]: ${errStr}`);
-                    if(sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "⚠️ 警告: " + errStr.trim().split("\n").pop() })}\n\n`);
-                });
-                
-                proc.on("close", (code) => {
-                    if (code === 0) {
-                        resolve();
-                    } else {
-                        reject(new Error(`${scriptName} 失败: ${errorOutput.split("\n").slice(-2).join(" ")}`));
-                    }
-                });
-            });
-        };
-        await runScript("run_asr.py", 10, "1/4: 正在进行 ASR 语音识别 (听觉打轴)...");
-        await runScript("video_vlm.py", 35, "2/4: 正在调用 Gemini 分析画面 (视觉打轴)...");
-        await runScript("run_director.py", 65, "3/4: AI 导演正在思考剪辑剧本...");
+        await runPipelineScript(["run_asr.py"], { sse, progress: 10, msg: "1/5: 正在 ASR 识别与翻译...", cwd: pipelineDir });
+        await runPipelineScript(["video_vlm.py"], { sse, progress: 30, msg: "2/5: 正在 VLM 分析画面...", cwd: pipelineDir });
+        await runPipelineScript(["run_director.py"], { sse, progress: 50, msg: "3/5: AI 导演思考剧本...", cwd: pipelineDir });
         
         const buildArgs = ["build_video.py"];
         if (req.body.withSubtitles === "false") {
             buildArgs.push("--no-subs");
         }
-        await new Promise((resolve, reject) => {
-            if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: 85, msg: "4/4: FFmpeg 正在拼命渲染合成视频..." })}\n\n`);
-            const proc = spawn("python", buildArgs, { cwd: pipelineDir });
-            let errorOutput = "";
-            proc.stdout.on("data", (data) => {
-                const lines = data.toString().trim().split("\n");
-                const lastLine = lines[lines.length - 1];
-                if(sse && lastLine) sse.write(`data: ${JSON.stringify({ type: "status", msg: lastLine })}\n\n`);
-            });
-            proc.stderr.on("data", (data) => {
-                errorOutput += data.toString();
-                if(sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "⚠️ " + data.toString().trim().split("\n").pop() })}\n\n`);
-            });
-            proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`build_video.py 失败: ${errorOutput.split("\n").slice(-2).join(" ")}`)));
-        });
+        await runPipelineScript(buildArgs, { sse, progress: 70, msg: "4/5: FFmpeg 正在合成视频...", cwd: pipelineDir });
 
-        
         const finalSourcePath = path.join(pipelineDir, "output_final.mp4");
-        if (fs.existsSync(finalSourcePath)) {
-            fs.copyFileSync(finalSourcePath, outputPath);
-            if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: 100, msg: "🎉 全自动剪辑完成！" })}\n\n`);
-            res.json({ success: true, videoUrl: "/output_final.mp4" });
+        let finalUrl = "/output_final.mp4";
+        
+        if (req.body.generateVertical === "true") {
+             const contentJsonPath = path.join(pipelineDir, "content.json");
+             let verticalTitle = (req.body.verticalTitle || "").trim();
+             if (!verticalTitle) {
+                 if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "未填写竖屏标题，正在自动生成热点标题..." })}\n\n`);
+                 verticalTitle = await generateHotTitle(pipelineDir, "subtitles.json");
+                 if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: `自动标题：${verticalTitle}` })}\n\n`);
+             }
+             fs.writeFileSync(contentJsonPath, JSON.stringify({ title: verticalTitle }, null, 2), "utf-8");
+             const verticalOutputName = "output_final_vertical.mp4";
+             await runPipelineScript(["make_vertical_video.py", "--input", "output_final.mp4", "--output", verticalOutputName], { sse, progress: 90, msg: "5/5: 生成动态竖屏...", cwd: pipelineDir });
+             fs.copyFileSync(path.join(pipelineDir, verticalOutputName), path.join(__dirname, "public", verticalOutputName));
+             finalUrl = "/" + verticalOutputName;
         } else {
-            throw new Error("生成完毕但未找到输出文件 output_final.mp4");
+             fs.copyFileSync(finalSourcePath, outputPath);
         }
+        
+        if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: 100, msg: "🎉 视频生成完毕！" })}\n\n`);
+        res.json({ success: true, videoUrl: finalUrl + "?t=" + Date.now() });
+
     } catch (error) {
         console.error("Pipeline failed:", error);
         res.status(500).json({ error: error.message });
@@ -465,7 +503,96 @@ app.post("/api/convert-video", express.json(), (req, res) => {
     });
 });
 
+
+// ================= 新增：独立竖屏生成接口 =================
+app.post("/api/generate-vertical-standalone", upload.fields([{ name: "video" }, { name: "srt" }]), async (req, res) => {
+    const clientId = req.body.clientId;
+    if (!clientId) return res.status(400).json({ error: "Missing clientId" });
+    const sse = clients.get(clientId);
+
+    try {
+        const pipelineDir = path.join(__dirname, "pipeline_scripts");
+        if (!req.files["video"]) {
+            return res.status(400).json({ error: "请上传需要转换的视频" });
+        }
+        
+        // --- Prepare files ---
+        const inputVideoPath = path.join(pipelineDir, "standalone_input.mp4");
+        fs.renameSync(req.files["video"][0].path, inputVideoPath);
+        
+        const contentJsonPath = path.join(pipelineDir, "content.json");
+
+        const subsJsonPath = path.join(pipelineDir, "subtitles.json");
+        const shouldUseASR = req.body.useASR === "true" || (!req.files["srt"] && req.body.useASR !== "false");
+
+        if (shouldUseASR) {
+            if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "自动 ASR 打轴已开启，正在识别视频语音..." })}\n\n`);
+            await new Promise((resolve, reject) => {
+                const proc = spawn("python", ["run_asr.py", "--input", "standalone_input.mp4"], { cwd: pipelineDir });
+                let errorOutput = "";
+                proc.stdout.on("data", (data) => {
+                    const lastLine = data.toString().trim().split("\n").pop();
+                    if (sse && lastLine) sse.write(`data: ${JSON.stringify({ type: "status", msg: lastLine })}\n\n`);
+                });
+                proc.stderr.on("data", (data) => {
+                    const errStr = data.toString();
+                    errorOutput += errStr;
+                    console.error(`[run_asr.py stderr]: ${errStr}`);
+                });
+                proc.on("close", (code) => {
+                    code === 0 ? resolve() : reject(new Error(`run_asr.py failed: ${errorOutput.trim()}`));
+                });
+            });
+        } else if (req.files["srt"]) {
+            if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "检测到 SRT 文件，正在转换为 JSON..." })}\n\n`);
+            const srtPath = path.join(pipelineDir, "uploaded.srt");
+            fs.renameSync(req.files["srt"][0].path, srtPath);
+            await new Promise((resolve, reject) => {
+                const proc = spawn("python", ["convert_srt_to_json.py", srtPath, subsJsonPath], { cwd: pipelineDir });
+                let errorOutput = "";
+                proc.stderr.on("data", (data) => {
+                    errorOutput += data.toString();
+                });
+                proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`SRT to JSON conversion failed: ${errorOutput.trim()}`)));
+            });
+        } else {
+            if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "未提供字幕文件，将生成无字幕视频。" })}\n\n`);
+            fs.writeFileSync(subsJsonPath, "[]");
+        }
+
+        let finalTitle = (req.body.title || "").trim();
+        if (!finalTitle) {
+            if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: "未填写标题，正在根据字幕自动生成热点标题..." })}\n\n`);
+            finalTitle = await generateHotTitle(pipelineDir, "subtitles.json");
+            if (sse) sse.write(`data: ${JSON.stringify({ type: "status", msg: `自动标题：${finalTitle}` })}\n\n`);
+        }
+        fs.writeFileSync(contentJsonPath, JSON.stringify({ title: finalTitle }, null, 2), "utf-8");
+
+        // --- Run script ---
+        if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: 50, msg: "正在渲染动态竖屏视频..." })}\n\n`);
+        const outputName = "standalone_output_vertical.mp4";
+        const outputPath = path.join(pipelineDir, outputName);
+        
+        await new Promise((resolve, reject) => {
+            const proc = spawn("python", ["make_vertical_video.py", "--input", inputVideoPath, "--output", outputPath], { cwd: pipelineDir });
+            proc.stderr.on("data", (data) => console.error(`[standalone_vertical stderr]: ${data}`));
+            proc.on("close", (code) => code === 0 ? resolve() : reject(new Error('make_vertical_video.py failed')));
+        });
+
+        // --- Return result ---
+        const finalUrlPath = path.join(__dirname, "public", outputName);
+        fs.copyFileSync(outputPath, finalUrlPath);
+        if(sse) sse.write(`data: ${JSON.stringify({ type: "progress", percent: 100, msg: "🎉 动态竖屏生成完毕！" })}\n\n`);
+        res.json({ success: true, videoUrl: "/" + outputName + "?t=" + Date.now(), title: finalTitle });
+
+    } catch (error) {
+        console.error("Standalone vertical failed:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 const PORT = 3001;
+
 
 app.listen(PORT, () => {
     console.log(`🚀 AI面板服务端启动成功: http://localhost:${PORT}`);
