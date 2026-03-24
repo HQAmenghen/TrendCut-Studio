@@ -1,0 +1,8 @@
+faster-whisper
+google-generativeai
+Pillow
+httpx
+openai
+requests
+requests-oauthlib
+playwright
