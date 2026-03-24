@@ -8,11 +8,41 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
-        body { background-color: #0b0f19; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; min-height: 100vh; overflow-x: hidden; }
-        .panel { background-color: #171c28; border: 1px solid #2d3748; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); }
-        .panel-header { border-bottom: 1px solid #2d3748; padding: 1rem 1.25rem; font-weight: bold; color: #a0aec0; display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.875rem; }
+        :root {
+            --app-bg: #0b0f19;
+            --app-text: #e2e8f0;
+            --panel-bg: #171c28;
+            --panel-border: #2d3748;
+            --input-bg: #0b0f19;
+            --input-border: #4a5568;
+            --input-text: #e2e8f0;
+            --hero-bg: radial-gradient(circle at top left, rgba(99, 102, 241, 0.22), transparent 34%), linear-gradient(180deg, rgba(23, 28, 40, 0.98), rgba(14, 18, 28, 0.98));
+            --soft-bg: linear-gradient(180deg, rgba(23, 28, 40, 0.96), rgba(13, 18, 28, 0.96));
+            --subtle-bg: linear-gradient(180deg, rgba(17, 22, 33, 0.95), rgba(12, 16, 25, 0.95));
+            --console-bg: rgba(11, 15, 25, 0.72);
+            --muted-text: #94a3b8;
+            --strong-text: #ffffff;
+        }
+        body.theme-light {
+            --app-bg: #eef4fb;
+            --app-text: #0f172a;
+            --panel-bg: #ffffff;
+            --panel-border: #d8e2f0;
+            --input-bg: #f8fbff;
+            --input-border: #c9d6e8;
+            --input-text: #0f172a;
+            --hero-bg: radial-gradient(circle at top left, rgba(59, 130, 246, 0.16), transparent 34%), linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.98));
+            --soft-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(243, 247, 252, 0.96));
+            --subtle-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(240, 244, 249, 0.96));
+            --console-bg: rgba(255, 255, 255, 0.82);
+            --muted-text: #475569;
+            --strong-text: #0f172a;
+        }
+        body { background-color: var(--app-bg); color: var(--app-text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; min-height: 100vh; overflow-x: hidden; transition: background-color 0.25s ease, color 0.25s ease; }
+        .panel { background-color: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.18); }
+        .panel-header { border-bottom: 1px solid var(--panel-border); padding: 1rem 1.25rem; font-weight: bold; color: var(--muted-text); display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.875rem; }
         .panel-body { padding: 1.25rem; }
-        .input-dark { background-color: #0b0f19; border: 1px solid #4a5568; color: #e2e8f0; border-radius: 0.5rem; padding: 0.75rem; width: 100%; transition: all 0.2s; }
+        .input-dark { background-color: var(--input-bg); border: 1px solid var(--input-border); color: var(--input-text); border-radius: 0.5rem; padding: 0.75rem; width: 100%; transition: all 0.2s; }
         .input-dark:focus { outline: none; border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3); }
         .btn-primary, .btn-success { color: white; font-weight: bold; border-radius: 0.75rem; padding: 1rem; width: 100%; transition: transform 0.2s, box-shadow 0.2s; }
         .btn-primary { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); }
@@ -21,49 +51,212 @@
         .btn-primary:hover:not(:disabled) { box-shadow: 0 4px 15px rgba(168, 85, 247, 0.4); }
         .btn-success:hover:not(:disabled) { box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4); }
         .btn-primary:disabled, .btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
-        .preset-item { background-color: #0b0f19; border: 1px solid #4a5568; border-radius: 0.5rem; cursor: pointer; transition: all 0.2s; }
+        .preset-item { background-color: var(--input-bg); border: 1px solid var(--input-border); border-radius: 0.5rem; cursor: pointer; transition: all 0.2s; }
         .preset-item:hover { border-color: #8b5cf6; }
         .preset-selected { border-color: #a855f7 !important; background-color: rgba(168, 85, 247, 0.1) !important; box-shadow: 0 0 0 1px #a855f7; }
         .tab-active { color: #a855f7; border-bottom: 2px solid #a855f7; }
         .tab-inactive { color: #718096; cursor: pointer; }
         .tab-inactive:hover { color: #a0aec0; }
-        .panel-hero { background: radial-gradient(circle at top left, rgba(99, 102, 241, 0.22), transparent 34%), linear-gradient(180deg, rgba(23, 28, 40, 0.98), rgba(14, 18, 28, 0.98)); }
-        .panel-soft { background: linear-gradient(180deg, rgba(23, 28, 40, 0.96), rgba(13, 18, 28, 0.96)); }
-        .panel-subtle { background: linear-gradient(180deg, rgba(17, 22, 33, 0.95), rgba(12, 16, 25, 0.95)); }
-        .console-card { border: 1px solid #2d3748; border-radius: 1rem; background: rgba(11, 15, 25, 0.72); backdrop-filter: blur(10px); }
+        .panel-hero { background: var(--hero-bg); }
+        .panel-soft { background: var(--soft-bg); }
+        .panel-subtle { background: var(--subtle-bg); }
+        .console-card { border: 1px solid var(--panel-border); border-radius: 1rem; background: var(--console-bg); backdrop-filter: blur(10px); }
         .section-kicker { color: #7dd3fc; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; }
-        .dashboard-stat { border: 1px solid #2d3748; border-radius: 1rem; background: linear-gradient(180deg, rgba(20, 26, 39, 0.95), rgba(11, 15, 25, 0.95)); padding: 1rem; }
-        .dashboard-stat strong { display: block; color: #fff; font-size: 1rem; margin-top: 0.35rem; }
+        .dashboard-stat { border: 1px solid var(--panel-border); border-radius: 1rem; background: var(--soft-bg); padding: 1rem; }
+        .dashboard-stat strong { display: block; color: var(--strong-text); font-size: 1rem; margin-top: 0.35rem; }
         .flow-pill { border: 1px solid #374151; border-radius: 9999px; background: rgba(15, 23, 42, 0.78); color: #cbd5e1; padding: 0.45rem 0.85rem; font-size: 0.75rem; }
-        .control-label { display: block; font-size: 12px; font-weight: 700; color: #94a3b8; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.06em; }
-        .upload-card { border: 1px dashed #4b5563; border-radius: 0.9rem; background: rgba(11, 15, 25, 0.85); transition: all 0.2s; }
+        .control-label { display: block; font-size: 12px; font-weight: 700; color: var(--muted-text); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.06em; }
+        .upload-card { border: 1px dashed #4b5563; border-radius: 0.9rem; background: var(--input-bg); transition: all 0.2s; }
         .upload-card:hover { border-color: #818cf8; box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.35) inset; }
+        .top-nav-pill { border: 1px solid #273244; border-radius: 1rem; background: var(--input-bg); padding: 0.85rem 1rem; min-width: 180px; transition: all 0.2s; cursor: pointer; }
+        .top-nav-pill:hover { border-color: #64748b; transform: translateY(-1px); }
+        .top-nav-pill.active { border-color: rgba(168, 85, 247, 0.7); background: linear-gradient(180deg, rgba(95, 53, 180, 0.18), rgba(10, 15, 25, 0.92)); box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.2) inset; }
+        .top-nav-pill .nav-kicker { font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: #64748b; }
+        .top-nav-pill .nav-title { color: var(--strong-text); font-weight: 800; margin-top: 0.3rem; font-size: 0.98rem; }
+        .top-nav-pill .nav-desc { color: #64748b; font-size: 11px; line-height: 1.45; margin-top: 0.35rem; }
+        .top-nav-pill.active .nav-kicker { color: #a5b4fc; }
+        .top-nav-pill.active .nav-desc { color: #cbd5e1; }
+        .workspace-layout { display: grid; gap: 1.5rem; }
+        .workspace-main { display: flex; flex-direction: column; gap: 1.5rem; }
+        .workspace-side { display: flex; flex-direction: column; gap: 1.5rem; }
+        .module-hero-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 1.5rem; }
+        .module-summary-card { border: 1px solid #243041; border-radius: 1rem; background: var(--subtle-bg); padding: 1rem; }
+        .module-summary-card strong { display: block; color: var(--strong-text); margin-top: 0.45rem; font-size: 1rem; }
+        .builder-card { border: 1px solid #273244; border-radius: 1rem; background: var(--subtle-bg); }
+        .builder-card-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.1rem; border-bottom: 1px solid #243041; }
+        .builder-card-header h4 { color: var(--strong-text); font-size: 0.95rem; font-weight: 800; }
+        .builder-card-header p { color: #64748b; font-size: 11px; margin-top: 0.2rem; }
+        .builder-card-body { padding: 1.1rem; }
+        .config-cluster { border: 1px solid #1f2937; border-radius: 0.95rem; background: var(--input-bg); padding: 0.95rem; }
+        .config-cluster-title { color: var(--strong-text); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 0.8rem; }
+        .segmented-switch { display: inline-flex; gap: 0.35rem; padding: 0.25rem; border-radius: 9999px; background: var(--input-bg); border: 1px solid #243041; }
+        .segmented-switch button { border-radius: 9999px; padding: 0.55rem 0.95rem; font-size: 12px; font-weight: 700; color: #94a3b8; transition: all 0.2s; }
+        .segmented-switch button.active { background: linear-gradient(135deg, rgba(99, 102, 241, 0.95), rgba(168, 85, 247, 0.95)); color: white; box-shadow: 0 6px 20px rgba(88, 28, 135, 0.35); }
+        .preview-phone { position: relative; width: 220px; aspect-ratio: 9 / 16; border-radius: 1.5rem; border: 1px solid #314155; background: linear-gradient(180deg, #145bb5 0%, #1357aa 100%); overflow: hidden; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04); }
+        .preview-title-band { position: absolute; top: 0; left: 0; right: 0; height: 29.17%; background: rgba(16, 87, 171, 0.96); }
+        .preview-title-box { position: absolute; color: #facc15; font-weight: 900; line-height: 1.05; text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 4px 0 rgba(0, 0, 0, 0.65); }
+        .preview-video-box { position: absolute; left: 0; right: 0; top: 29.17%; height: 31.67%; background: linear-gradient(135deg, rgba(89, 53, 18, 0.85), rgba(34, 58, 83, 0.85)); }
+        .preview-subtitle-layer { position: absolute; left: 0; right: 0; height: 18.75%; }
+        .preview-en-sub { position: absolute; left: 10%; right: 10%; top: 3%; color: white; text-align: center; font-weight: 700; line-height: 1.08; }
+        .preview-zh-card { position: absolute; left: 9%; right: 9%; background: white; color: #111827; border-radius: 1rem; text-align: center; font-weight: 900; line-height: 1.1; padding: 0.55rem 0.75rem; box-shadow: 0 10px 18px rgba(0,0,0,0.18); }
+        .control-meter { height: 10px; border-radius: 9999px; background: rgba(30, 41, 59, 0.95); overflow: hidden; }
+        .control-meter > span { display: block; height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #38bdf8, #8b5cf6); }
+        .insight-list { display: grid; gap: 0.75rem; }
+        .insight-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; font-size: 12px; color: #cbd5e1; }
+        .platform-health { border: 1px solid #273244; border-radius: 0.95rem; background: rgba(6, 11, 19, 0.76); padding: 0.9rem; }
+        .platform-health .bar { height: 8px; border-radius: 9999px; background: rgba(30, 41, 59, 0.95); overflow: hidden; margin-top: 0.55rem; }
+        .platform-health .bar > span { display: block; height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #22c55e, #38bdf8); }
+        .theme-toggle { display: inline-flex; align-items: center; gap: 0.45rem; border-radius: 9999px; border: 1px solid var(--panel-border); background: var(--input-bg); padding: 0.35rem; }
+        .theme-toggle button { border-radius: 9999px; padding: 0.45rem 0.8rem; font-size: 12px; font-weight: 700; color: var(--muted-text); transition: all 0.2s; }
+        .theme-toggle button.active { background: linear-gradient(135deg, rgba(99, 102, 241, 0.95), rgba(168, 85, 247, 0.95)); color: #fff; }
+        body.theme-light .text-white { color: #0f172a !important; }
+        body.theme-light .text-slate-500,
+        body.theme-light .text-gray-500 { color: #64748b !important; }
+        body.theme-light .text-slate-400,
+        body.theme-light .text-gray-400,
+        body.theme-light .text-slate-300 { color: #475569 !important; }
+        body.theme-light .text-slate-200 { color: #334155 !important; }
+        body.theme-light .border-gray-800,
+        body.theme-light .border-slate-800 { border-color: #d8e2f0 !important; }
+        body.theme-light .bg-\[\#0b0f19\]\/80,
+        body.theme-light .bg-\[\#0b0f19\],
+        body.theme-light .bg-slate-950\/60,
+        body.theme-light .bg-slate-950\/80,
+        body.theme-light .bg-slate-900\/70,
+        body.theme-light .bg-slate-900\/80,
+        body.theme-light .bg-slate-900\/50,
+        body.theme-light .bg-\[\#111827\],
+        body.theme-light .bg-black { background: rgba(248, 250, 252, 0.96) !important; }
+        body.theme-light .console-card,
+        body.theme-light .builder-card,
+        body.theme-light .module-summary-card,
+        body.theme-light .platform-health,
+        body.theme-light .config-cluster,
+        body.theme-light .top-nav-pill,
+        body.theme-light .panel-soft,
+        body.theme-light .panel-subtle,
+        body.theme-light .dashboard-stat { box-shadow: 0 10px 28px rgba(148, 163, 184, 0.12); }
+        body.theme-light .top-nav-pill { background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(245,248,252,0.96)) !important; border-color: #d4deeb !important; }
+        body.theme-light .top-nav-pill.active { background: linear-gradient(180deg, rgba(129, 140, 248, 0.18), rgba(255, 255, 255, 0.98)) !important; border-color: #a5b4fc !important; box-shadow: 0 12px 26px rgba(99, 102, 241, 0.14) !important; }
+        body.theme-light .top-nav-pill .nav-kicker { color: #64748b !important; }
+        body.theme-light .top-nav-pill.active .nav-kicker { color: #4f46e5 !important; }
+        body.theme-light .top-nav-pill .nav-desc { color: #64748b !important; }
+        body.theme-light .top-nav-pill.active .nav-desc { color: #334155 !important; }
+        body.theme-light .flow-pill { background: #eef2ff; border-color: #c7d2fe; color: #4338ca; }
+        body.theme-light .module-summary-card,
+        body.theme-light .dashboard-stat,
+        body.theme-light .platform-health { background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(245,248,252,0.98)); }
+        body.theme-light .config-cluster,
+        body.theme-light .upload-card,
+        body.theme-light .segmented-switch,
+        body.theme-light .theme-toggle { background: #f8fbff; border-color: #d4deeb; }
+        body.theme-light .builder-card-header,
+        body.theme-light .panel-header { border-bottom-color: #d8e2f0; }
+        body.theme-light .panel-header.bg-green-900\/20,
+        body.theme-light .panel-header.bg-purple-900\/20,
+        body.theme-light .panel-header.bg-blue-900\/20 { background: #f8fbff !important; }
+        body.theme-light .control-meter,
+        body.theme-light .platform-health .bar,
+        body.theme-light .w-full.bg-gray-800.rounded-full,
+        body.theme-light .w-full.bg-slate-800.rounded-full,
+        body.theme-light .h-2.overflow-hidden.rounded-full.bg-slate-800 { background: #dbe7f4 !important; }
+        body.theme-light .hover\:bg-slate-900\/40:hover { background: rgba(226, 232, 240, 0.6) !important; }
+        body.theme-light .text-slate-100 { color: #1e293b !important; }
+        body.theme-light .border-slate-700 { border-color: #cbd5e1 !important; }
+        body.theme-light .bg-slate-700 { background: #e2e8f0 !important; color: #334155 !important; }
+        body.theme-light .bg-slate-800 { background: #dbe7f4 !important; }
+        body.theme-light .bg-red-500\/10 { background: rgba(239, 68, 68, 0.08) !important; }
+        body.theme-light .bg-amber-500\/10 { background: rgba(245, 158, 11, 0.1) !important; }
+        body.theme-light .bg-emerald-500\/10 { background: rgba(16, 185, 129, 0.1) !important; }
+        body.theme-light .bg-violet-500\/10,
+        body.theme-light .bg-purple-500\/10,
+        body.theme-light .bg-sky-500\/10,
+        body.theme-light .bg-blue-500\/10 { background: rgba(99, 102, 241, 0.08) !important; }
+        body.theme-light .text-red-300 { color: #dc2626 !important; }
+        body.theme-light .text-amber-200,
+        body.theme-light .text-amber-300 { color: #b45309 !important; }
+        body.theme-light .text-violet-300,
+        body.theme-light .text-blue-300 { color: #4f46e5 !important; }
+        body.theme-light .text-slate-600 { color: #475569 !important; }
+        body.theme-light .section-kicker { color: #3b82f6; }
+        body.theme-light .btn-primary { box-shadow: 0 12px 28px rgba(147, 51, 234, 0.18); }
+        body.theme-light .btn-success { box-shadow: 0 12px 28px rgba(5, 150, 105, 0.18); }
+        body.theme-light .top-nav-pill:hover,
+        body.theme-light .upload-card:hover { border-color: #93c5fd; }
+        body.theme-light .preview-phone { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12), 0 10px 24px rgba(59, 130, 246, 0.12); }
+        body.theme-light .panel,
+        body.theme-light .builder-card,
+        body.theme-light .console-card { background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(244,247,251,0.98)) !important; }
+        body.theme-light .input-dark::placeholder { color: #94a3b8; }
+        body.theme-light .input-dark { box-shadow: inset 0 1px 2px rgba(148, 163, 184, 0.08); }
+        body.theme-light .theme-toggle button:not(.active) { color: #475569; }
+        body.theme-light .segmented-switch button:not(.active) { color: #64748b; }
+        body.theme-light .rounded-lg.border.border-slate-800.bg-slate-950\/60,
+        body.theme-light .rounded-lg.border.border-slate-800.bg-slate-950\/80,
+        body.theme-light .rounded-xl.border.border-slate-800.bg-slate-950\/60,
+        body.theme-light .rounded-xl.border.border-slate-800.bg-slate-950\/80,
+        body.theme-light .rounded-xl.border.border-slate-800.bg-\[\#0b0f19\] { background: #ffffff !important; }
+        body.theme-light thead.bg-\[\#111827\] { background: #eef4fb !important; }
+        body.theme-light tr.border-t.border-slate-800\/80 { border-color: #dbe7f4 !important; }
+        body.theme-light .bg-green-900\/20.text-green-400,
+        body.theme-light .bg-purple-900\/20.text-purple-300,
+        body.theme-light .bg-blue-900\/20.text-blue-300 { color: #334155 !important; }
+        body.theme-light .rounded-xl.border.border-slate-800.bg-\[\#0b0f19\],
+        body.theme-light .rounded-xl.border.border-slate-800.bg-slate-950\/60,
+        body.theme-light .rounded-xl.border.border-slate-800.bg-slate-950\/80 { background: #f8fbff !important; }
+        body.theme-light .text-green-400 { color: #16a34a !important; }
+        body.theme-light .text-purple-400 { color: #7c3aed !important; }
+        body.theme-light .text-emerald-300,
+        body.theme-light .text-emerald-400 { color: #059669 !important; }
+        body.theme-light .text-sky-300,
+        body.theme-light .text-sky-400 { color: #0284c7 !important; }
+        body.theme-light .text-amber-300 { color: #b45309 !important; }
         ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #0b0f19; }
+        ::-webkit-scrollbar-track { background: var(--app-bg); }
         ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 4px; }
         @keyframes fade-in { 0% { opacity: 0; transform: translateY(-10px); } 100% { opacity: 1; transform: translateY(0); } } .animate-fade-in { animation: fade-in 0.3s ease-out; }
+        @media (max-width: 1024px) {
+            .module-hero-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body class="p-6">
 <div id="app" class="max-w-[1600px] mx-auto space-y-6">
-    <header class="flex items-center justify-between pb-4 border-b border-gray-800">
-        <div class="flex items-center gap-6">
-            <div @click="currentApp = 'pipeline'" :class="['cursor-pointer pb-2', currentApp === 'pipeline' ? 'text-white border-b-2 border-purple-500' : 'text-gray-500 hover:text-gray-300']">
-                <h2 class="text-xl font-bold">🎬 AI 全链路混剪</h2>
+    <header class="space-y-4 pb-4 border-b border-gray-800">
+        <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+                <div class="section-kicker">Unified Video Console</div>
+                <h1 class="mt-2 text-3xl font-black text-white">AI 视频中台工作台</h1>
+                <p class="mt-2 max-w-3xl text-sm leading-7 text-slate-400">{{ currentPageMeta.description }}</p>
             </div>
-            <div @click="currentApp = 'standalone'" :class="['cursor-pointer pb-2', currentApp === 'standalone' ? 'text-white border-b-2 border-purple-500' : 'text-gray-500 hover:text-gray-300']">
-                <h2 class="text-xl font-bold">📱 竖屏后期合成</h2>
-            </div>
-            <div @click="currentApp = 'xaiTop10'" :class="['cursor-pointer pb-2', currentApp === 'xaiTop10' ? 'text-white border-b-2 border-purple-500' : 'text-gray-500 hover:text-gray-300']">
-                <h2 class="text-xl font-bold">📈 热门视频榜单</h2>
-            </div>
-            <div @click="currentApp = 'publishCenter'" :class="['cursor-pointer pb-2', currentApp === 'publishCenter' ? 'text-white border-b-2 border-purple-500' : 'text-gray-500 hover:text-gray-300']">
-                <h2 class="text-xl font-bold">🚀 一键发布</h2>
+            <div class="flex items-center gap-4 rounded-2xl border border-slate-800 bg-[#0b0f19]/80 px-4 py-3">
+                <div class="theme-toggle">
+                    <button type="button" @click="setThemeMode('dark')" :class="{ active: themeMode === 'dark' }">🌙 暗色</button>
+                    <button type="button" @click="setThemeMode('light')" :class="{ active: themeMode === 'light' }">☀️ 亮色</button>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="relative flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span></span>
+                    <span class="text-green-400 text-sm font-medium">引擎在线</span>
+                </div>
+                <div class="h-8 w-px bg-slate-800"></div>
+                <div>
+                    <div class="text-[11px] uppercase tracking-[0.16em] text-slate-500">当前模块</div>
+                    <div class="mt-1 text-sm font-semibold text-white">{{ currentPageMeta.title }}</div>
+                </div>
             </div>
         </div>
-        <div class="flex items-center gap-3">
-            <span class="relative flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span></span>
-            <span class="text-green-400 text-sm font-medium">引擎在线</span>
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <button
+                v-for="item in appNavigation"
+                :key="item.key"
+                @click="currentApp = item.key"
+                type="button"
+                :class="['top-nav-pill text-left', currentApp === item.key ? 'active' : '']"
+            >
+                <div class="nav-kicker">{{ item.kicker }}</div>
+                <div class="nav-title">{{ item.title }}</div>
+                <div class="nav-desc">{{ item.desc }}</div>
+            </button>
         </div>
     </header>
 
@@ -294,155 +487,245 @@
     </div>
 
     <!-- 独立竖屏合成 -->
-    <div v-show="currentApp === 'standalone'" class="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
-        <div class="lg:col-span-2 space-y-6">
-            <div class="panel">
-                <div class="panel-header justify-between">
-                    <span>🚚 XAI 竖屏队列</span>
-                    <button @click="loadVerticalQueueStatus" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800">刷新队列</button>
-                </div>
-                <div class="panel-body space-y-4">
-                    <div class="grid grid-cols-3 gap-3">
-                        <div class="dashboard-stat">
-                            <span class="text-xs text-slate-400 uppercase tracking-[0.16em]">并发数</span>
-                            <strong>{{ verticalQueue.status?.concurrency ?? 2 }}</strong>
-                        </div>
-                        <div class="dashboard-stat">
-                            <span class="text-xs text-slate-400 uppercase tracking-[0.16em]">运行中</span>
-                            <strong>{{ verticalQueue.status?.running ?? 0 }}</strong>
-                        </div>
-                        <div class="dashboard-stat">
-                            <span class="text-xs text-slate-400 uppercase tracking-[0.16em]">排队中</span>
-                            <strong>{{ verticalQueue.status?.queued ?? 0 }}</strong>
-                        </div>
-                    </div>
-                    <p class="text-xs text-slate-500 leading-6">从“热门视频榜单”页签直送过来的任务会在这里并发执行。每条视频独立下载、独立打轴、独立生成，不会互相抢占文件。</p>
-                </div>
-            </div>
-            <div class="panel">
-                <div class="panel-header"><span>⬆️ 上传核心素材</span></div>
-                <div class="panel-body grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div v-show="currentApp === 'standalone'" class="space-y-6 animate-fade-in">
+        <section class="panel panel-hero overflow-hidden">
+            <div class="panel-body module-hero-grid">
+                <div class="space-y-4">
+                    <div class="section-kicker">Vertical Finishing</div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-400 mb-1">主视频 (横屏)</label>
-                        <label class="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-green-400 bg-[#0b0f19] transition-colors relative">
-                            <span class="text-2xl mb-1">🎞️</span>
-                            <span class="text-xs text-green-400 truncate w-full px-2 text-center absolute bottom-2">{{ standalone.videoName || '点击上传 mp4' }}</span>
-                            <input type="file" @change="handleStandaloneUpload($event, 'video')" accept="video/mp4" class="hidden" />
-                        </label>
+                        <h3 class="text-3xl font-black text-white leading-tight">竖屏后期编排台</h3>
+                        <p class="mt-3 max-w-2xl text-sm leading-7 text-slate-300">把横屏素材、字幕和标题编排成统一的竖屏模板。现在版式控制、结果预览和批量队列放在同一个工作流里，不需要来回切换脑回路。</p>
                     </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 mb-1">字幕文件 (可选)</label>
-                        <label class="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-600 rounded-lg cursor-pointer hover:border-yellow-400 bg-[#0b0f19] transition-colors relative">
-                            <span class="text-2xl mb-1">📄</span>
-                            <div class="flex flex-col items-center justify-center">
-                                    <span class="text-xs text-yellow-400 truncate w-full px-2 text-center">{{ standalone.srtName || '上传 .srt 字幕' }}</span>
-                                    <span class="text-[10px] text-gray-500 mt-1">或</span>
-                                    <button @click.prevent="standalone.useASR = !standalone.useASR" :class="['text-xs px-2 py-0.5 rounded-full mt-1 transition-colors', standalone.useASR ? 'bg-green-500 text-white' : 'bg-gray-600 text-gray-300']">
-                                        {{ standalone.useASR ? '✅ 已开启自动打轴' : '⚙️ 自动识别字幕' }}
-                                    </button>
-                                 </div>
-                            <input type="file" @change="handleStandaloneUpload($event, 'srt')" accept=".srt" class="hidden" />
-                        </label>
+                    <div class="flex flex-wrap gap-2">
+                        <span class="flow-pill">素材上传</span>
+                        <span class="flow-pill">标题生成</span>
+                        <span class="flow-pill">字幕编排</span>
+                        <span class="flow-pill">批量队列</span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="module-summary-card">
+                        <span class="text-xs uppercase tracking-[0.16em] text-slate-500">主视频</span>
+                        <strong>{{ standalone.videoName ? '已载入' : '待上传' }}</strong>
+                        <p class="mt-2 text-xs text-slate-500">支持单条手动合成，也支持从热点榜单批量送入。</p>
+                    </div>
+                    <div class="module-summary-card">
+                        <span class="text-xs uppercase tracking-[0.16em] text-slate-500">字幕策略</span>
+                        <strong>{{ standalone.useASR ? 'ASR 自动打轴' : (standalone.srtName ? '使用外部 SRT' : '待选择') }}</strong>
+                        <p class="mt-2 text-xs text-slate-500">当前会优先保持字幕两行内并减少难看的短尾行。</p>
+                    </div>
+                    <div class="module-summary-card">
+                        <span class="text-xs uppercase tracking-[0.16em] text-slate-500">版式模式</span>
+                        <strong>{{ renderPresetLabel }}</strong>
+                        <p class="mt-2 text-xs text-slate-500">标题、字幕、英文字幕和下移参数会一起作用到单条与批量任务。</p>
+                    </div>
+                    <div class="module-summary-card">
+                        <span class="text-xs uppercase tracking-[0.16em] text-slate-500">队列状态</span>
+                        <strong>{{ (verticalQueue.status?.running ?? 0) + ' 运行 / ' + (verticalQueue.status?.queued ?? 0) + ' 排队' }}</strong>
+                        <p class="mt-2 text-xs text-slate-500">所有批量任务独立工作目录，适合并行生成。</p>
                     </div>
                 </div>
             </div>
-            <div class="panel">
-                <div class="panel-header"><span>✏️ 配置顶部标题</span></div>
-                <div class="panel-body">
-                     <textarea v-model="standalone.title" rows="2" class="input-dark" placeholder="输入吸引人的视频标题 (支持 \\n 换行)..."></textarea>
-                     <p class="text-xs text-gray-400 mt-2">留空时会根据 ASR 字幕自动生成热点标题。</p>
-                </div>
-            </div>
-            <div class="panel">
-                <div class="panel-header"><span>🔠 版式控制</span></div>
-                <div class="panel-body grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="control-label">标题字号</label>
-                        <input type="number" min="56" max="140" v-model.number="renderControls.titleFontSize" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">标题最小字号</label>
-                        <input type="number" min="36" max="100" v-model.number="renderControls.titleMinSize" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">标题最大行数</label>
-                        <input type="number" min="1" max="3" v-model.number="renderControls.titleMaxLines" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">中文字幕字号</label>
-                        <input type="number" min="24" max="72" v-model.number="renderControls.subtitleFontSize" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">字幕最小字号</label>
-                        <input type="number" min="20" max="56" v-model.number="renderControls.subtitleMinSize" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">字幕最大行数</label>
-                        <input type="number" min="1" max="3" v-model.number="renderControls.subtitleMaxLines" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">字幕下移</label>
-                        <input type="number" min="-20" max="80" v-model.number="renderControls.subtitleOffsetY" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">英文字幕字号</label>
-                        <input type="number" min="24" max="72" v-model.number="renderControls.englishFontSize" class="input-dark text-sm text-center">
-                    </div>
-                    <div>
-                        <label class="control-label">英文最大行数</label>
-                        <input type="number" min="1" max="3" v-model.number="renderControls.englishMaxLines" class="input-dark text-sm text-center">
-                    </div>
-                </div>
-                <div class="panel-body pt-0">
-                    <p class="text-xs text-gray-400">建议把标题最大行数和字幕最大行数都保持在 `2`，这样脚本会优先缩小字号，而不是继续自动拆成第三行。</p>
-                </div>
-            </div>
-            <button @click="submitStandalone" :disabled="standalone.loading || loadingGlobal" class="btn-primary flex justify-center items-center gap-2">
-                <span v-if="!standalone.loading">🚀 一键生成动态竖屏</span>
-                <span v-else>⏳ 正在渲染中...</span>
-            </button>
-        </div>
-        <div class="lg:col-span-1">
-             <div v-if="loadingGlobal" class="panel bg-[#171c28] border-blue-500/50">
-                <div class="panel-body">
-                    <div class="flex justify-between text-xs font-bold text-blue-300 mb-2"><span>{{ statusText }}</span><span>{{ progressPercent }}%</span></div>
-                    <div class="w-full bg-gray-800 rounded-full h-2"><div class="h-full bg-gradient-to-r from-blue-500 to-purple-500" :style="{ width: progressPercent + '%' }"></div></div>
-                </div>
-            </div>
-            <div v-if="finalVideoUrl" class="panel border-green-500/50 mt-6">
-                <div class="panel-header bg-green-900/20 text-green-400 border-green-500/30 flex justify-between"><span>✨ 竖屏成片</span><a :href="finalVideoUrl" download class="bg-green-600 text-white text-xs px-2 py-0.5 rounded">下载</a></div>
-                <div class="bg-black flex justify-center"><video :src="finalVideoUrl" controls class="max-h-[400px] w-auto"></video></div>
-            </div>
-            <div class="panel mt-6">
-                <div class="panel-header"><span>📦 批量任务列表</span></div>
-                <div class="panel-body space-y-3 max-h-[640px] overflow-y-auto">
-                    <div v-if="!verticalQueueJobs.length" class="text-sm text-slate-500">还没有批量竖屏任务。</div>
-                    <div v-for="job in verticalQueueJobs" :key="job.id" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-3 space-y-3">
-                        <div class="flex items-start justify-between gap-3">
-                            <div>
-                                <div class="text-sm font-semibold text-white">{{ job.title || stripAuthorSummary(job.summary) || '@' + (job.author || 'unknown') }}</div>
-                                <div class="text-[11px] text-slate-500 mt-1">@{{ job.author || 'unknown' }}</div>
-                            </div>
-                            <span class="rounded-full px-2 py-1 text-[10px] font-bold"
-                                :class="job.status === 'completed' ? 'bg-emerald-500/10 text-emerald-300' : job.status === 'failed' ? 'bg-red-500/10 text-red-300' : job.status === 'queued' ? 'bg-slate-700 text-slate-200' : 'bg-blue-500/10 text-blue-300'">
-                                {{ job.status }}
-                            </span>
-                        </div>
+        </section>
+
+        <div class="grid grid-cols-1 gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+            <div class="workspace-main">
+                <div class="builder-card">
+                    <div class="builder-card-header">
                         <div>
-                            <div class="flex justify-between text-[11px] text-slate-400 mb-1">
-                                <span class="truncate pr-3">{{ job.message || '等待执行...' }}</span>
-                                <span>{{ job.progress ?? 0 }}%</span>
+                            <h4>输入与素材</h4>
+                            <p>先决定输入方式，再让系统根据当前模板生成竖屏成片。</p>
+                        </div>
+                    </div>
+                    <div class="builder-card-body space-y-4">
+                        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div class="config-cluster">
+                                <div class="config-cluster-title">主视频</div>
+                                <label class="upload-card flex h-36 cursor-pointer flex-col items-center justify-center relative">
+                                    <span class="text-2xl mb-2">🎞️</span>
+                                    <span class="text-sm font-semibold text-slate-200">上传横屏源视频</span>
+                                    <span class="mt-2 text-[11px] text-green-400 truncate w-full px-3 text-center">{{ standalone.videoName || '点击上传 mp4' }}</span>
+                                    <input type="file" @change="handleStandaloneUpload($event, 'video')" accept="video/mp4" class="hidden" />
+                                </label>
                             </div>
-                            <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                                <div class="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300" :style="{ width: (job.progress || 0) + '%' }"></div>
+                            <div class="config-cluster">
+                                <div class="config-cluster-title">字幕来源</div>
+                                <label class="upload-card flex h-36 cursor-pointer flex-col items-center justify-center relative">
+                                    <span class="text-2xl mb-2">📄</span>
+                                    <span class="text-sm font-semibold text-slate-200">{{ standalone.srtName || '上传 .srt 字幕' }}</span>
+                                    <span class="mt-2 text-[11px] text-slate-500">或切换为自动打轴</span>
+                                    <button @click.prevent="standalone.useASR = !standalone.useASR" :class="['mt-3 rounded-full px-3 py-1 text-xs font-semibold transition-colors', standalone.useASR ? 'bg-emerald-500 text-white' : 'bg-slate-700 text-slate-200']">
+                                        {{ standalone.useASR ? '✅ 自动识别字幕' : '📎 使用外部字幕' }}
+                                    </button>
+                                    <input type="file" @change="handleStandaloneUpload($event, 'srt')" accept=".srt" class="hidden" />
+                                </label>
                             </div>
                         </div>
-                        <div class="flex flex-wrap gap-3 text-xs">
-                            <a v-if="job.resultVideoUrl" :href="job.resultVideoUrl" target="_blank" rel="noreferrer" class="text-emerald-400 hover:text-emerald-300">打开成片</a>
-                            <a v-if="job.resultVideoUrl" :href="job.resultVideoUrl" download class="text-green-400 hover:text-green-300">下载成片</a>
-                            <a v-if="job.postUrl" :href="job.postUrl" target="_blank" rel="noreferrer" class="text-sky-400 hover:text-sky-300">原帖</a>
+                        <div class="config-cluster">
+                            <div class="config-cluster-title">标题脚本</div>
+                            <textarea v-model="standalone.title" rows="2" class="input-dark resize-none" placeholder="输入吸引人的视频标题 (支持 \n 换行)..."></textarea>
+                            <p class="mt-3 text-xs leading-6 text-slate-500">留空时会根据 ASR 字幕自动生成热点标题。建议控制在两行，避免过多压缩视频区域。</p>
                         </div>
-                        <div v-if="job.error" class="text-[11px] text-red-300 leading-5">{{ job.error }}</div>
+                    </div>
+                </div>
+
+                <div class="builder-card">
+                    <div class="builder-card-header">
+                        <div>
+                            <h4>版式控制</h4>
+                            <p>不再只是记数字，右侧会用一张 9:16 模板预览当前参数会落到什么位置。</p>
+                        </div>
+                        <div class="rounded-full border border-slate-700 bg-slate-950/70 px-3 py-1 text-[11px] font-semibold text-slate-300">
+                            当前模板：{{ renderPresetLabel }}
+                        </div>
+                    </div>
+                    <div class="builder-card-body grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="control-label">标题字号</label>
+                                <input type="number" min="56" max="140" v-model.number="renderControls.titleFontSize" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">标题最小字号</label>
+                                <input type="number" min="36" max="100" v-model.number="renderControls.titleMinSize" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">标题最大行数</label>
+                                <input type="number" min="1" max="3" v-model.number="renderControls.titleMaxLines" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">中文字幕字号</label>
+                                <input type="number" min="24" max="72" v-model.number="renderControls.subtitleFontSize" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">字幕最小字号</label>
+                                <input type="number" min="20" max="56" v-model.number="renderControls.subtitleMinSize" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">字幕最大行数</label>
+                                <input type="number" min="1" max="3" v-model.number="renderControls.subtitleMaxLines" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">字幕下移</label>
+                                <input type="number" min="-20" max="80" v-model.number="renderControls.subtitleOffsetY" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">英文字幕字号</label>
+                                <input type="number" min="24" max="72" v-model.number="renderControls.englishFontSize" class="input-dark text-sm text-center">
+                            </div>
+                            <div>
+                                <label class="control-label">英文最大行数</label>
+                                <input type="number" min="1" max="3" v-model.number="renderControls.englishMaxLines" class="input-dark text-sm text-center">
+                            </div>
+                        </div>
+                        <div class="config-cluster flex flex-col items-center gap-4">
+                            <div class="config-cluster-title w-full">版式示意图</div>
+                            <div class="preview-phone">
+                                <div class="preview-title-band"></div>
+                                <div class="preview-title-box" :style="verticalPreviewStyles.title">
+                                    {{ verticalPreview.title }}
+                                </div>
+                                <div class="preview-video-box"></div>
+                                <div class="preview-subtitle-layer" :style="verticalPreviewStyles.layer">
+                                    <div class="preview-en-sub" :style="verticalPreviewStyles.en">
+                                        {{ verticalPreview.en }}
+                                    </div>
+                                    <div class="preview-zh-card" :style="verticalPreviewStyles.zh">
+                                        {{ verticalPreview.zh }}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="insight-list w-full">
+                                <div v-for="item in renderControlInsights" :key="item.label" class="space-y-2">
+                                    <div class="insight-row">
+                                        <span>{{ item.label }}</span>
+                                        <span class="text-slate-400">{{ item.value }}</span>
+                                    </div>
+                                    <div class="control-meter"><span :style="{ width: item.ratio + '%' }"></span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="builder-card-body pt-0">
+                        <p class="text-xs text-slate-500">建议把标题最大行数和字幕最大行数都保持在 `2`。现在预览示意会把“字幕下移”直接反映到白底字幕卡位置，调起来会更直观。</p>
+                    </div>
+                </div>
+
+                <button @click="submitStandalone" :disabled="standalone.loading || loadingGlobal" class="btn-primary flex justify-center items-center gap-2">
+                    <span v-if="!standalone.loading">🚀 一键生成动态竖屏</span>
+                    <span v-else>⏳ 正在渲染中...</span>
+                </button>
+            </div>
+
+            <div class="workspace-side">
+                <div v-if="loadingGlobal" class="panel bg-[#171c28] border-blue-500/50">
+                    <div class="panel-body">
+                        <div class="text-[11px] uppercase tracking-[0.16em] text-slate-500 mb-3">Live Render</div>
+                        <div class="flex justify-between text-xs font-bold text-blue-300 mb-2"><span>{{ statusText }}</span><span>{{ progressPercent }}%</span></div>
+                        <div class="w-full bg-gray-800 rounded-full h-2"><div class="h-full bg-gradient-to-r from-blue-500 to-purple-500" :style="{ width: progressPercent + '%' }"></div></div>
+                    </div>
+                </div>
+                <div v-if="finalVideoUrl" class="panel border-green-500/50">
+                    <div class="panel-header bg-green-900/20 text-green-400 border-green-500/30 flex justify-between"><span>✨ 当前成片</span><a :href="finalVideoUrl" download class="bg-green-600 text-white text-xs px-2 py-0.5 rounded">下载</a></div>
+                    <div class="bg-black flex justify-center"><video :src="finalVideoUrl" controls class="max-h-[420px] w-auto"></video></div>
+                </div>
+                <div class="builder-card">
+                    <div class="builder-card-header">
+                        <div>
+                            <h4>XAI 批量竖屏队列</h4>
+                            <p>从热点榜单直送来的视频会按这里的并发和模板设置依次执行。</p>
+                        </div>
+                        <button @click="loadVerticalQueueStatus" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800">刷新队列</button>
+                    </div>
+                    <div class="builder-card-body space-y-4">
+                        <div class="grid grid-cols-3 gap-3">
+                            <div class="module-summary-card">
+                                <span class="text-xs uppercase tracking-[0.16em] text-slate-500">并发</span>
+                                <strong>{{ verticalQueue.status?.concurrency ?? 2 }}</strong>
+                            </div>
+                            <div class="module-summary-card">
+                                <span class="text-xs uppercase tracking-[0.16em] text-slate-500">运行</span>
+                                <strong>{{ verticalQueue.status?.running ?? 0 }}</strong>
+                            </div>
+                            <div class="module-summary-card">
+                                <span class="text-xs uppercase tracking-[0.16em] text-slate-500">排队</span>
+                                <strong>{{ verticalQueue.status?.queued ?? 0 }}</strong>
+                            </div>
+                        </div>
+                        <p class="text-xs leading-6 text-slate-500">每条视频独立下载、独立打轴、独立生成，不会互相抢占文件。这里展示的是队列执行态，不影响你单条手工渲染。</p>
+                        <div class="panel-soft rounded-2xl border border-slate-800 p-4">
+                            <div class="config-cluster-title">最近批量任务</div>
+                            <div class="space-y-3 max-h-[520px] overflow-y-auto">
+                                <div v-if="!verticalQueueJobs.length" class="text-sm text-slate-500">还没有批量竖屏任务。</div>
+                                <div v-for="job in verticalQueueJobs" :key="job.id" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-3 space-y-3">
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div>
+                                            <div class="text-sm font-semibold text-white">{{ job.title || stripAuthorSummary(job.summary) || '@' + (job.author || 'unknown') }}</div>
+                                            <div class="text-[11px] text-slate-500 mt-1">@{{ job.author || 'unknown' }}</div>
+                                        </div>
+                                        <span class="rounded-full px-2 py-1 text-[10px] font-bold"
+                                            :class="job.status === 'completed' ? 'bg-emerald-500/10 text-emerald-300' : job.status === 'failed' ? 'bg-red-500/10 text-red-300' : job.status === 'queued' ? 'bg-slate-700 text-slate-200' : 'bg-blue-500/10 text-blue-300'">
+                                            {{ job.status }}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-[11px] text-slate-400 mb-1">
+                                            <span class="truncate pr-3">{{ job.message || '等待执行...' }}</span>
+                                            <span>{{ job.progress ?? 0 }}%</span>
+                                        </div>
+                                        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                                            <div class="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300" :style="{ width: (job.progress || 0) + '%' }"></div>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-wrap gap-3 text-xs">
+                                        <a v-if="job.resultVideoUrl" :href="job.resultVideoUrl" target="_blank" rel="noreferrer" class="text-emerald-400 hover:text-emerald-300">打开成片</a>
+                                        <a v-if="job.resultVideoUrl" :href="job.resultVideoUrl" download class="text-green-400 hover:text-green-300">下载成片</a>
+                                        <a v-if="job.postUrl" :href="job.postUrl" target="_blank" rel="noreferrer" class="text-sky-400 hover:text-sky-300">原帖</a>
+                                    </div>
+                                    <div v-if="job.error" class="text-[11px] text-red-300 leading-5">{{ job.error }}</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -536,6 +819,18 @@
                             <div>
                                 <label class="control-label">队列字幕下移</label>
                                 <input type="number" min="-20" max="80" v-model.number="renderControls.subtitleOffsetY" class="input-dark text-sm text-center">
+                            </div>
+                        </div>
+                        <div class="config-cluster">
+                            <div class="config-cluster-title">当前批量模板</div>
+                            <div class="space-y-3">
+                                <div class="text-sm font-semibold text-white">{{ renderPresetLabel }}</div>
+                                <div class="text-xs leading-6 text-slate-400">批量送入竖屏队列时，会沿用当前标题字号、字幕字号和字幕下移参数。</div>
+                                <div class="grid grid-cols-1 gap-2 text-[11px] text-slate-500 md:grid-cols-3">
+                                    <div class="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">标题 {{ renderControls.titleFontSize }} / {{ renderControls.titleMaxLines }} 行</div>
+                                    <div class="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">中文字幕 {{ renderControls.subtitleFontSize }} / {{ renderControls.subtitleMaxLines }} 行</div>
+                                    <div class="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">字幕下移 {{ renderControls.subtitleOffsetY }} / 英文 {{ renderControls.englishFontSize }}</div>
+                                </div>
                             </div>
                         </div>
                         <button @click="loadXaiTop10Data" :disabled="xaiTop10.loading" class="w-full rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-purple-500 hover:text-white disabled:opacity-50">
@@ -757,6 +1052,28 @@
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div class="lg:col-span-4 space-y-6">
+                <div class="builder-card">
+                    <div class="builder-card-header">
+                        <div>
+                            <h4>接入健康度</h4>
+                            <p>把平台配置变成可视化状态，不用再靠脑子记哪些字段还没补。</p>
+                        </div>
+                    </div>
+                    <div class="builder-card-body space-y-3">
+                        <div v-for="platform in publishPlatforms" :key="`health_${platform.key}`" class="platform-health">
+                            <div class="flex items-center justify-between gap-3">
+                                <div>
+                                    <div class="text-sm font-semibold text-white">{{ platform.label }}</div>
+                                    <div class="mt-1 text-[11px] text-slate-500">{{ publishPlatformHealth(platform.key).status }}</div>
+                                </div>
+                                <div class="text-xs font-semibold" :class="publishPlatformHealth(platform.key).enabled ? 'text-emerald-300' : 'text-slate-500'">
+                                    {{ publishPlatformHealth(platform.key).percent }}%
+                                </div>
+                            </div>
+                            <div class="bar"><span :style="{ width: publishPlatformHealth(platform.key).percent + '%' }"></span></div>
+                        </div>
+                    </div>
+                </div>
                 <div class="panel">
                     <div class="panel-header justify-between">
                         <span>🔐 平台配置</span>
@@ -805,89 +1122,164 @@
                 <div v-if="publishCenter.saveNotice" class="fixed right-6 top-6 z-50 rounded-xl border border-emerald-400/30 bg-emerald-500/15 px-4 py-3 text-sm font-semibold text-emerald-200 shadow-2xl shadow-emerald-950/40 backdrop-blur">
                     已保存 / Save successful
                 </div>
-                <div class="panel">
-                    <div class="panel-header justify-between">
-                        <span>🎞️ 发布任务编辑器</span>
-                        <button @click="refreshPublishCenter" :disabled="publishCenter.loading" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800 disabled:opacity-50">
-                            刷新素材与任务
-                        </button>
-                    </div>
-                    <div class="panel-body space-y-4">
+                <div class="builder-card">
+                    <div class="builder-card-header">
                         <div>
-                            <label class="control-label">选择发布素材</label>
-                            <select v-model="publishCenter.form.assetId" @change="handlePublishAssetChange" class="input-dark text-sm">
-                                <option value="">请选择一个可发布的视频成片</option>
-                                <option v-for="asset in publishCenter.assets" :key="asset.id" :value="asset.id">
-                                    {{ asset.label }} · {{ asset.sourceType }} · {{ formatDateTime(asset.updatedAt) }}
-                                </option>
-                            </select>
+                            <h4>发布工作区</h4>
+                            <p>把创建任务、看素材、看任务三种视角拆开，避免信息过密。</p>
                         </div>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label class="control-label">发布标题</label>
-                                <input v-model="publishCenter.form.title" class="input-dark text-sm" placeholder="输入各平台共用标题">
+                        <div class="flex items-center gap-3">
+                            <div class="segmented-switch">
+                                <button type="button" @click="publishCenterTab = 'editor'" :class="{ active: publishCenterTab === 'editor' }">任务编辑器</button>
+                                <button type="button" @click="publishCenterTab = 'assets'" :class="{ active: publishCenterTab === 'assets' }">素材库</button>
+                                <button type="button" @click="publishCenterTab = 'jobs'" :class="{ active: publishCenterTab === 'jobs' }">任务列表</button>
                             </div>
-                            <div>
-                                <label class="control-label">封面链接</label>
-                                <input v-model="publishCenter.form.coverUrl" class="input-dark text-sm" placeholder="可选：封面图片 URL">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="control-label">发布描述</label>
-                            <textarea v-model="publishCenter.form.description" rows="4" class="input-dark text-sm resize-none" placeholder="输入发布描述、口播摘要或行动号召"></textarea>
-                        </div>
-                        <div>
-                            <label class="control-label">标签</label>
-                            <input v-model="publishCenter.form.tagsText" class="input-dark text-sm" placeholder="用逗号分隔，例如：比特币, 热点, 财经短视频">
-                        </div>
-                        <div>
-                            <label class="control-label">发布平台</label>
-                            <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                                <label v-for="platform in publishPlatforms" :key="platform.key" class="flex items-center gap-3 rounded-xl border border-slate-800 bg-[#0b0f19] px-4 py-3 text-sm text-slate-200">
-                                    <input type="checkbox" :checked="publishCenter.form.platforms.includes(platform.key)" @change="togglePublishPlatform(platform.key, $event.target.checked)" class="h-4 w-4 rounded border-slate-600 bg-slate-900">
-                                    <span>{{ platform.label }}</span>
-                                </label>
-                            </div>
-                        </div>
-                        <button @click="createPublishJob" :disabled="publishCenter.creatingJob" class="btn-primary flex justify-center items-center gap-2">
-                            <span v-if="!publishCenter.creatingJob">🚀 创建一键发布任务</span>
-                            <span v-else>⏳ 正在整理发布任务...</span>
-                        </button>
-                        <p v-if="publishCenter.error" class="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{{ publishCenter.error }}</p>
-                    </div>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-header"><span>📦 可发布素材</span></div>
-                    <div class="panel-body grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div v-if="!publishCenter.assets.length" class="text-sm text-slate-500">当前还没有可发布的成片。</div>
-                        <div v-for="asset in publishCenter.assets" :key="asset.id" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-4 space-y-3">
-                            <div class="text-sm font-semibold text-white">{{ asset.label }}</div>
-                            <div class="text-[11px] text-slate-500">{{ asset.sourceType }} · {{ formatFileSize(asset.sizeBytes) }}</div>
-                            <div class="text-[11px] text-slate-500">{{ formatDateTime(asset.updatedAt) }}</div>
-                            <div class="flex flex-wrap gap-3 text-xs">
-                                <a :href="asset.url" target="_blank" rel="noreferrer" class="text-emerald-400 hover:text-emerald-300">打开视频</a>
-                                <a :href="asset.url" download class="text-green-400 hover:text-green-300">下载视频</a>
-                                <button @click="useAssetForPublish(asset)" class="text-sky-400 hover:text-sky-300">用于发布</button>
-                            </div>
+                            <button @click="refreshPublishCenter" :disabled="publishCenter.loading" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800 disabled:opacity-50">
+                                刷新素材与任务
+                            </button>
                         </div>
                     </div>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-header justify-between">
-                        <span>🧾 发布任务列表</span>
-                        <button @click="clearPublishJobs" :disabled="!publishCenter.jobs.length" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed">
-                            清空列表
-                        </button>
-                    </div>
-                    <div class="panel-body space-y-4 max-h-[560px] overflow-y-auto">
-                        <div v-if="!publishCenter.jobs.length" class="text-sm text-slate-500">还没有发布任务。</div>
-                        <div v-for="job in publishCenter.jobs" :key="job.id" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-4 space-y-4">
+                    <div class="builder-card-body space-y-4">
+                        <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+                            <div class="module-summary-card">
+                                <span class="text-xs uppercase tracking-[0.16em] text-slate-500">已启用平台</span>
+                                <strong>{{ enabledPublishPlatforms.length }}</strong>
+                            </div>
+                            <div class="module-summary-card">
+                                <span class="text-xs uppercase tracking-[0.16em] text-slate-500">可发布素材</span>
+                                <strong>{{ publishCenter.assets.length }}</strong>
+                            </div>
+                            <div class="module-summary-card">
+                                <span class="text-xs uppercase tracking-[0.16em] text-slate-500">任务存量</span>
+                                <strong>{{ publishCenter.jobs.length }}</strong>
+                            </div>
+                        </div>
+                        <div v-if="publishCenterTab === 'editor'" class="space-y-4">
+                            <div class="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="control-label">选择发布素材</label>
+                                        <select v-model="publishCenter.form.assetId" @change="handlePublishAssetChange" class="input-dark text-sm">
+                                            <option value="">请选择一个可发布的视频成片</option>
+                                            <option v-for="asset in publishCenter.assets" :key="asset.id" :value="asset.id">
+                                                {{ asset.displayLabel || asset.label }} · {{ formatDateTime(asset.updatedAt) }}
+                                            </option>
+                                        </select>
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="control-label">发布标题</label>
+                                            <input v-model="publishCenter.form.title" class="input-dark text-sm" placeholder="输入各平台共用标题">
+                                        </div>
+                                        <div>
+                                            <label class="control-label">封面链接</label>
+                                            <input v-model="publishCenter.form.coverUrl" class="input-dark text-sm" placeholder="可选：封面图片 URL">
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="control-label">发布描述</label>
+                                        <textarea v-model="publishCenter.form.description" rows="4" class="input-dark text-sm resize-none" placeholder="输入发布描述、口播摘要或行动号召"></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="control-label">标签</label>
+                                        <input v-model="publishCenter.form.tagsText" class="input-dark text-sm" placeholder="用逗号分隔，例如：比特币, 热点, 财经短视频">
+                                    </div>
+                                    <div>
+                                        <label class="control-label">发布平台</label>
+                                        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                            <label v-for="platform in publishPlatforms" :key="platform.key" class="flex items-center gap-3 rounded-xl border border-slate-800 bg-[#0b0f19] px-4 py-3 text-sm text-slate-200">
+                                                <input type="checkbox" :checked="publishCenter.form.platforms.includes(platform.key)" @change="togglePublishPlatform(platform.key, $event.target.checked)" class="h-4 w-4 rounded border-slate-600 bg-slate-900">
+                                                <span>{{ platform.label }}</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <button @click="createPublishJob" :disabled="publishCenter.creatingJob" class="btn-primary flex justify-center items-center gap-2">
+                                        <span v-if="!publishCenter.creatingJob">🚀 创建一键发布任务</span>
+                                        <span v-else>⏳ 正在整理发布任务...</span>
+                                    </button>
+                                    <p v-if="publishCenter.error" class="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{{ publishCenter.error }}</p>
+                                </div>
+                                <div class="config-cluster">
+                                    <div class="config-cluster-title">编辑摘要</div>
+                                    <div class="space-y-3 text-sm">
+                                        <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                            <div class="text-[11px] uppercase tracking-[0.16em] text-slate-500">素材预览</div>
+                                            <div v-if="selectedPublishAsset?.url" class="mt-3 overflow-hidden rounded-xl border border-slate-800 bg-black/70">
+                                                <video :src="selectedPublishAsset.url" controls preload="metadata" muted playsinline class="h-44 w-full object-cover"></video>
+                                            </div>
+                                            <div v-else class="mt-3 rounded-xl border border-dashed border-slate-700 px-3 py-6 text-center text-xs text-slate-500">
+                                                选择素材后会在这里显示视频预览。
+                                            </div>
+                                        </div>
+                                        <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                            <div class="text-[11px] uppercase tracking-[0.16em] text-slate-500">当前素材</div>
+                                            <div class="mt-2 text-white font-semibold">{{ selectedPublishAsset?.displayLabel || selectedPublishAsset?.label || '未选择素材' }}</div>
+                                            <div class="mt-2 text-[11px] text-slate-500">{{ selectedPublishAsset ? `${selectedPublishAsset.sourceMetaLine || selectedPublishAsset.sourceType} · ${formatDateTime(selectedPublishAsset.updatedAt)}` : '选择素材后会自动带出标题、描述和标签。' }}</div>
+                                            <div v-if="selectedPublishAsset?.metadata?.sourceSummary" class="mt-3 rounded-lg bg-slate-900/60 px-3 py-2 text-xs leading-5 text-slate-300">
+                                                {{ selectedPublishAsset.metadata.sourceSummary }}
+                                            </div>
+                                        </div>
+                                        <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                            <div class="text-[11px] uppercase tracking-[0.16em] text-slate-500">文案完成度</div>
+                                            <div class="mt-2 text-white font-semibold">{{ publishEditorHealth.label }}</div>
+                                            <div class="bar mt-3"><span :style="{ width: publishEditorHealth.percent + '%' }"></span></div>
+                                        </div>
+                                        <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                            <div class="text-[11px] uppercase tracking-[0.16em] text-slate-500">已选平台</div>
+                                            <div class="mt-2 text-slate-200 leading-6">{{ publishCenter.form.platforms.length ? publishCenter.form.platforms.map(publishPlatformLabel).join(' / ') : '尚未选择平台' }}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="publishCenterTab === 'assets'" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div v-if="!publishCenter.assets.length" class="text-sm text-slate-500">当前还没有可发布的成片。</div>
+                            <div v-for="asset in publishCenter.assets" :key="asset.id" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-4 space-y-3">
+                                <div class="text-sm font-semibold text-white">{{ asset.displayLabel || asset.label }}</div>
+                                <div class="text-[11px] text-slate-500">{{ asset.sourceMetaLine || asset.sourceType }} · {{ formatFileSize(asset.sizeBytes) }}</div>
+                                <div class="text-[11px] text-slate-500">{{ formatDateTime(asset.updatedAt) }}</div>
+                                <div v-if="asset.url" class="overflow-hidden rounded-xl border border-slate-800 bg-black/70">
+                                    <video :src="asset.url" preload="metadata" muted playsinline controls class="h-44 w-full object-cover"></video>
+                                </div>
+                                <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 leading-6">
+                                    {{ asset.metadata?.suggestedDescription || '当前素材暂无自动摘要。' }}
+                                </div>
+                                <div class="flex flex-wrap gap-3 text-xs">
+                                    <a :href="asset.url" target="_blank" rel="noreferrer" class="text-emerald-400 hover:text-emerald-300">打开视频</a>
+                                    <a :href="asset.url" download class="text-green-400 hover:text-green-300">下载视频</a>
+                                    <button @click="useAssetForPublish(asset); publishCenterTab = 'editor'" class="text-sky-400 hover:text-sky-300">用于发布</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="publishCenterTab === 'jobs'" class="space-y-4 max-h-[780px] overflow-y-auto">
+                            <div v-if="!publishCenter.jobs.length" class="text-sm text-slate-500">还没有发布任务。</div>
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <div class="segmented-switch">
+                                    <button type="button" @click="publishJobFilter = 'active'" :class="{ active: publishJobFilter === 'active' }">进行中/未归档</button>
+                                    <button type="button" @click="publishJobFilter = 'ready_for_manual_publish'" :class="{ active: publishJobFilter === 'ready_for_manual_publish' }">待确认</button>
+                                    <button type="button" @click="publishJobFilter = 'published'" :class="{ active: publishJobFilter === 'published' }">已发布</button>
+                                    <button type="button" @click="publishJobFilter = 'failed'" :class="{ active: publishJobFilter === 'failed' }">失败/取消</button>
+                                    <button type="button" @click="publishJobFilter = 'archived'" :class="{ active: publishJobFilter === 'archived' }">已归档</button>
+                                    <button type="button" @click="publishJobFilter = 'all'" :class="{ active: publishJobFilter === 'all' }">全部</button>
+                                </div>
+                                <div class="flex flex-wrap gap-3">
+                                    <button @click="archiveCompletedPublishJobs" :disabled="publishCenter.archivingCompleted || !publishCenter.jobs.length" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                                        {{ publishCenter.archivingCompleted ? '归档中...' : '归档已完成任务' }}
+                                    </button>
+                                <button @click="clearPublishJobs" :disabled="!publishCenter.jobs.length" class="rounded-lg bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 transition hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                                    清空列表
+                                </button>
+                                </div>
+                            </div>
+                            <div v-if="publishCenter.jobs.length && !filteredPublishJobs.length" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-4 text-sm text-slate-500">
+                                当前筛选条件下没有任务。
+                            </div>
+                            <div v-for="job in filteredPublishJobs" :key="job.id" class="rounded-xl border border-slate-800 bg-[#0b0f19] p-4 space-y-4">
                             <div class="flex items-start justify-between gap-3">
                                 <div>
                                     <div class="text-sm font-semibold text-white">{{ job.publishData?.title || '未命名发布任务' }}</div>
-                                    <div class="text-[11px] text-slate-500 mt-1">{{ formatDateTime(job.createdAt) }} · {{ job.asset?.label || '-' }}</div>
+                                    <div class="text-[11px] text-slate-500 mt-1">{{ formatDateTime(job.createdAt) }} · {{ job.asset?.displayLabel || job.asset?.label || '-' }}</div>
+                                    <div v-if="job.archivedAt" class="text-[11px] text-slate-500 mt-1">已归档于 {{ formatDateTime(job.archivedAt) }}</div>
                                 </div>
                                 <span :class="publishJobStatusClass(job)" class="rounded-full px-3 py-1 text-[11px] font-semibold">{{ publishJobStatusLabel(job) }}</span>
                             </div>
@@ -907,6 +1299,12 @@
                                             </div>
                                             <div>{{ task.guide }}</div>
                                             <div v-if="task.runtime?.lastMessage" class="mt-2 text-[11px] text-slate-400">{{ task.runtime.lastMessage }}</div>
+                                            <div v-if="task.platform === 'wechatChannels' && (task.publishResult?.publishedAt || task.lastFailureAt || task.lastCancelledAt || task.retryCount)" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                                                <span v-if="task.publishResult?.publishedAt">已发布于 {{ formatDateTime(task.publishResult.publishedAt) }}</span>
+                                                <span v-if="task.lastFailureAt">最近失败 {{ formatDateTime(task.lastFailureAt) }}</span>
+                                                <span v-if="task.lastCancelledAt">最近取消 {{ formatDateTime(task.lastCancelledAt) }}</span>
+                                                <span v-if="task.retryCount">重试次数 {{ task.retryCount }}</span>
+                                            </div>
                                             <div v-if="task.platform === 'wechatChannels' && task.runtime?.state" class="mt-3 rounded-xl border border-slate-800 bg-slate-950/80 p-3">
                                                 <div class="mb-2 flex items-center justify-between gap-3 text-[11px]">
                                                     <span class="font-semibold text-slate-200">自动投稿进度</span>
@@ -936,6 +1334,15 @@
                                                 <button @click="runWechatChannelsJob(job, 'publish')" :disabled="!canRunWechatTask(task)" class="rounded-lg bg-purple-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-purple-500 disabled:cursor-not-allowed disabled:opacity-40">
                                                     自动上传并发表
                                                 </button>
+                                                <button v-if="canRefillWechatTask(task)" @click="runWechatChannelsJob(job, 'draft')" class="rounded-lg bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500">
+                                                    重新填充到待发布页
+                                                </button>
+                                                <button v-if="canRetryWechatTask(task)" @click="retryWechatChannelsJob(job, task)" class="rounded-lg bg-amber-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-amber-500">
+                                                    失败后重试
+                                                </button>
+                                                <button v-if="isWechatTaskRunning(task)" @click="cancelWechatChannelsJob(job)" class="rounded-lg bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500">
+                                                    取消任务
+                                                </button>
                                             </div>
                                             <div v-if="task.platform === 'wechatChannels' && !canRunWechatTask(task)" class="mt-2 text-[11px] text-amber-300">
                                                 请先补齐配置 / Please complete: {{ getTaskMissingFieldLabels(task).join('，') || 'required fields' }}
@@ -954,8 +1361,11 @@
                             <div class="flex flex-wrap gap-3 text-xs">
                                 <a v-if="job.asset?.url" :href="job.asset.url" target="_blank" rel="noreferrer" class="text-emerald-400 hover:text-emerald-300">查看视频</a>
                                 <button @click="downloadPublishJob(job)" class="text-sky-400 hover:text-sky-300">导出任务 JSON</button>
+                                <button v-if="!job.archived" @click="archivePublishJob(job)" class="text-amber-400 hover:text-amber-300">归档任务</button>
+                                <button v-else @click="unarchivePublishJob(job)" class="text-violet-400 hover:text-violet-300">取消归档</button>
                                 <button @click="deletePublishJob(job)" class="text-rose-400 hover:text-rose-300">删除任务</button>
                             </div>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -970,6 +1380,14 @@
     createApp({
         setup() {
             const currentApp = ref('pipeline');
+            const themeMode = ref(window.localStorage.getItem('comfyPanelTheme') || 'dark');
+            const appNavigation = [
+                { key: 'pipeline', kicker: 'Stage A-D', title: '🎬 AI 全链路混剪', desc: '内容指令、数字人渲染、导演混剪与成片交付。' },
+                { key: 'standalone', kicker: 'Vertical Edit', title: '📱 竖屏后期合成', desc: '单条竖屏精修与批量竖屏队列的统一编排入口。' },
+                { key: 'xaiTop10', kicker: 'Discovery', title: '📈 热门视频榜单', desc: '抓取、排序、筛选热点视频，并直送后续生产链路。' },
+                { key: 'publishCenter', kicker: 'Distribution', title: '🚀 一键发布', desc: '平台接入、素材选择、任务创建与发布执行统一管理。' }
+            ];
+            const currentPageMeta = computed(() => appNavigation.find(item => item.key === currentApp.value) || appNavigation[0]);
             const loadedApps = ref({
                 xaiTop10: false,
                 standalone: false,
@@ -1094,6 +1512,7 @@
                 creatingJob: false,
                 error: '',
                 saveNotice: false,
+                archivingCompleted: false,
                 config: {
                     wechatChannels: { enabled: false, displayName: '', finderUserName: '', helperAccount: '', openPlatformAppId: '', appId: '', appSecret: '', refreshToken: '', accountId: '', notes: '' },
                     douyin: { enabled: false, displayName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
@@ -1113,6 +1532,8 @@
                 },
                 autoFilledAssetId: ''
             });
+            const publishCenterTab = ref('editor');
+            const publishJobFilter = ref('active');
             const renderControls = ref({
                 titleFontSize: 104,
                 titleMinSize: 52,
@@ -1163,6 +1584,96 @@
             const xaiAccountsCount = computed(() => parseAccountsText(xaiTop10.value.accountsText).length);
             const verticalQueueJobs = computed(() => verticalQueue.value.status?.jobs || []);
             const enabledPublishPlatforms = computed(() => publishPlatforms.filter(platform => publishCenter.value.config?.[platform.key]?.enabled));
+            const selectedPublishAsset = computed(() => publishCenter.value.assets.find((asset) => asset.id === publishCenter.value.form.assetId) || null);
+            const renderPresetLabel = computed(() => {
+                const titleDense = Number(renderControls.value.titleMaxLines || 2) <= 2;
+                const subtitleCompact = Number(renderControls.value.subtitleMaxLines || 2) <= 2;
+                const movedDown = Number(renderControls.value.subtitleOffsetY || 0) >= 18;
+                if (titleDense && subtitleCompact && movedDown) return '信息流稳态模板';
+                if (!movedDown) return '字幕偏高模板';
+                return '自由微调模板';
+            });
+            const verticalPreview = computed(() => ({
+                title: Number(renderControls.value.titleMaxLines || 2) > 2 ? '热点标题可扩展到三行' : '热点标题保持两行内',
+                en: Number(renderControls.value.englishMaxLines || 2) > 1 ? 'English subtitle will stay compact here' : 'English subtitle compact',
+                zh: Number(renderControls.value.subtitleMaxLines || 2) > 2 ? '中文字幕会允许更长的换行布局' : '中文字幕尽量控制在两行内'
+            }));
+            const verticalPreviewStyles = computed(() => {
+                const titleSize = Math.max(20, Math.min(38, Number(renderControls.value.titleFontSize || 104) * 0.28));
+                const enSize = Math.max(10, Math.min(17, Number(renderControls.value.englishFontSize || 52) * 0.23));
+                const zhSize = Math.max(12, Math.min(20, Number(renderControls.value.subtitleFontSize || 50) * 0.26));
+                const offset = Number(renderControls.value.subtitleOffsetY || 0);
+                const subtitleOverlayTop = ((1220 + offset) / 1920) * 100;
+                const titleTop = (108 / 1920) * 100;
+                const titleLeft = (84 / 1080) * 100;
+                const titleRight = 100 - ((960 / 1080) * 100);
+                const titleHeight = ((430 - 108) / 1920) * 100;
+                const zhTopInLayer = Number(renderControls.value.englishMaxLines || 2) > 1 ? 40 : 34;
+                return {
+                    title: {
+                        fontSize: `${titleSize}px`,
+                        top: `${titleTop}%`,
+                        left: `${titleLeft}%`,
+                        right: `${titleRight}%`,
+                        maxHeight: `${titleHeight}%`
+                    },
+                    layer: {
+                        top: `${subtitleOverlayTop}%`
+                    },
+                    en: {
+                        fontSize: `${enSize}px`
+                    },
+                    zh: {
+                        top: `${zhTopInLayer}%`,
+                        fontSize: `${zhSize}px`
+                    }
+                };
+            });
+            const renderControlInsights = computed(() => {
+                const titleRatio = Math.max(0, Math.min(100, ((Number(renderControls.value.titleFontSize || 104) - 56) / (140 - 56)) * 100));
+                const subtitleRatio = Math.max(0, Math.min(100, ((Number(renderControls.value.subtitleFontSize || 50) - 24) / (72 - 24)) * 100));
+                const offsetRatio = Math.max(0, Math.min(100, ((Number(renderControls.value.subtitleOffsetY || 20) + 20) / 100) * 100));
+                const enRatio = Math.max(0, Math.min(100, ((Number(renderControls.value.englishFontSize || 52) - 24) / (72 - 24)) * 100));
+                return [
+                    { label: '标题占比', value: `${renderControls.value.titleFontSize}px / ${renderControls.value.titleMaxLines} 行`, ratio: titleRatio },
+                    { label: '中文字幕密度', value: `${renderControls.value.subtitleFontSize}px / ${renderControls.value.subtitleMaxLines} 行`, ratio: subtitleRatio },
+                    { label: '字幕下移幅度', value: `${renderControls.value.subtitleOffsetY}px`, ratio: offsetRatio },
+                    { label: '英文字幕权重', value: `${renderControls.value.englishFontSize}px / ${renderControls.value.englishMaxLines} 行`, ratio: enRatio }
+                ];
+            });
+            const publishEditorHealth = computed(() => {
+                let score = 0;
+                if (publishCenter.value.form.assetId) score += 30;
+                if (String(publishCenter.value.form.title || '').trim()) score += 25;
+                if (String(publishCenter.value.form.description || '').trim()) score += 25;
+                if (String(publishCenter.value.form.tagsText || '').trim()) score += 10;
+                if ((publishCenter.value.form.platforms || []).length) score += 10;
+                const label = score >= 90 ? '已可直接建任务' : score >= 60 ? '还差少量信息' : '需要补充基础内容';
+                return { percent: score, label };
+            });
+            const publishPlatformHealth = (platformKey) => {
+                const platform = getPlatformDefinition(platformKey);
+                const config = publishCenter.value.config?.[platformKey] || {};
+                const requiredFields = platform?.requiredFields || [];
+                const filledRequired = requiredFields.filter((fieldKey) => String(config[fieldKey] || '').trim()).length;
+                const percent = config.enabled
+                    ? (requiredFields.length ? Math.round((filledRequired / requiredFields.length) * 100) : 100)
+                    : 0;
+                const status = !config.enabled
+                    ? '未启用'
+                    : percent === 100
+                        ? '关键字段已补齐'
+                        : `缺少 ${requiredFields.length - filledRequired} 个关键字段`;
+                return { percent, status, enabled: !!config.enabled };
+            };
+            const syncThemeToDocument = () => {
+                document.body.classList.toggle('theme-light', themeMode.value === 'light');
+                window.localStorage.setItem('comfyPanelTheme', themeMode.value);
+            };
+            const setThemeMode = (mode) => {
+                themeMode.value = mode === 'light' ? 'light' : 'dark';
+                syncThemeToDocument();
+            };
             const formatPlatformFieldLabel = (field) => field?.labelEn ? `${field.label} / ${field.labelEn}` : field?.label || '';
             const getPlatformDefinition = (platformKey) => publishPlatforms.find((platform) => platform.key === platformKey) || null;
             const getPlatformMissingFields = (platformKey) => {
@@ -1196,6 +1707,10 @@
                 return missingFields.map((fieldKey) => fieldMap.get(fieldKey) || fieldKey);
             };
             const canRunWechatTask = (task) => task?.platform === 'wechatChannels' && getTaskMissingFieldLabels(task).length === 0;
+            const isWechatTaskRunning = (task) => ['draft_preparing', 'starting', 'navigating', 'need_login', 'login_ready', 'uploading', 'processing', 'uploaded', 'editing', 'edited', 'publishing'].includes(String(task?.runtime?.state || task?.status || ''));
+            const canRetryWechatTask = (task) => task?.platform === 'wechatChannels' && ['failed', 'cancelled'].includes(String(task?.runtime?.state || task?.status || ''));
+            const canRefillWechatTask = (task) => task?.platform === 'wechatChannels' && ['failed', 'cancelled', 'ready_for_manual_publish'].includes(String(task?.runtime?.state || task?.status || '')) && getTaskMissingFieldLabels(task).length === 0;
+            const getWechatRetryMode = (task) => String(task?.runtime?.publishMode || task?.lastRunMode || 'draft');
             const publishTaskStatusLabel = (task) => {
                 const state = String(task?.runtime?.state || task?.status || '');
                 const map = {
@@ -1211,16 +1726,19 @@
                     edited: '已填写',
                     ready_for_manual_publish: '待人工确认发布',
                     publishing: '自动发表中',
+                    published: '已发布',
                     success: '已自动发表成功',
                     failed: '发布失败',
+                    cancelled: '已取消',
                     config_missing: '配置缺失'
                 };
                 return map[state] || state || '待执行';
             };
             const publishTaskStatusClass = (task) => {
                 const state = String(task?.runtime?.state || task?.status || '');
-                if (state === 'success') return 'bg-emerald-500/10 text-emerald-300';
+                if (state === 'published' || state === 'success') return 'bg-emerald-500/10 text-emerald-300';
                 if (state === 'ready_for_manual_publish') return 'bg-amber-500/10 text-amber-300';
+                if (state === 'cancelled') return 'bg-slate-700 text-slate-200';
                 if (state === 'failed' || state === 'config_missing') return 'bg-red-500/10 text-red-300';
                 if (state === 'publishing') return 'bg-violet-500/10 text-violet-300';
                 if (['editing', 'uploaded', 'processing', 'uploading', 'starting', 'navigating', 'login_ready', 'need_login', 'draft_preparing', 'edited'].includes(state)) {
@@ -1228,11 +1746,24 @@
                 }
                 return 'bg-slate-800 text-slate-300';
             };
+            const getPublishJobTerminalState = (job) => {
+                const tasks = Array.isArray(job?.platformTasks) ? job.platformTasks : [];
+                if (!tasks.length) return job?.status || 'pending';
+                const states = tasks.map((task) => String(task?.runtime?.state || task?.status || ''));
+                if (states.some((state) => ['published', 'success'].includes(state))) return 'published';
+                if (states.some((state) => state === 'ready_for_manual_publish')) return 'ready_for_manual_publish';
+                if (states.some((state) => state === 'cancelled')) return 'cancelled';
+                if (states.some((state) => state === 'failed')) return 'failed';
+                if (states.some((state) => ['publishing', 'editing', 'uploaded', 'processing', 'uploading', 'starting', 'navigating', 'login_ready', 'need_login', 'draft_preparing', 'edited'].includes(state))) return 'running';
+                if (job?.platformErrors?.length) return 'partial_ready';
+                return job?.status || 'ready';
+            };
             const publishJobStatusLabel = (job) => {
                 const tasks = Array.isArray(job?.platformTasks) ? job.platformTasks : [];
                 if (!tasks.length) return '待处理';
-                if (tasks.some((task) => String(task?.runtime?.state || task?.status || '') === 'success')) return '已成功发布';
+                if (tasks.some((task) => ['published', 'success'].includes(String(task?.runtime?.state || task?.status || '')))) return '已成功发布';
                 if (tasks.some((task) => String(task?.runtime?.state || task?.status || '') === 'ready_for_manual_publish')) return '待人工确认';
+                if (tasks.some((task) => String(task?.runtime?.state || task?.status || '') === 'cancelled')) return '已取消';
                 if (tasks.some((task) => String(task?.runtime?.state || task?.status || '') === 'failed')) return '执行失败';
                 if (tasks.some((task) => ['publishing', 'editing', 'uploaded', 'processing', 'uploading', 'starting', 'navigating', 'login_ready', 'need_login', 'draft_preparing', 'edited'].includes(String(task?.runtime?.state || task?.status || '')))) return '执行中';
                 if (job?.platformErrors?.length) return '部分待完善';
@@ -1242,11 +1773,26 @@
                 const label = publishJobStatusLabel(job);
                 if (label === '已成功发布') return 'bg-emerald-500/10 text-emerald-300';
                 if (label === '待人工确认') return 'bg-amber-500/10 text-amber-300';
+                if (label === '已取消') return 'bg-slate-700 text-slate-200';
                 if (label === '执行失败') return 'bg-red-500/10 text-red-300';
                 if (label === '执行中') return 'bg-violet-500/10 text-violet-300';
                 if (label === '部分待完善') return 'bg-orange-500/10 text-orange-300';
                 return 'bg-sky-500/10 text-sky-300';
             };
+            const filteredPublishJobs = computed(() => {
+                const jobs = Array.isArray(publishCenter.value.jobs) ? publishCenter.value.jobs : [];
+                return jobs.filter((job) => {
+                    const archived = !!job.archived;
+                    const terminal = getPublishJobTerminalState(job);
+                    if (publishJobFilter.value === 'all') return true;
+                    if (publishJobFilter.value === 'archived') return archived;
+                    if (publishJobFilter.value === 'active') return !archived;
+                    if (publishJobFilter.value === 'ready_for_manual_publish') return !archived && terminal === 'ready_for_manual_publish';
+                    if (publishJobFilter.value === 'published') return !archived && terminal === 'published';
+                    if (publishJobFilter.value === 'failed') return !archived && ['failed', 'cancelled'].includes(terminal);
+                    return true;
+                });
+            });
             const getWechatRuntimeProgress = (task) => {
                 const runtimeProgress = Number(task?.runtime?.progress);
                 if (Number.isFinite(runtimeProgress)) return Math.max(0, Math.min(100, runtimeProgress));
@@ -1263,7 +1809,9 @@
                     edited: 86,
                     publishing: 94,
                     ready_for_manual_publish: 100,
+                    published: 100,
                     success: 100,
+                    cancelled: 100,
                     failed: 100
                 };
                 return map[state] || 0;
@@ -1282,7 +1830,9 @@
                     edited: '内容填写完成',
                     publishing: '触发表达按钮',
                     ready_for_manual_publish: '等待人工确认发布',
+                    published: '发布成功并已回写',
                     success: '发布动作已触发',
+                    cancelled: '任务已取消',
                     failed: '流程执行失败'
                 };
                 return map[state] || '等待执行';
@@ -1349,6 +1899,7 @@
             };
 
             onMounted(() => {
+                syncThemeToDocument();
                 fetchPresets();
                 const timer = window.setInterval(() => {
                     if (currentApp.value === 'standalone') {
@@ -1524,12 +2075,25 @@
                 publishCenter.value.autoFilledAssetId = asset.id;
             };
 
-            const useAssetForPublish = (asset) => {
-                applyAssetPublishDefaults(asset, true);
+            const refreshSelectedPublishAsset = async (assetId) => {
+                if (!assetId) return null;
+                publishCenter.value.error = '';
+                try {
+                    await loadPublishAssets(true);
+                } catch (err) {
+                    publishCenter.value.error = err.response?.data?.error || err.message;
+                }
+                return publishCenter.value.assets.find((item) => item.id === assetId) || null;
             };
 
-            const handlePublishAssetChange = () => {
-                const asset = publishCenter.value.assets.find((item) => item.id === publishCenter.value.form.assetId);
+            const useAssetForPublish = async (asset) => {
+                const latestAsset = await refreshSelectedPublishAsset(asset?.id);
+                applyAssetPublishDefaults(latestAsset || asset, true);
+            };
+
+            const handlePublishAssetChange = async () => {
+                const selectedId = publishCenter.value.form.assetId;
+                const asset = await refreshSelectedPublishAsset(selectedId);
                 applyAssetPublishDefaults(asset, true);
             };
 
@@ -1573,6 +2137,71 @@
                     }
                 } catch (err) {
                     publishCenter.value.error = err.response?.data?.error || err.message;
+                }
+            };
+
+            const retryWechatChannelsJob = async (job, task) => {
+                publishCenter.value.error = '';
+                try {
+                    const res = await axios.post(`/api/publish/jobs/${job.id}/wechat-channels/retry`, {
+                        mode: getWechatRetryMode(task)
+                    });
+                    if (res.data.success) {
+                        publishCenter.value.jobs = res.data.jobs || [];
+                    }
+                } catch (err) {
+                    publishCenter.value.error = err.response?.data?.error || err.message;
+                }
+            };
+
+            const cancelWechatChannelsJob = async (job) => {
+                publishCenter.value.error = '';
+                try {
+                    const res = await axios.post(`/api/publish/jobs/${job.id}/wechat-channels/cancel`);
+                    if (res.data.success) {
+                        publishCenter.value.jobs = res.data.jobs || [];
+                    }
+                } catch (err) {
+                    publishCenter.value.error = err.response?.data?.error || err.message;
+                }
+            };
+
+            const archivePublishJob = async (job) => {
+                publishCenter.value.error = '';
+                try {
+                    const res = await axios.post(`/api/publish/jobs/${job.id}/archive`);
+                    if (res.data.success) {
+                        publishCenter.value.jobs = res.data.jobs || [];
+                    }
+                } catch (err) {
+                    publishCenter.value.error = err.response?.data?.error || err.message;
+                }
+            };
+
+            const unarchivePublishJob = async (job) => {
+                publishCenter.value.error = '';
+                try {
+                    const res = await axios.post(`/api/publish/jobs/${job.id}/unarchive`);
+                    if (res.data.success) {
+                        publishCenter.value.jobs = res.data.jobs || [];
+                    }
+                } catch (err) {
+                    publishCenter.value.error = err.response?.data?.error || err.message;
+                }
+            };
+
+            const archiveCompletedPublishJobs = async () => {
+                publishCenter.value.archivingCompleted = true;
+                publishCenter.value.error = '';
+                try {
+                    const res = await axios.post('/api/publish/jobs/archive-completed');
+                    if (res.data.success) {
+                        publishCenter.value.jobs = res.data.jobs || [];
+                    }
+                } catch (err) {
+                    publishCenter.value.error = err.response?.data?.error || err.message;
+                } finally {
+                    publishCenter.value.archivingCompleted = false;
                 }
             };
 
@@ -1897,6 +2526,10 @@
 
             return {
                 currentApp,
+                themeMode,
+                setThemeMode,
+                appNavigation,
+                currentPageMeta,
                 audioMode,
                 imageMode,
                 presetLists,
@@ -1924,15 +2557,29 @@
                 verticalQueueJobs,
                 publishPlatforms,
                 publishCenter,
+                publishCenterTab,
                 enabledPublishPlatforms,
+                selectedPublishAsset,
+                renderPresetLabel,
+                verticalPreview,
+                verticalPreviewStyles,
+                renderControlInsights,
+                publishEditorHealth,
+                publishPlatformHealth,
                 formatPlatformFieldLabel,
                 hasPlatformConfigIssue,
                 getPlatformMissingFieldLabels,
                 isPlatformFieldMissing,
                 getTaskMissingFieldLabels,
                 canRunWechatTask,
+                isWechatTaskRunning,
+                canRetryWechatTask,
+                canRefillWechatTask,
+                getWechatRetryMode,
                 publishTaskStatusLabel,
                 publishTaskStatusClass,
+                filteredPublishJobs,
+                publishJobFilter,
                 publishJobStatusLabel,
                 publishJobStatusClass,
                 getWechatRuntimeProgress,
@@ -1965,6 +2612,11 @@
                 togglePublishPlatform,
                 createPublishJob,
                 runWechatChannelsJob,
+                retryWechatChannelsJob,
+                cancelWechatChannelsJob,
+                archivePublishJob,
+                unarchivePublishJob,
+                archiveCompletedPublishJobs,
                 deletePublishJob,
                 clearPublishJobs,
                 publishPlatformLabel,

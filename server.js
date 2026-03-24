@@ -239,6 +239,48 @@ function writePublishJobs(payload) {
     fs.writeFileSync(PUBLISH_JOBS_PATH, JSON.stringify(payload, null, 2), 'utf-8');
 }
 
+function getJobTerminalStatus(job) {
+    const tasks = Array.isArray(job?.platformTasks) ? job.platformTasks : [];
+    if (!tasks.length) return job?.status || 'pending';
+    const states = tasks.map((task) => String(task?.runtime?.state || task?.status || ''));
+    if (states.some((state) => ['published', 'success'].includes(state))) return 'published';
+    if (states.some((state) => state === 'ready_for_manual_publish')) return 'ready_for_manual_publish';
+    if (states.some((state) => state === 'cancelled')) return 'cancelled';
+    if (states.some((state) => state === 'failed')) return 'failed';
+    if (states.some((state) => ['publishing', 'editing', 'uploaded', 'processing', 'uploading', 'starting', 'navigating', 'login_ready', 'need_login', 'draft_preparing', 'edited'].includes(state))) return 'running';
+    if (job?.platformErrors?.length) return 'partial_ready';
+    return job?.status || 'ready';
+}
+
+function archivePublishJob(jobId, archived = true) {
+    return updatePublishJob(jobId, (job) => {
+        job.archived = !!archived;
+        job.archivedAt = archived ? new Date().toISOString() : null;
+        return job;
+    });
+}
+
+function archiveCompletedPublishJobs() {
+    const payload = readPublishJobs();
+    let changed = false;
+    payload.jobs = (payload.jobs || []).map((job) => {
+        if (job.archived) return job;
+        const status = getJobTerminalStatus(job);
+        if (['published', 'ready_for_manual_publish', 'failed', 'cancelled'].includes(status)) {
+            changed = true;
+            return {
+                ...job,
+                archived: true,
+                archivedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+        }
+        return job;
+    });
+    if (changed) writePublishJobs(payload);
+    return payload;
+}
+
 function updatePublishJob(jobId, updater) {
     const payload = readPublishJobs();
     const index = (payload.jobs || []).findIndex((job) => job.id === jobId);
@@ -258,7 +300,25 @@ function updatePublishPlatformTask(jobId, platformKey, patch) {
         const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];
         const task = tasks.find((item) => item.platform === platformKey);
         if (!task) throw new Error(`发布任务中不存在平台 ${platformKey}`);
-        Object.assign(task, patch);
+        const nextPatch = { ...(patch || {}) };
+        if (nextPatch.runtime && typeof nextPatch.runtime === 'object') {
+            const previousRuntime = task.runtime && typeof task.runtime === 'object' ? task.runtime : {};
+            nextPatch.runtime = {
+                ...previousRuntime,
+                ...nextPatch.runtime
+            };
+            if (nextPatch.runtime.logs === undefined && Array.isArray(previousRuntime.logs)) {
+                nextPatch.runtime.logs = previousRuntime.logs;
+            }
+        }
+        if (nextPatch.publishResult && typeof nextPatch.publishResult === 'object') {
+            const previousResult = task.publishResult && typeof task.publishResult === 'object' ? task.publishResult : {};
+            nextPatch.publishResult = {
+                ...previousResult,
+                ...nextPatch.publishResult
+            };
+        }
+        Object.assign(task, nextPatch);
         return job;
     });
 }
@@ -348,14 +408,36 @@ function sanitizePlatformConfigInput(input) {
     return next;
 }
 
+function getPublishAssetTypeLabel(sourceType) {
+    const map = {
+        pipeline: '全链路混剪',
+        standalone: '独立竖屏',
+        xai_queue: 'XAI 批量竖屏'
+    };
+    return map[sourceType] || sourceType || '视频素材';
+}
+
+function truncateDisplayText(text, limit = 28) {
+    const value = String(text || '').trim();
+    if (!value) return '';
+    return value.length > limit ? `${value.slice(0, limit)}...` : value;
+}
+
 function collectPublishAssets() {
     const assets = [];
     const addAsset = (label, fullPath, publicUrl, sourceType, metadata = {}) => {
         if (!fs.existsSync(fullPath)) return;
         const stat = fs.statSync(fullPath);
+        const typeLabel = getPublishAssetTypeLabel(sourceType);
+        const titleText = truncateDisplayText(metadata?.suggestedTitle || metadata?.suggestedShortTitle || label, 34);
+        const authorText = metadata?.author ? `@${metadata.author}` : '';
         assets.push({
             id: crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12),
             label,
+            displayLabel: titleText ? `${typeLabel}｜${titleText}` : typeLabel,
+            compactLabel: titleText || label,
+            typeLabel,
+            sourceMetaLine: [typeLabel, authorText].filter(Boolean).join(' · '),
             sourceType,
             path: fullPath,
             url: publicUrl ? `${publicUrl}?t=${stat.mtimeMs}` : '',
@@ -688,6 +770,37 @@ function getWechatStateProgress(state) {
     return map[state] ?? 0;
 }
 
+function appendWechatRuntimeLog(jobId, line, publishMode, state, message, progress) {
+    if (!line) return;
+    updatePublishPlatformTask(jobId, 'wechatChannels', {
+        runtime: {
+            state,
+            lastMessage: message,
+            updatedAt: new Date().toISOString(),
+            publishMode,
+            progress,
+            logs: (() => {
+                const payload = readPublishJobs();
+                const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
+                const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
+                const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
+                return [...existingLogs, line].slice(-120);
+            })()
+        }
+    });
+}
+
+function stopWechatRpaProcess(runtimeEntry) {
+    if (!runtimeEntry?.proc || runtimeEntry.proc.killed) return;
+    try {
+        if (process.platform === 'win32') {
+            spawn('taskkill', ['/pid', String(runtimeEntry.proc.pid), '/T', '/F']);
+        } else {
+            runtimeEntry.proc.kill('SIGTERM');
+        }
+    } catch (_err) {}
+}
+
 function startWechatRpa(jobId, publishMode = 'draft') {
     const runtimeKey = `${jobId}:wechatChannels`;
     if (publishRuntimeProcesses.has(runtimeKey)) {
@@ -722,6 +835,11 @@ function startWechatRpa(jobId, publishMode = 'draft') {
 
     updatePublishPlatformTask(jobId, 'wechatChannels', {
         status: publishMode === 'publish' ? 'publishing' : 'draft_preparing',
+        lastRunAt: new Date().toISOString(),
+        lastRunMode: publishMode,
+        retryCount: publishMode === 'draft'
+            ? Number(task?.retryCount || 0)
+            : Number(task?.retryCount || 0),
         runtime: {
             state: 'starting',
             lastMessage: '正在启动视频号自动化浏览器...',
@@ -739,28 +857,19 @@ function startWechatRpa(jobId, publishMode = 'draft') {
             PYTHONIOENCODING: 'utf-8'
         }
     });
-    publishRuntimeProcesses.set(runtimeKey, proc);
+    const runtimeEntry = {
+        proc,
+        jobId,
+        platform: 'wechatChannels',
+        publishMode,
+        cancelledByUser: false
+    };
+    publishRuntimeProcesses.set(runtimeKey, runtimeEntry);
     let latestRuntimeState = 'starting';
     let latestRuntimeMessage = '正在启动视频号自动化浏览器...';
     let latestRuntimeProgress = 3;
     const appendLog = (line) => {
-        if (!line) return;
-        updatePublishPlatformTask(jobId, 'wechatChannels', {
-            runtime: {
-                state: latestRuntimeState,
-                lastMessage: latestRuntimeMessage,
-                updatedAt: new Date().toISOString(),
-                publishMode,
-                progress: latestRuntimeProgress,
-                logs: (() => {
-                    const payload = readPublishJobs();
-                    const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
-                    const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
-                    const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
-                    return [...existingLogs, line].slice(-80);
-                })()
-            }
-        });
+        appendWechatRuntimeLog(jobId, line, publishMode, latestRuntimeState, latestRuntimeMessage, latestRuntimeProgress);
     };
 
     const handleOutput = (chunk) => {
@@ -780,7 +889,7 @@ function startWechatRpa(jobId, publishMode = 'draft') {
             latestRuntimeMessage = parsed.message;
             latestRuntimeProgress = Number.isFinite(Number(parsed.extra?.percent)) ? Number(parsed.extra.percent) : getWechatStateProgress(parsed.state);
             updatePublishPlatformTask(jobId, 'wechatChannels', {
-                status: parsed.state === 'success' ? 'success' : parsed.state,
+                status: parsed.state === 'success' ? (publishMode === 'publish' ? 'published' : 'ready_for_manual_publish') : parsed.state,
                 runtime: {
                     state: parsed.state,
                     lastMessage: parsed.message,
@@ -792,7 +901,7 @@ function startWechatRpa(jobId, publishMode = 'draft') {
                         const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
                         const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
                         const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
-                        return [...existingLogs, `[${parsed.state}] ${parsed.message}`].slice(-80);
+                        return [...existingLogs, `[${parsed.state}] ${parsed.message}`].slice(-120);
                     })(),
                     ...parsed.extra
                 }
@@ -804,8 +913,10 @@ function startWechatRpa(jobId, publishMode = 'draft') {
     proc.stderr.on('data', (data) => handleOutput(data.toString()));
     proc.on('error', (error) => {
         publishRuntimeProcesses.delete(runtimeKey);
+        if (runtimeEntry.cancelledByUser) return;
         updatePublishPlatformTask(jobId, 'wechatChannels', {
             status: 'failed',
+            lastFailureAt: new Date().toISOString(),
             runtime: {
                 state: 'failed',
                 lastMessage: error.message,
@@ -817,16 +928,21 @@ function startWechatRpa(jobId, publishMode = 'draft') {
                     const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
                     const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
                     const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
-                    return [...existingLogs, `[error] ${error.message}`].slice(-80);
+                    return [...existingLogs, `[error] ${error.message}`].slice(-120);
                 })()
             }
         });
     });
     proc.on('close', (code) => {
         publishRuntimeProcesses.delete(runtimeKey);
+        if (runtimeEntry.cancelledByUser) {
+            appendWechatRuntimeLog(jobId, '[cancelled] 用户已取消视频号自动化任务', publishMode, 'cancelled', '用户已取消当前任务', 100);
+            return;
+        }
         if (code !== 0) {
             updatePublishPlatformTask(jobId, 'wechatChannels', {
                 status: 'failed',
+                lastFailureAt: new Date().toISOString(),
                 runtime: {
                     state: 'failed',
                     lastMessage: latestRuntimeState === 'failed' ? latestRuntimeMessage : `视频号自动化任务异常结束（退出码 ${code}）`,
@@ -838,7 +954,7 @@ function startWechatRpa(jobId, publishMode = 'draft') {
                         const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
                         const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
                         const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
-                        return [...existingLogs, `[close] 任务以退出码 ${code} 结束`].slice(-80);
+                        return [...existingLogs, `[close] 任务以退出码 ${code} 结束`].slice(-120);
                     })()
                 }
             });
@@ -848,16 +964,76 @@ function startWechatRpa(jobId, publishMode = 'draft') {
             const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
             const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
             updatePublishPlatformTask(jobId, 'wechatChannels', {
-                status: publishMode === 'publish' ? 'success' : 'ready_for_manual_publish',
+                status: publishMode === 'publish' ? 'published' : 'ready_for_manual_publish',
+                publishResult: {
+                    lastCompletedAt: new Date().toISOString(),
+                    lastMode: publishMode,
+                    publishedAt: publishMode === 'publish' ? new Date().toISOString() : currentTask?.publishResult?.publishedAt || null,
+                    needsManualConfirm: publishMode !== 'publish'
+                },
                 runtime: {
-                    state: publishMode === 'publish' ? 'success' : 'ready_for_manual_publish',
-                    lastMessage: publishMode === 'publish' ? '视频号自动发表流程已完成' : '内容已自动填好，等待你在浏览器里确认发布',
+                    state: publishMode === 'publish' ? 'published' : 'ready_for_manual_publish',
+                    lastMessage: publishMode === 'publish' ? '视频号已自动发表并完成结果回写' : '内容已自动填好，等待你在浏览器里确认发布',
                     updatedAt: new Date().toISOString(),
                     publishMode,
                     progress: 100,
-                    logs: [...existingLogs, publishMode === 'publish' ? '[success] 视频号自动发表流程已完成' : '[ready_for_manual_publish] 内容已自动填好，等待人工确认发布'].slice(-80)
+                    logs: [...existingLogs, publishMode === 'publish' ? '[published] 视频号自动发表流程已完成，并已回写任务状态' : '[ready_for_manual_publish] 内容已自动填好，等待人工确认发布'].slice(-120)
                 }
             });
+        }
+    });
+}
+
+function retryWechatRpa(jobId, mode = '') {
+    const payload = readPublishJobs();
+    const job = (payload.jobs || []).find((item) => item.id === jobId);
+    if (!job) throw new Error('发布任务不存在');
+    const task = (job.platformTasks || []).find((item) => item.platform === 'wechatChannels');
+    if (!task) throw new Error('该任务未选择微信视频号');
+    const nextMode = ['draft', 'publish'].includes(String(mode || '').trim())
+        ? String(mode).trim()
+        : String(task?.runtime?.publishMode || task?.lastRunMode || 'draft').trim();
+    updatePublishPlatformTask(jobId, 'wechatChannels', {
+        retryCount: Number(task?.retryCount || 0) + 1,
+        runtime: {
+            state: 'draft_preparing',
+            lastMessage: nextMode === 'publish' ? '准备重新执行自动发表...' : '准备重新填充到待发布页...',
+            updatedAt: new Date().toISOString(),
+            publishMode: nextMode,
+            progress: 2,
+            logs: (() => {
+                const existingLogs = Array.isArray(task?.runtime?.logs) ? task.runtime.logs : [];
+                return [...existingLogs, `[retry] 正在按 ${nextMode} 模式重试任务`].slice(-120);
+            })()
+        }
+    });
+    startWechatRpa(jobId, nextMode);
+}
+
+function cancelWechatRpa(jobId) {
+    const runtimeKey = `${jobId}:wechatChannels`;
+    const runtimeEntry = publishRuntimeProcesses.get(runtimeKey);
+    if (!runtimeEntry) {
+        throw new Error('当前没有可取消的视频号运行任务');
+    }
+    runtimeEntry.cancelledByUser = true;
+    stopWechatRpaProcess(runtimeEntry);
+    updatePublishPlatformTask(jobId, 'wechatChannels', {
+        status: 'cancelled',
+        lastCancelledAt: new Date().toISOString(),
+        runtime: {
+            state: 'cancelled',
+            lastMessage: '用户已取消当前任务',
+            updatedAt: new Date().toISOString(),
+            publishMode: runtimeEntry.publishMode,
+            progress: 100,
+            logs: (() => {
+                const payload = readPublishJobs();
+                const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
+                const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
+                const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
+                return [...existingLogs, '[cancelled] 用户手动取消了当前执行中的任务'].slice(-120);
+            })()
         }
     });
 }
@@ -1687,6 +1863,39 @@ app.delete('/api/publish/jobs', (req, res) => {
     }
 });
 
+app.post('/api/publish/jobs/:jobId/archive', (req, res) => {
+    try {
+        const jobId = String(req.params.jobId || '').trim();
+        if (!jobId) return res.status(400).json({ error: '缺少任务 ID' });
+        archivePublishJob(jobId, true);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/publish/jobs/:jobId/unarchive', (req, res) => {
+    try {
+        const jobId = String(req.params.jobId || '').trim();
+        if (!jobId) return res.status(400).json({ error: '缺少任务 ID' });
+        archivePublishJob(jobId, false);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/publish/jobs/archive-completed', (req, res) => {
+    try {
+        const payload = archiveCompletedPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/publish/jobs', (req, res) => {
     try {
         const config = readPublishConfig();
@@ -1744,6 +1953,8 @@ app.post('/api/publish/jobs', (req, res) => {
             id: makeJobId(),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
+            archived: false,
+            archivedAt: null,
             status: platformErrors.length > 0 ? 'partial_ready' : 'ready',
             asset,
             publishData,
@@ -1767,6 +1978,29 @@ app.post('/api/publish/jobs/:jobId/wechat-channels', (req, res) => {
             return res.status(400).json({ error: 'mode 仅支持 draft 或 publish' });
         }
         startWechatRpa(jobId, mode);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/publish/jobs/:jobId/wechat-channels/retry', (req, res) => {
+    try {
+        const jobId = String(req.params.jobId || '').trim();
+        const mode = String(req.body?.mode || '').trim();
+        retryWechatRpa(jobId, mode);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/publish/jobs/:jobId/wechat-channels/cancel', (req, res) => {
+    try {
+        const jobId = String(req.params.jobId || '').trim();
+        cancelWechatRpa(jobId);
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
     } catch (err) {
