@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
@@ -52,9 +53,11 @@ def main() -> None:
     parser.add_argument("--include-tags", action="store_true", help="Append tightly relevant hashtags to the generated description.")
     args = parser.parse_args()
 
+    emit_stage("publish_description", "正在生成发布描述")
     source_text = normalize_output(args.source_text)
     title = normalize_output(args.title)
     if not source_text:
+        emit_result("源文本为空，返回空描述", description="")
         print("")
         return
 
@@ -98,8 +101,16 @@ def main() -> None:
 {source_text}
 """
     response = model.generate_content(prompt)
-    print(normalize_output(response.text, strip_tags=not args.include_tags))
+    description = normalize_output(response.text, strip_tags=not args.include_tags)
+    emit_result("发布描述生成完成", description=description)
+    print(description)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_guarded(
+        main,
+        error_code="PUBLISH_DESCRIPTION_FAILED",
+        error_message="发布描述生成失败",
+        error_stage="publish.description",
+        hint="请检查 Gemini Key、模型配置和输入摘要文本",
+    ))

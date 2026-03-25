@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
@@ -95,6 +96,7 @@ def main():
     parser.add_argument("--subtitles", default="subtitles.json", help="Subtitle JSON path.")
     args = parser.parse_args()
 
+    emit_stage("titling", "正在读取字幕并生成标题")
     with open(args.subtitles, "r", encoding="utf-8") as f:
         subtitles = json.load(f)
 
@@ -106,6 +108,7 @@ def main():
 
     transcript = "\n".join(transcript_lines[:40]).strip()
     if not transcript:
+        emit_result("使用默认标题", title="这条消息可能正在改变支付格局")
         print("这条消息可能正在改变支付格局")
         return
 
@@ -176,8 +179,15 @@ iPhone不是玩具
 """
     response = model.generate_content(prompt)
     title = normalize_title(response.text)
+    emit_result("标题生成完成", title=title or "这条消息可能正在改变支付格局")
     print(title or "这条消息可能正在改变支付格局")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_guarded(
+        main,
+        error_code="TITLE_GENERATION_FAILED",
+        error_message="自动标题生成失败",
+        error_stage="titling",
+        hint="请检查 Gemini Key、字幕文件和标题生成脚本输出",
+    ))

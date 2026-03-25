@@ -6,6 +6,12 @@ import argparse
 from PIL import Image, ImageDraw, ImageFont
 import re
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from script_protocol import emit_error, emit_result, emit_stage
+
 # 终极防崩溃补丁
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -383,6 +389,7 @@ def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], 
 
 # ================== Main Execution ==================
 def main():
+    emit_stage("vertical_render", "正在生成动态竖屏视频")
     parser = argparse.ArgumentParser(description="Generate dynamic vertical video.")
     parser.add_argument("--input", type=str, default="input.mp4", help="Input video file.")
     parser.add_argument("--content", type=str, default="content.json", help="Content JSON file for title.")
@@ -428,6 +435,7 @@ def main():
             print("INFO: Subtitles file is empty. Proceeding without subtitles.")
 
     print("\n--- [STEP 2] Generating assets ---")
+    emit_stage("vertical_assets", "正在生成竖屏背景与字幕卡")
     make_background(content, background_png, args.title_font_size, args.title_min_size, args.title_max_lines)
     
     subtitle_cards = []
@@ -450,11 +458,13 @@ def main():
     run_ffmpeg(background_png, input_video, subtitle_cards, output_video, args.subtitle_offset_y)
 
     print(f"\n✅ Generation complete: {output_video}")
+    emit_result("竖屏视频生成完成", output_video=str(output_video), subtitle_card_count=len(subtitle_cards))
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        emit_error("VERTICAL_RENDER_FAILED", "竖屏视频生成失败", stage="vertical_render", details=str(e), hint="请检查输入视频、字幕文件、字体和 FFmpeg")
         print(f"\n\n--- [FATAL ERROR] ---")
         print(f"An error occurred: {e}")
         import traceback

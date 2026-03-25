@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
@@ -201,6 +202,7 @@ def refine_and_translate(raw_segments):
 
 
 def build_raw_segments(audio_file):
+    emit_stage("asr", "正在进行 Whisper ASR 识别")
     print("1. 正在加载 Whisper 模型进行 ASR 识别...")
     model = WhisperModel("small", device="cpu", compute_type="int8")
 
@@ -226,6 +228,7 @@ def main():
     args = parser.parse_args()
     input_video = args.input
 
+    emit_stage("audio_extract", f"正在从视频中提取音频: {input_video}")
     print(f"0. 正在从视频 '{input_video}' 中提取音频...")
     audio_file = os.path.splitext(os.path.basename(input_video))[0] + "_audio.mp3"
 
@@ -266,8 +269,22 @@ def main():
         os.remove(audio_file)
 
     end_time = time.time()
-    print(f"\n3. 大功告成！总耗时: {round(end_time - start_time, 2)} 秒。")
+    elapsed = round(end_time - start_time, 2)
+    print(f"\n3. 大功告成！总耗时: {elapsed} 秒。")
+    emit_result(
+        "ASR 与字幕生成完成",
+        audio_json="audio.json",
+        subtitles_json="subtitles.json",
+        segment_count=len(final_subtitles),
+        elapsed_seconds=elapsed,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_guarded(
+        main,
+        error_code="ASR_FAILED",
+        error_message="ASR 与字幕生成失败",
+        error_stage="asr",
+        hint="请检查输入视频、Whisper 依赖、FFmpeg 和 Gemini Key",
+    ))

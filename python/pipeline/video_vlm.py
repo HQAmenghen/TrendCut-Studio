@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
@@ -26,6 +27,7 @@ def configure_gemini():
     genai.configure(api_key=api_key)
 
 def main():
+    emit_stage("vlm", "正在分析素材画面与音频")
     configure_gemini()
     print(f"1. 准备上传视频: {VIDEO_PATH} ...")
     
@@ -34,8 +36,7 @@ def main():
         video_file = genai.upload_file(path=VIDEO_PATH)
         print(f"   上传成功！云端文件名: {video_file.name}")
     except Exception as e:
-        print(f"上传失败，请检查网络或路径: {e}")
-        return
+        raise RuntimeError(f"上传失败，请检查网络或路径: {e}")
 
     # 视频上传后，Google 需要几秒钟到十几秒来处理（抽帧/提取音频）
     print("2. 等待云端处理视频 (大约需要 10-20 秒)...")
@@ -46,8 +47,7 @@ def main():
         video_file = genai.get_file(video_file.name)
 
     if video_file.state.name == "FAILED":
-        print("❌ 视频处理失败。")
-        return
+        raise RuntimeError("视频处理失败")
         
     print("✅ 视频处理完成！")
 
@@ -90,10 +90,16 @@ def main():
         with open("result.json", "w", encoding="utf-8") as f:
             json.dump(result, f, indent=4, ensure_ascii=False)
         print("\n✅ 结果已保存为 result.json")
+        emit_result(
+            "VLM 分析完成",
+            result_json="result.json",
+            visual_timeline_count=len(result.get("visual_timeline", []) or []),
+            audio_transcript_count=len(result.get("audio_transcript", []) or []),
+        )
         
     except json.JSONDecodeError:
-        print("❌ 解析 JSON 失败，模型返回的内容可能格式不对：")
-        print(response.text)
+        emit_error("VLM_RESULT_PARSE_FAILED", "VLM 返回结果解析失败", stage="vlm", details=response.text)
+        raise RuntimeError("解析 JSON 失败，模型返回的内容格式不对")
 
     # 5. 用完记得清理云端文件，养成好习惯（否则占你 Google 云盘配额）
     print("5. 清理云端临时视频文件...")
@@ -101,4 +107,10 @@ def main():
     print("流程结束。")
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_guarded(
+        main,
+        error_code="VLM_FAILED",
+        error_message="视频 VLM 分析失败",
+        error_stage="vlm",
+        hint="请检查素材视频、Gemini Key 和网络连通性",
+    ))

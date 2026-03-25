@@ -17,7 +17,8 @@ function createVerticalQueueService(deps) {
     removeDirIfExists,
     buildFallbackTitleFromSubtitles,
     spawnScript,
-    writeJsonFile
+    writeJsonFile,
+    runPythonScript
   } = deps;
 
   const verticalJobs = new Map();
@@ -91,26 +92,16 @@ function createVerticalQueueService(deps) {
   async function generateHotTitle(jobDir, subtitlesFileName = 'subtitles.json') {
     const subtitlesPath = path.join(jobDir, subtitlesFileName);
     const generateTitlePath = path.join(pipelineDir, 'generate_title.py');
-    return new Promise((resolve, reject) => {
-      const proc = deps.spawnPython(generateTitlePath, ['--subtitles', subtitlesPath], pipelineDir);
-      let output = '';
-      let errorOutput = '';
-      proc.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-      proc.stderr.on('data', (data) => {
-        errorOutput += data.toString();
-      });
-      proc.on('close', (code) => {
-        if (code === 0 && output.trim()) {
-          resolve(output.trim());
-        } else {
-          const reason = errorOutput.trim() || 'generate_title.py 未输出有效标题';
-          console.error(`generate_title.py failed: ${reason}`);
-          reject(new Error(`自动标题生成失败: ${reason}`));
-        }
-      });
-    });
+    try {
+      const result = await runPythonScript(generateTitlePath, ['--subtitles', subtitlesPath], { cwd: pipelineDir });
+      const title = String(result.protocol?.result?.title || result.stdout || '').trim();
+      if (title) return title;
+      throw new Error('generate_title.py 未输出有效标题');
+    } catch (error) {
+      const reason = error?.details || error?.message || 'generate_title.py 未输出有效标题';
+      console.error(`generate_title.py failed: ${reason}`);
+      throw new Error(`自动标题生成失败: ${reason}`);
+    }
   }
 
   async function runJob(job) {

@@ -2,7 +2,6 @@ function createSystemHandlers(deps) {
   const {
     fs,
     path,
-    spawn,
     sendError,
     baseDir,
     pipelineDir,
@@ -13,7 +12,8 @@ function createSystemHandlers(deps) {
     readWorkflow,
     extractWorkflowConfig,
     applyWorkflowConfig,
-    writeWorkflow
+    writeWorkflow,
+    runPythonScript
   } = deps;
 
   return {
@@ -141,40 +141,30 @@ function createSystemHandlers(deps) {
         });
       }
     },
-    optimizeText: (req, res) => {
+    optimizeText: async (req, res) => {
       const text = req.body.text;
       if (!text) return sendError(res, { status: 400, code: 'TEXT_MISSING', stage: 'system.optimize_text', error: '缺少待优化文本' });
       const scriptPath = path.join(pipelineDir, 'optimize_text.py');
-      const proc = spawn('python', [scriptPath, '--text', text]);
-      let output = '';
-      let err = '';
-      proc.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-      proc.stderr.on('data', (data) => {
-        err += data.toString();
-      });
-      proc.on('close', (code) => {
-        if (code === 0) res.json({ text: output.trim() });
-        else sendError(res, { status: 500, code: 'OPTIMIZE_TEXT_FAILED', stage: 'system.optimize_text', error: '文案优化失败', details: err.trim() });
-      });
+      try {
+        const result = await runPythonScript(scriptPath, ['--text', text]);
+        res.json({ text: String(result.protocol?.result?.text || result.stdout || '').trim() });
+      } catch (err) {
+        sendError(res, { status: 500, code: err.code || 'OPTIMIZE_TEXT_FAILED', stage: err.stage || 'system.optimize_text', error: '文案优化失败', details: err.details || err.message, hint: err.hint || '' });
+      }
     },
-    convertVideo: (req, res) => {
+    convertVideo: async (req, res) => {
       const ratio = req.body.ratio;
       if (!ratio) return sendError(res, { status: 400, code: 'RATIO_MISSING', stage: 'system.convert_video', error: '缺少目标比例' });
       const inputFile = path.join(baseDir, 'public', 'output_final.mp4');
       const outputName = ratio === '9:16' ? 'output_9_16.mp4' : 'output_16_9.mp4';
       const outputFile = path.join(baseDir, 'public', outputName);
 
-      const proc = spawn('python', ['convert_ratio.py', '--ratio', ratio, '--input', inputFile, '--output', outputFile], { cwd: pipelineDir });
-      let err = '';
-      proc.stderr.on('data', (data) => {
-        err += data.toString();
-      });
-      proc.on('close', (code) => {
-        if (code === 0) res.json({ videoUrl: `/${outputName}?t=${Date.now()}` });
-        else sendError(res, { status: 500, code: 'CONVERT_VIDEO_FAILED', stage: 'system.convert_video', error: '视频转比例失败', details: err.trim() });
-      });
+      try {
+        await runPythonScript(path.join(pipelineDir, 'convert_ratio.py'), ['--ratio', ratio, '--input', inputFile, '--output', outputFile], { cwd: pipelineDir });
+        res.json({ videoUrl: `/${outputName}?t=${Date.now()}` });
+      } catch (err) {
+        sendError(res, { status: 500, code: err.code || 'CONVERT_VIDEO_FAILED', stage: err.stage || 'system.convert_video', error: '视频转比例失败', details: err.details || err.message, hint: err.hint || '' });
+      }
     }
   };
 }

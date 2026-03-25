@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
@@ -24,6 +25,7 @@ def configure_gemini():
     genai.configure(api_key=api_key)
 
 def optimize_text(text):
+    emit_stage("optimize_text", "正在优化口播文案")
     configure_gemini()
     model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL))
     prompt = f"""
@@ -37,10 +39,18 @@ def optimize_text(text):
     3. 只输出优化后的文案文本，不要包含任何额外的解释或标注（如不要带“优化后文案：”等字样）。
     """
     response = model.generate_content(prompt)
-    print(response.text.strip())
+    optimized = response.text.strip()
+    emit_result("文案优化完成", text=optimized)
+    print(optimized)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--text", type=str, required=True, help="原始口播文案")
     args = parser.parse_args()
-    optimize_text(args.text)
+    sys.exit(run_guarded(
+        lambda: optimize_text(args.text),
+        error_code="OPTIMIZE_TEXT_FAILED",
+        error_message="文案优化失败",
+        error_stage="optimize_text",
+        hint="请检查 Gemini Key、模型配置和输入文案",
+    ))

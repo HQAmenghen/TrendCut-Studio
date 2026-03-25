@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { spawn } = require('child_process');
 const axios = require('axios');
 
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -40,32 +39,20 @@ async function downloadInputVideo(url, destinationPath) {
 }
 
 function runPipelineScript(scriptArgs, options) {
-  return new Promise((resolve, reject) => {
-    const { sse, progress, msg, cwd, sendProgressEvent } = options;
-    if (sse) sendProgressEvent(sse, { type: 'progress', percent: progress, msg });
+  const { sse, progress, msg, cwd, sendProgressEvent, runPythonScript } = options;
+  if (sse) sendProgressEvent(sse, { type: 'progress', percent: progress, msg });
 
-    const proc = spawn('python', scriptArgs, { cwd });
-    let errorOutput = '';
-
-    proc.stdout.on('data', (data) => {
-      const lastLine = data.toString().trim().split('\n').pop();
+  return runPythonScript(scriptArgs[0], scriptArgs.slice(1), {
+    cwd,
+    onStdout: (chunk) => {
+      const lastLine = chunk.toString().trim().split('\n').pop();
       if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
-    });
-
-    proc.stderr.on('data', (data) => {
-      const errStr = data.toString();
-      errorOutput += errStr;
+    },
+    onStderr: (chunk) => {
+      const errStr = chunk.toString();
       console.error(`[${scriptArgs[0]} stderr]: ${errStr}`);
       if (sse) sendProgressEvent(sse, { type: 'status', msg: `⚠️ ${errStr.trim().split('\n').pop()}` });
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`${scriptArgs[0]} 失败: ${errorOutput.split('\n').slice(-2).join(' ')}`));
-      }
-    });
+    }
   });
 }
 
@@ -87,7 +74,8 @@ function createPipelineHandlers(deps) {
     writeMediaMetadata,
     buildFallbackTitleFromSubtitles,
     generateHotTitle,
-    writeJsonFile
+    writeJsonFile,
+    runPythonScript
   } = deps;
 
   async function handleGenerate(req, res) {
@@ -180,8 +168,8 @@ function createPipelineHandlers(deps) {
       res.json({ success: true, videoUrl });
     } catch (error) {
       if (ws) ws.close();
-      console.error('执行失败:', error.message);
-      res.status(500).json({ error: error.message });
+      console.error('执行失败:', error.details || error.message);
+      res.status(500).json({ error: error.details || error.message });
     }
   }
 
@@ -226,15 +214,15 @@ function createPipelineHandlers(deps) {
         await downloadInputVideo(materialUrl, materialPath);
       }
 
-      await runPipelineScript([runAsrScript], { sse, progress: 10, msg: '1/5: 正在 ASR 识别与翻译...', cwd: taskDir, sendProgressEvent });
-      await runPipelineScript([videoVlmScript], { sse, progress: 30, msg: '2/5: 正在 VLM 分析画面...', cwd: taskDir, sendProgressEvent });
-      await runPipelineScript([runDirectorScript], { sse, progress: 50, msg: '3/5: AI 导演思考剧本...', cwd: taskDir, sendProgressEvent });
+      await runPipelineScript([runAsrScript], { sse, progress: 10, msg: '1/5: 正在 ASR 识别与翻译...', cwd: taskDir, sendProgressEvent, runPythonScript });
+      await runPipelineScript([videoVlmScript], { sse, progress: 30, msg: '2/5: 正在 VLM 分析画面...', cwd: taskDir, sendProgressEvent, runPythonScript });
+      await runPipelineScript([runDirectorScript], { sse, progress: 50, msg: '3/5: AI 导演思考剧本...', cwd: taskDir, sendProgressEvent, runPythonScript });
 
       const buildArgs = [buildVideoScript];
       if (req.body.withSubtitles === 'false') {
         buildArgs.push('--no-subs');
       }
-      await runPipelineScript(buildArgs, { sse, progress: 70, msg: '4/5: FFmpeg 正在合成视频...', cwd: taskDir, sendProgressEvent });
+      await runPipelineScript(buildArgs, { sse, progress: 70, msg: '4/5: FFmpeg 正在合成视频...', cwd: taskDir, sendProgressEvent, runPythonScript });
 
       const finalSourcePath = path.join(taskDir, 'output_final.mp4');
       const subtitlesPath = path.join(taskDir, 'subtitles.json');
@@ -267,7 +255,7 @@ function createPipelineHandlers(deps) {
           '--output', path.join(taskDir, verticalOutputName),
           '--background', path.join(taskDir, 'background_generated.png'),
           '--sub-dir', path.join(taskDir, 'subtitle_cards')
-        ], { sse, progress: 90, msg: '5/5: 生成动态竖屏...', cwd: taskDir, sendProgressEvent });
+        ], { sse, progress: 90, msg: '5/5: 生成动态竖屏...', cwd: taskDir, sendProgressEvent, runPythonScript });
         fs.copyFileSync(path.join(taskDir, verticalOutputName), path.join(baseDir, 'public', verticalOutputName));
         writeMediaMetadata(publicOutputPath, {
           taskType: 'pipeline',
@@ -283,7 +271,7 @@ function createPipelineHandlers(deps) {
       res.json({ success: true, videoUrl: `${finalUrl}?t=${Date.now()}` });
     } catch (error) {
       console.error('Pipeline failed:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: error.details || error.message });
     }
   }
 

@@ -14,7 +14,7 @@ function createStandaloneHandler(deps) {
     writeJsonFile,
     writeMediaMetadata,
     readJsonIfExists,
-    spawnPython
+    runPythonScript
   } = deps;
 
   const middleware = upload.fields([{ name: 'video' }, { name: 'srt' }]);
@@ -56,33 +56,24 @@ function createStandaloneHandler(deps) {
 
       if (shouldUseASR) {
         if (sse) sendProgressEvent(sse, { type: 'status', msg: '自动 ASR 打轴已开启，正在识别视频语音...' });
-        await new Promise((resolve, reject) => {
-          const proc = spawnPython(runAsrScript, ['--input', 'standalone_input.mp4'], taskDir);
-          let errorOutput = '';
-          proc.stdout.on('data', (data) => {
-            const lastLine = data.toString().trim().split('\n').pop();
+        await runPythonScript(runAsrScript, ['--input', 'standalone_input.mp4'], {
+          cwd: taskDir,
+          onStdout: (chunk) => {
+            const lastLine = chunk.toString().trim().split('\n').pop();
             if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
-          });
-          proc.stderr.on('data', (data) => {
-            const errStr = data.toString();
-            errorOutput += errStr;
+          },
+          onStderr: (chunk) => {
+            const errStr = chunk.toString();
             console.error(`[run_asr.py stderr]: ${errStr}`);
-          });
-          proc.on('close', (code) => {
-            code === 0 ? resolve() : reject(new Error(`run_asr.py failed: ${errorOutput.trim()}`));
-          });
+          }
         });
       } else if (req.files.srt) {
         if (sse) sendProgressEvent(sse, { type: 'status', msg: '检测到 SRT 文件，正在转换为 JSON...' });
         const srtPath = path.join(taskDir, 'uploaded.srt');
         fs.renameSync(req.files.srt[0].path, srtPath);
-        await new Promise((resolve, reject) => {
-          const proc = spawnPython(convertSrtScript, [srtPath, subsJsonPath], taskDir);
-          let errorOutput = '';
-          proc.stderr.on('data', (data) => {
-            errorOutput += data.toString();
-          });
-          proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`SRT to JSON conversion failed: ${errorOutput.trim()}`)));
+        await runPythonScript(convertSrtScript, [srtPath, subsJsonPath], {
+          cwd: taskDir,
+          onStderr: () => {}
         });
       } else {
         if (sse) sendProgressEvent(sse, { type: 'status', msg: '未提供字幕文件，将生成无字幕视频。' });
@@ -101,8 +92,7 @@ function createStandaloneHandler(deps) {
       const outputName = 'standalone_output_vertical.mp4';
       const outputPath = path.join(taskDir, outputName);
 
-      await new Promise((resolve, reject) => {
-        const proc = spawnPython(makeVerticalScript, [
+      await runPythonScript(makeVerticalScript, [
           '--input', inputVideoPath,
           '--content', contentJsonPath,
           '--subtitles', subsJsonPath,
@@ -119,10 +109,10 @@ function createStandaloneHandler(deps) {
           '--english-font-size', String(renderOptions.englishFontSize || 52),
           '--english-min-size', String(renderOptions.englishMinSize || 30),
           '--english-max-lines', String(renderOptions.englishMaxLines || 2)
-        ], taskDir);
-        proc.stderr.on('data', (data) => console.error(`[standalone_vertical stderr]: ${data}`));
-        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error('make_vertical_video.py failed')));
-      });
+        ], {
+          cwd: taskDir,
+          onStderr: (chunk) => console.error(`[standalone_vertical stderr]: ${chunk}`)
+        });
 
       const finalUrlPath = path.join(baseDir, 'public', outputName);
       fs.copyFileSync(outputPath, finalUrlPath);
@@ -139,11 +129,11 @@ function createStandaloneHandler(deps) {
       console.error('Standalone vertical failed:', error);
       sendError(res, {
         status: 500,
-        code: 'STANDALONE_GENERATE_FAILED',
-        stage: 'standalone.pipeline',
+        code: error.code || 'STANDALONE_GENERATE_FAILED',
+        stage: error.stage || 'standalone.pipeline',
         error: '单条竖屏生成失败',
-        details: error.message,
-        hint: '请检查 ASR、SRT 转换、标题生成或竖屏渲染脚本日志'
+        details: error.details || error.message,
+        hint: error.hint || '请检查 ASR、SRT 转换、标题生成或竖屏渲染脚本日志'
       });
     }
   };

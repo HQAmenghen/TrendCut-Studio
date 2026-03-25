@@ -8,11 +8,13 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_error, emit_result, emit_stage
 
 import httpx
 import requests
@@ -85,6 +87,61 @@ RUN_LOG_PATH = BASE_DIR / "run_log.txt"
 RUN_ERROR_PATH = BASE_DIR / "run_error.log"
 X_SEARCH_COST_PER_1000 = 5.0
 ACCOUNTS_CONFIG_PATH = BASE_DIR / "xai_accounts.json"
+XAI_INPUT_COST_PER_1M = float(os.getenv("XAI_INPUT_COST_PER_1M", "3.0"))
+XAI_CACHED_INPUT_COST_PER_1M = float(os.getenv("XAI_CACHED_INPUT_COST_PER_1M", "0.75"))
+XAI_OUTPUT_COST_PER_1M = float(os.getenv("XAI_OUTPUT_COST_PER_1M", "15.0"))
+XAI_REASONING_COST_PER_1M = float(os.getenv("XAI_REASONING_COST_PER_1M", str(XAI_OUTPUT_COST_PER_1M)))
+USAGE_LOCK = Lock()
+USAGE_TOTALS = {
+    "requests": 0,
+    "input_tokens": 0,
+    "cached_input_tokens": 0,
+    "output_tokens": 0,
+    "reasoning_tokens": 0,
+}
+
+
+def usage_value(obj, *path) -> int:
+    current = obj
+    for key in path:
+        if current is None:
+            return 0
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            current = getattr(current, key, None)
+    return safe_number(current) or 0
+
+
+def reset_usage_totals() -> None:
+    with USAGE_LOCK:
+        for key in USAGE_TOTALS:
+            USAGE_TOTALS[key] = 0
+
+
+def record_usage(response) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+
+    input_tokens = usage_value(usage, "input_tokens")
+    cached_input_tokens = (
+        usage_value(usage, "input_tokens_details", "cached_tokens")
+        or usage_value(usage, "input_tokens_details", "cached_input_tokens")
+        or usage_value(usage, "cached_input_tokens")
+    )
+    output_tokens = usage_value(usage, "output_tokens")
+    reasoning_tokens = (
+        usage_value(usage, "output_tokens_details", "reasoning_tokens")
+        or usage_value(usage, "reasoning_tokens")
+    )
+
+    with USAGE_LOCK:
+        USAGE_TOTALS["requests"] += 1
+        USAGE_TOTALS["input_tokens"] += input_tokens
+        USAGE_TOTALS["cached_input_tokens"] += cached_input_tokens
+        USAGE_TOTALS["output_tokens"] += output_tokens
+        USAGE_TOTALS["reasoning_tokens"] += reasoning_tokens
 
 
 def clean_secret(value: str | None) -> str | None:
@@ -209,6 +266,7 @@ def call_json(prompt: str, timeout: int) -> dict:
                 tool_choice="required",
                 timeout=timeout,
             )
+            record_usage(response)
             text = (response.output_text or "").strip()
             if not text:
                 raise RuntimeError("No text returned from xAI response.")
@@ -1046,11 +1104,33 @@ def build_cost_estimate(total_accounts: int, total_enrich: int, total_followers:
     xai_calls = total_accounts + total_enrich + total_followers
     xai_tool_cost = round((xai_calls / 1000) * X_SEARCH_COST_PER_1000, 4)
     x_api_calls = total_followers + total_ranked
+    with USAGE_LOCK:
+        requests_count = USAGE_TOTALS["requests"]
+        input_tokens = USAGE_TOTALS["input_tokens"]
+        cached_input_tokens = USAGE_TOTALS["cached_input_tokens"]
+        output_tokens = USAGE_TOTALS["output_tokens"]
+        reasoning_tokens = USAGE_TOTALS["reasoning_tokens"]
+
+    non_cached_input_tokens = max(0, input_tokens - cached_input_tokens)
+    input_cost = (non_cached_input_tokens / 1_000_000) * XAI_INPUT_COST_PER_1M
+    cached_input_cost = (cached_input_tokens / 1_000_000) * XAI_CACHED_INPUT_COST_PER_1M
+    output_cost = (output_tokens / 1_000_000) * XAI_OUTPUT_COST_PER_1M
+    reasoning_cost = (reasoning_tokens / 1_000_000) * XAI_REASONING_COST_PER_1M
+    xai_token_cost = round(input_cost + cached_input_cost + output_cost + reasoning_cost, 6)
+    estimated_total_cost = round(xai_tool_cost + xai_token_cost, 6)
+
     return {
+        "xai_requests_observed": requests_count,
         "xai_request_count": xai_calls,
+        "xai_input_tokens": input_tokens,
+        "xai_cached_input_tokens": cached_input_tokens,
+        "xai_output_tokens": output_tokens,
+        "xai_reasoning_tokens": reasoning_tokens,
+        "xai_token_cost_usd": xai_token_cost,
         "xai_x_search_tool_usd": xai_tool_cost,
+        "estimated_total_cost_usd": estimated_total_cost,
         "xapi_request_count_est": x_api_calls,
-        "total_usd_note": "xAI tool fee estimated; token fees and X API endpoint charges not fully included",
+        "notes": "xAI tool fee and observed token fee estimated; X API endpoint charges not included",
     }
 
 
@@ -1059,6 +1139,8 @@ def main() -> int:
     RUN_ERROR_PATH.write_text("", encoding="utf-8")
     PARTIAL_PATH.write_text("", encoding="utf-8")
     log("Run started.")
+    emit_stage("bootstrap", "正在启动 xAI Top10 榜单任务")
+    reset_usage_totals()
     accounts = load_accounts()
 
     try:
@@ -1092,6 +1174,7 @@ def main() -> int:
     completed = 0
     total_accounts = len(accounts)
     log(f"Starting candidate scan for {total_accounts} accounts with concurrency {CANDIDATE_WORKERS}.")
+    emit_stage("candidate_scan", f"开始扫描 {total_accounts} 个账号的候选视频")
 
     with ThreadPoolExecutor(max_workers=CANDIDATE_WORKERS) as executor:
         future_map = {
@@ -1129,6 +1212,7 @@ def main() -> int:
     completed = 0
     total_enrich = len(ranked_candidates)
     log(f"Starting enrich stage for {total_enrich} posts with concurrency {ENRICH_WORKERS}.")
+    emit_stage("enrich", f"开始补全 {total_enrich} 条候选视频")
 
     with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as executor:
         future_map = {
@@ -1149,6 +1233,7 @@ def main() -> int:
     authors_needed = sorted({item["author"] for item in enriched if item.get("author")})
     completed = 0
     log(f"Starting followers stage for {len(authors_needed)} accounts with concurrency {FOLLOWER_WORKERS}.")
+    emit_stage("followers", f"开始补全 {len(authors_needed)} 个作者的粉丝信息")
     with ThreadPoolExecutor(max_workers=FOLLOWER_WORKERS) as executor:
         future_map = {
             executor.submit(fetch_followers, account, cache): account for account in authors_needed
@@ -1232,9 +1317,25 @@ def main() -> int:
 
     RESULT_PATH.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"Run finished. Saved result to {RESULT_PATH}.")
+    emit_result(
+        "xAI Top10 榜单生成完成",
+        result_json=str(RESULT_PATH),
+        total_items=len(output_items),
+        estimated_total_cost_usd=output["cost_estimate"].get("estimated_total_cost_usd"),
+    )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        emit_error(
+            "XAI_RUN_FAILED",
+            "xAI Top10 榜单执行失败",
+            stage="xai",
+            details=str(exc),
+            hint="请检查 xAI Key、X API 凭证、网络代理和外部接口限流情况",
+        )
+        raise

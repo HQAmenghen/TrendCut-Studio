@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const { loadProjectEnv } = require('./env');
 const { sendError } = require('./server/core/http');
+const { runPythonScript, runPythonScriptSync } = require('./server/core/python');
 const {
     ensureDir,
     formatElapsedSeconds,
@@ -250,30 +251,27 @@ function generatePublishDescription(sourceText, options = {}) {
     let result = '';
     try {
         if (fs.existsSync(PUBLISH_DESCRIPTION_SCRIPT)) {
-            const args = [PUBLISH_DESCRIPTION_SCRIPT, '--source-text', normalized];
+            const args = ['--source-text', normalized];
             if (normalizedTitle) {
                 args.push('--title', normalizedTitle);
             }
             if (includeTags) {
                 args.push('--include-tags');
             }
-            const proc = spawnSync('python', args, {
+            const proc = runPythonScriptSync(PUBLISH_DESCRIPTION_SCRIPT, args, {
                 cwd: PUBLISH_CENTER_DIR,
-                encoding: 'utf-8',
                 timeout: 30000
             });
             if (proc.status === 0) {
                 result = sanitizePublishDescriptionText(proc.stdout || '', { preserveTags: includeTags });
-            } else {
-                if (proc.error?.code === 'ETIMEDOUT') {
-                    console.warn('generate publish description timed out, using fallback');
-                } else {
-                    console.warn('generate publish description failed:', proc.stderr || proc.stdout || proc.error?.message || 'unknown error');
-                }
             }
         }
     } catch (err) {
-        console.warn('generate publish description error:', err.message);
+        if (String(err?.details || err?.message || '').includes('timed out')) {
+            console.warn('generate publish description timed out, using fallback');
+        } else {
+            console.warn('generate publish description error:', err.details || err.message);
+        }
     }
 
     if (result) {
@@ -468,67 +466,29 @@ const systemHandlers = createSystemHandlers({
     readWorkflow,
     extractWorkflowConfig,
     applyWorkflowConfig,
-    writeWorkflow
+    writeWorkflow,
+    runPythonScript
 });
 
 function spawnScript(scriptPath, args, options = {}) {
-    return new Promise((resolve, reject) => {
-        const proc = spawn('python', [scriptPath, ...args], { cwd: options.cwd });
-        if (typeof options.onSpawn === 'function') options.onSpawn(proc);
-        let stdout = '';
-        let stderr = '';
-        const heartbeatStartedAt = Date.now();
-        let heartbeatHandle = null;
-
-        if (typeof options.onHeartbeat === 'function') {
-            heartbeatHandle = setInterval(() => {
-                options.onHeartbeat(Math.max(0, Math.floor((Date.now() - heartbeatStartedAt) / 1000)), proc);
-            }, Number(options.heartbeatMs) || 15000);
-        }
-
-        proc.stdout.on('data', (data) => {
-            stdout += data.toString();
-            if (typeof options.onStdout === 'function') options.onStdout(data.toString());
-        });
-        proc.stderr.on('data', (data) => {
-            stderr += data.toString();
-            if (typeof options.onStderr === 'function') options.onStderr(data.toString());
-        });
-        proc.on('error', (err) => {
-            if (heartbeatHandle) clearInterval(heartbeatHandle);
-            reject(err);
-        });
-        proc.on('close', (code) => {
-            if (heartbeatHandle) clearInterval(heartbeatHandle);
-            if (code === 0) resolve({ stdout, stderr });
-            else reject(new Error(stderr.trim() || stdout.trim() || `${path.basename(scriptPath)} failed`));
-        });
-    });
+    return runPythonScript(scriptPath, args, options);
 }
 
 async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json") {
     const subtitlesPath = path.join(pipelineDir, subtitlesFileName);
     const scriptPath = path.join(PIPELINE_DIR, 'generate_title.py');
-    return new Promise((resolve, reject) => {
-        const proc = spawn("python", [scriptPath, "--subtitles", subtitlesPath], { cwd: PIPELINE_DIR });
-        let output = "";
-        let errorOutput = "";
-        proc.stdout.on("data", (data) => {
-            output += data.toString();
-        });
-        proc.stderr.on("data", (data) => {
-            errorOutput += data.toString();
-        });
-        proc.on("close", (code) => {
-            if (code === 0 && output.trim()) {
-                resolve(output.trim());
-            } else {
-                const reason = errorOutput.trim() || 'generate_title.py 未输出有效标题';
-                console.error(`generate_title.py failed: ${reason}`);
-                reject(new Error(`自动标题生成失败: ${reason}`));
-            }
-        });
-    });
+    try {
+        const result = await runPythonScript(scriptPath, ['--subtitles', subtitlesPath], { cwd: PIPELINE_DIR });
+        const title = String(result.protocol?.result?.title || result.stdout || '').trim();
+        if (title) {
+            return title;
+        }
+        throw new Error('generate_title.py 未输出有效标题');
+    } catch (err) {
+        const reason = err?.details || err?.message || 'generate_title.py 未输出有效标题';
+        console.error(`generate_title.py failed: ${reason}`);
+        throw new Error(`自动标题生成失败: ${reason}`);
+    }
 }
 
 attachProgressRoute(app);
@@ -549,7 +509,8 @@ const pipelineHandlers = createPipelineHandlers({
     writeMediaMetadata,
     buildFallbackTitleFromSubtitles,
     generateHotTitle,
-    writeJsonFile
+    writeJsonFile,
+    runPythonScript
 });
 
 registerPipelineRoutes(app, upload, pipelineHandlers);
@@ -568,7 +529,9 @@ const xaiService = createXaiService({
     readTextIfExists,
     tailLines,
     getProgressClient,
-    sendProgressEvent
+    sendProgressEvent,
+    runPythonScript,
+    runPythonScriptSync
 });
 
 registerXaiRoutes(app, {
@@ -623,7 +586,7 @@ verticalQueueService = createVerticalQueueService({
     buildFallbackTitleFromSubtitles,
     spawnScript,
     writeJsonFile,
-    spawnPython: (scriptName, args, cwd) => spawn('python', [scriptName, ...args], { cwd })
+    runPythonScript
 });
 
 registerVerticalRoutes(app, {
@@ -698,7 +661,7 @@ const standaloneHandler = createStandaloneHandler({
     writeJsonFile,
     writeMediaMetadata,
     readJsonIfExists,
-    spawnPython: (scriptPath, args, cwd) => spawn('python', [scriptPath, ...args], { cwd })
+    runPythonScript
 });
 
 registerStandaloneRoute(app, standaloneHandler);

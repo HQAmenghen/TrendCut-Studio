@@ -6,7 +6,15 @@ import json
 import subprocess
 import os
 import argparse
+from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from script_protocol import emit_result, emit_stage
+
+emit_stage("subtitle_build", "正在生成混剪字幕文件")
 print("0. 正在自动生成字幕文件 (双轨混合字幕)...")
 def format_time(seconds):
     h = int(seconds // 3600)
@@ -57,6 +65,7 @@ def get_video_size(filename):
         return 1080, 1920 # 默认竖屏
 
 # 新版序列拼接逻辑：使用 FFmpeg concat demuxer
+emit_stage("video_build", "正在构造并执行混剪合成命令")
 print("1. 正在动态构造序列化剪辑命令...")
 concat_file = "concat_list.txt"
 
@@ -113,7 +122,7 @@ cmd = [
 ]
 
 print("\n--- 即将执行终极音视频混联合成 ---")
-subprocess.run(cmd)
+subprocess.run(cmd, check=True)
 
 # 清理切片
 for i in range(len(director)):
@@ -122,3 +131,4 @@ for i in range(len(director)):
 if os.path.exists(concat_file): os.remove(concat_file)
 
 print("\n🎉 合成完毕！包含双轨音频和字幕的成品 output_final.mp4 已生成！")
+emit_result("混剪成片生成完成", output_video="output_final.mp4", segment_count=len(director))

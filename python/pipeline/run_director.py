@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
@@ -24,6 +25,7 @@ def configure_gemini():
     genai.configure(api_key=api_key)
 
 def main():
+    emit_stage("director", "正在生成导演混剪方案")
     configure_gemini()
     print("1. 正在读取听觉轴 (audio.json) 和视觉轴 (result.json)...")
     
@@ -128,10 +130,17 @@ def main():
         
         print("\n🎉 成功生成完美的剪辑方案：director.json")
         print("👉 下一步：直接运行 python build_video.py 开始最终合成！")
+        emit_result("导演混剪方案生成完成", director_json="director.json", segment_count=len(result_json))
         
     except json.JSONDecodeError:
-        print("❌ 解析 JSON 失败，AI 返回的内容格式有误：")
-        print(response.text)
+        emit_error("DIRECTOR_RESULT_PARSE_FAILED", "导演结果解析失败", stage="director", details=response.text)
+        raise RuntimeError("解析 JSON 失败，AI 返回的内容格式有误")
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_guarded(
+        main,
+        error_code="DIRECTOR_FAILED",
+        error_message="导演混剪方案生成失败",
+        error_stage="director",
+        hint="请检查 audio.json、result.json、Gemini Key 和模型返回格式",
+    ))
