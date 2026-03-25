@@ -14,9 +14,15 @@
 ## 目录说明
 
 - `server.js`：Node.js 后端入口
-- `public/index.html`：前端控制台
-- `pipeline_scripts/`：Python 脚本、字幕、标题、后期合成逻辑
-- `workflow_api.json`：ComfyUI 工作流模板
+- `server/`：后端 `core / routes / services` 模块
+- `frontend/`：Vue 组件化前端源码
+- `frontend-dist/`：构建后的默认前端产物
+- `public/`：静态资源与最终成片输出
+- `python/pipeline/`：混剪、字幕、标题、竖屏包装相关 Python 脚本
+- `python/publish/`：发布中心脚本与微信视频号 RPA
+- `python/xai/`：热点榜单抓取、翻译和账号池配置
+- `config/workflow_api.json`：ComfyUI 工作流模板
+- `data/uploads/`：运行期任务目录、队列产物与临时上传文件
 
 ## 本地运行
 
@@ -37,12 +43,30 @@ npm install
 安装 Python 依赖：
 
 ```bash
-pip install -r pipeline_scripts/requirements.txt
+pip install -r python/pipeline/requirements.txt
 ```
 
-### 2. 配置模型 Key
+### 2. 配置环境变量
 
-推荐使用环境变量：
+先复制一份环境变量模板：
+
+```bash
+cp .env.example .env
+```
+
+Windows PowerShell 可直接这样创建：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+然后至少填写这些项：
+
+- `GEMINI_API_KEY` 或 `GOOGLE_API_KEY`
+- `XAI_API_KEY`（如果要跑热门榜单）
+- `COMFYUI_BASE_URL`（如果要跑数字人口播）
+
+推荐使用环境变量或项目根目录 `.env`：
 
 Windows PowerShell:
 
@@ -50,16 +74,48 @@ Windows PowerShell:
 $env:GEMINI_API_KEY="你的Key"
 ```
 
-或：
+也可以：
 
 ```powershell
 $env:GOOGLE_API_KEY="你的Key"
 ```
 
+常用可配置项见 [.env.example](/Users/PC/Desktop/comfy_panel_demo/.env.example)。
+
+如果 `python/xai/` 扫榜偏慢，可以在 `.env` 里适度提高并发：
+
+```env
+XAI_TOP10_CANDIDATE_WORKERS=6
+XAI_TOP10_ENRICH_WORKERS=3
+XAI_TOP10_FOLLOWER_WORKERS=6
+```
+
+建议一档一档往上加，避免外部接口限流后整体反而更慢。
+
 ### 3. 启动服务
 
 ```bash
 npm start
+```
+
+如果你需要先手动构建新版前端，可以执行：
+
+```bash
+npm run build:front
+```
+
+日常使用桌面上的 `一键启动_AI视频中台.bat` 时，会自动先构建前端，再启动 `server.js`，不需要额外单独运行 `vite dev`。
+
+可选的快速验证：
+
+```bash
+npm run smoke:test
+```
+
+服务启动后，也可以直接访问自检接口：
+
+```text
+http://localhost:3001/api/system/self-check
 ```
 
 服务默认监听：
@@ -135,14 +191,14 @@ docker compose up --build
 
 重点检查这些文件是否生成：
 
-- `pipeline_scripts/content.json`
-- `pipeline_scripts/subtitles.json`
+- `python/pipeline/content.json`
+- `python/pipeline/subtitles.json`
 
 ### 3. 字幕识别错字
 
 术语硬纠错词库在：
 
-- `pipeline_scripts/glossary.json`
+- `python/pipeline/glossary.json`
 
 你可以继续往里面追加：
 
@@ -155,14 +211,14 @@ docker compose up --build
 当前镜像已内置 Linux 字体，并兼容 Windows / Linux 字体路径。
 如果你自定义了字体逻辑，检查：
 
-- `pipeline_scripts/make_vertical_video.py`
+- `python/pipeline/make_vertical_video.py`
 
 ## 运行产物
 
 常见运行结果文件：
 
-- `pipeline_scripts/content.json`
-- `pipeline_scripts/subtitles.json`
-- `pipeline_scripts/audio.json`
+- `python/pipeline/content.json`
+- `python/pipeline/subtitles.json`
+- `python/pipeline/audio.json`
 - `public/output_final.mp4`
 - `public/standalone_output_vertical.mp4`

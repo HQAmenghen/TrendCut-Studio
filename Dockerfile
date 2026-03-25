@@ -16,12 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY pipeline_scripts/requirements.txt /tmp/requirements.txt
+COPY python/pipeline/requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
 
 COPY . .
 
-RUN mkdir -p uploads public/presets/audio public/presets/image
+RUN mkdir -p data/uploads public/presets/audio public/presets/image
 
 EXPOSE 3001
 

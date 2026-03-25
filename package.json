@@ -4,7 +4,11 @@
   "description": "ComfyUI Node.js + Vue Control Panel",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev:front": "vite --config vite.config.mjs",
+    "build:front": "vite build --config vite.config.mjs",
+    "preview:front": "vite preview --config vite.config.mjs",
+    "smoke:test": "node scripts/smoke_test.js"
   },
   "dependencies": {
     "axios": "^1.6.8",
@@ -12,5 +16,10 @@
     "form-data": "^4.0.0",
     "multer": "^1.4.5-lts.1",
     "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.5",
+    "vite": "^8.0.2",
+    "vue": "^3.5.30"
   }
 }
