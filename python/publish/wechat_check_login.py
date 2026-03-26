@@ -186,6 +186,7 @@ def main():
             # Combined wait loop for 20 seconds
             wait_deadline = time.time() + 20
             while time.time() < wait_deadline:
+                time.sleep(1)
                 # 1. Check for Login Success (URL or Selectors)
                 current_url = page.url
                 if ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url):
@@ -356,9 +357,29 @@ def main():
                                     break
                     
                     if is_scanned and last_check_status != "scanned":
-                        ulog(f"CONFIRMED scan detected via: {trigger_sel}")
-                        print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
-                        last_check_status = "scanned"
+                        # Double check: the QR code image itself should NO LONGER be the focus/visible
+                        # Or at least, if it IS visible, it shouldn't be the only thing there.
+                        # Most false positives happen when the "Confirm" text is technically present but the QR is still active.
+                        qr_still_active = False
+                        try:
+                            if img_loc and img_loc.is_visible(timeout=500):
+                                qr_still_active = True
+                        except: pass
+                        
+                        if qr_still_active and "text:" in trigger_sel:
+                            ulog(f"Scan trigger ignored: {trigger_sel} found but QR is still active.")
+                            is_scanned = False
+                        else:
+                            ulog(f"CONFIRMED scan detected via: {trigger_sel}")
+                            # Take a debug screenshot for the user/us to see what triggered it
+                            try:
+                                debug_path = os.path.join(user_data_dir, "debug_scan.png")
+                                page.screenshot(path=debug_path)
+                                ulog(f"Debug screenshot saved to: {debug_path}")
+                            except: pass
+                            
+                            print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
+                            last_check_status = "scanned"
                     
                     if not is_scanned and last_check_status == "scanned":
                         # If scan indicator disappeared, maybe it transitioned back to QR?
