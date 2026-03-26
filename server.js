@@ -406,7 +406,6 @@ const {
     startWechatRpa,
     retryWechatRpa,
     cancelWechatRpa,
-    startAllWechatKeepAlives,
     checkWechatLogin
 } = wechatRpaService;
 
@@ -707,5 +706,4 @@ const {
 
     app.listen(PORT, HOST, () => {
         console.log(`🚀 AI面板服务端启动成功: http://${HOST}:${PORT}`);
-        startAllWechatKeepAlives();
     });

@@ -585,7 +585,6 @@ function createWechatRpaService(deps) {
     startWechatRpa,
     retryWechatRpa,
     cancelWechatRpa,
-    startAllWechatKeepAlives,
     checkWechatLogin
   };
 }
