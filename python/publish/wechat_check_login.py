@@ -107,48 +107,48 @@ def is_logged_in_dashboard(page, context=None):
     Final verification that we are truly on the creator dashboard.
     """
     url = page.url
-    # 1. URL check: should be on platform/ and not currently showing the explicit login path
-    is_on_platform = "channels.weixin.qq.com/platform" in url and "platform/login" not in url
+    # 1. URL check: should be on platform/ or the base domain after redirect
+    is_on_platform = "channels.weixin.qq.com/platform" in url
+    is_still_login_url = "platform/login" in url or "login.html" in url
     
     # 2. Indicators check: search for dashboard-only elements
     has_indicators = has_any_success_selector(page)
     
-    if int(time.time()) % 4 == 0:
-        ulog(f"Verification: on_platform={is_on_platform}, indicators={has_indicators}, url={url}")
+    # Optional debug logging (reduced)
+    if int(time.time()) % 10 == 0:
+        ulog(f"Login Verify: on_platform={is_on_platform}, login_url={is_still_login_url}, indicators={has_indicators}, url={url}")
 
     # 3. Handle context: check if other pages in context might be the dashboard
     if context and not has_indicators:
         for p in context.pages:
             try:
-                if p.url != url and "channels.weixin.qq.com/platform" in p.url:
+                p_url = p.url or ""
+                if p_url != url and "channels.weixin.qq.com/platform" in p_url:
                     if has_any_success_selector(p):
-                        ulog(f"Login success detected on sibling page: {p.url}")
+                        ulog(f"Login success detected on sibling page: {p_url}")
                         return True
             except: pass
 
-    # Special case: layout indicators or login iframe removal
-    if is_on_platform:
-        # If the login iframe is gone/removed, that's often a success signal if we're on a platform URL
-        is_login_iframe_gone = True
+    # 4. Success if we have indicators, regardless of URL (sometimes redirects are delayed)
+    if has_indicators:
+        return True
+
+    # 5. Success if we are on platform AND the login iframe is gone
+    if is_on_platform or not is_still_login_url:
+        is_login_iframe_present = False
         for frame in page.frames:
             try:
                 if "login-for-iframe" in (frame.url or ""):
-                    is_login_iframe_gone = False
+                    is_login_iframe_present = True
                     break
             except: pass
         
-        if is_login_iframe_gone or has_indicators:
+        # If we were scanned and now the iframe is gone, it's a success
+        if not is_login_iframe_present:
+            ulog("Login iframe disappeared - treating as success.")
             return True
-            
-        layout_selectors = [".weui-desktop-layout__main", ".weui-desktop-layout__side-nav", ".nickname"]
-        for sel in layout_selectors:
-            try:
-                if page.locator(sel).first.count() > 0:
-                    ulog(f"Dashboard layout detected via {sel}")
-                    return True
-            except: pass
 
-    return is_on_platform and has_indicators
+    return False
 
 def upload_to_feishu(app_id, app_secret, image_path):
     try:
