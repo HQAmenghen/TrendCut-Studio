@@ -226,19 +226,50 @@ def main():
                 raise RuntimeError(f"二维码节点未找到，当前 URL: {page.url}")
             
             def get_qr_b64(loc):
-                try:
-                    if not loc or not loc.is_visible(): return None
-                    img_bytes = loc.screenshot(timeout=5000)
-                    with open(qr_code_path, "wb") as f:
-                        f.write(img_bytes)
-                    return base64.b64encode(img_bytes).decode("utf-8")
-                except: return None
+                for attempt in range(3):
+                    try:
+                        if not loc: return None
+                        # Wait for visibility and stability
+                        loc.wait_for(state="visible", timeout=5000)
+                        img_bytes = loc.screenshot(timeout=10000)
+                        if img_bytes:
+                            with open(qr_code_path, "wb") as f:
+                                f.write(img_bytes)
+                            return base64.b64encode(img_bytes).decode("utf-8")
+                    except Exception as e:
+                        ulog(f"Screenshot attempt {attempt+1} failed: {e}")
+                        time.sleep(1)
+                return None
 
             # Initial capture
-            time.sleep(2)
+            time.sleep(1)
             last_qr_b64 = get_qr_b64(img_loc)
             if not last_qr_b64:
-                raise RuntimeError("无法截取初始二维码")
+                # One last try: re-find the locator in case it went stale
+                ulog("Initial capture failed, re-finding locator...")
+                wait_deadline = time.time() + 10
+                while time.time() < wait_deadline:
+                    # Re-search
+                    for selector in QR_SELECTORS:
+                        candidate = page.locator(selector).first
+                        if candidate.count() > 0 and candidate.is_visible():
+                            img_loc = candidate
+                            break
+                    if img_loc and img_loc.is_visible(): break
+                    
+                    login_frame = find_login_frame(page)
+                    if login_frame:
+                        for selector in QR_SELECTORS:
+                            candidate = login_frame.locator(selector).first
+                            if candidate.count() > 0 and candidate.is_visible():
+                                img_loc = candidate
+                                break
+                    if img_loc and img_loc.is_visible(): break
+                    time.sleep(1)
+                
+                last_qr_b64 = get_qr_b64(img_loc)
+                if not last_qr_b64:
+                    raise RuntimeError(f"无法截取初始二维码 (Current URL: {page.url})")
             
             if args.feishu_app_id and args.feishu_app_secret and args.feishu_webhook:
                 image_key = upload_to_feishu(args.feishu_app_id, args.feishu_app_secret, qr_code_path)
