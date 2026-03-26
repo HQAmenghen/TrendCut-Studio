@@ -76,9 +76,10 @@ function createWechatRpaService(deps) {
 
   function buildLoginCheckResponse(session) {
     return {
-      success: session.status === 'logged_in' || session.status === 'need_scan',
+      success: session.status === 'logged_in' || session.status === 'need_scan' || session.status === 'scanned',
       status: session.status,
       qrCodeBase64: session.qrCodeBase64 || '',
+      message: session.message || '',
       error: session.error || ''
     };
   }
@@ -554,6 +555,15 @@ function createWechatRpaService(deps) {
           session.error = '';
           resolveOnce({ success: true, status: 'logged_in' });
           scheduleLoginCheckCleanup(accountId, 1000);
+          return true;
+        }
+        if (parsed.status === 'scanned') {
+          session.status = 'scanned';
+          session.message = parsed.message || '已扫码，请在手机上确认';
+          session.error = '';
+          // Resolve for immediate frontend feedback if needed, 
+          // though usually the next poll will get this.
+          resolveOnce(buildLoginCheckResponse(session));
           return true;
         }
         if (parsed.success === false) {

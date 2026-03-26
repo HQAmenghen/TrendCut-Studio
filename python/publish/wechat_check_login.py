@@ -217,16 +217,23 @@ def main():
                 if img_loc is None:
                     raise RuntimeError(f"二维码节点未找到，当前 URL: {page.url}")
                 
-                # Make sure the image is fully loaded
+                def get_qr_b64(loc):
+                    try:
+                        valid = loc.is_visible()
+                        if not valid: return None
+                        img_bytes = loc.screenshot()
+                        # Save to file for Feishu if needed
+                        with open(qr_code_path, "wb") as f:
+                            f.write(img_bytes)
+                        return base64.b64encode(img_bytes).decode("utf-8")
+                    except:
+                        return None
+
+                # Initial capture
                 time.sleep(2)
-                
-                # Save screenshot of the QR code
-                img_loc.screenshot(path=qr_code_path)
-                
-                with open(qr_code_path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("utf-8")
-                
-                ulog("QR code captured.")
+                last_qr_b64 = get_qr_b64(img_loc)
+                if not last_qr_b64:
+                    raise RuntimeError("无法截取初始二维码")
                 
                 # Push to Feishu if configured
                 if args.feishu_app_id and args.feishu_app_secret and args.feishu_webhook:
@@ -237,45 +244,85 @@ def main():
                 print(json.dumps({
                     "success": True, 
                     "status": "need_scan", 
-                    "qrCodeBase64": f"data:image/png;base64,{b64}"
+                    "qrCodeBase64": f"data:image/png;base64,{last_qr_b64}"
                 }), flush=True)
 
-                ulog("Waiting for scan confirmation...")
-                deadline = time.time() + max(10, int(args.wait_after_qr_seconds))
+                ulog("Waiting for scan or QR refresh...")
+                # Increase timeout to 3 minutes (180s)
+                timeout_sec = max(180, int(args.wait_after_qr_seconds))
+                deadline = time.time() + timeout_sec
+                
+                last_check_status = "need_scan"
+                
                 while time.time() < deadline:
+                    # 1. Check for Login Success (Main Dashboard)
                     try:
                         if page.locator(".weui-desktop-layout__main__bd").count() > 0:
+                            ulog("Login detected via dashboard selector.")
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             browser.close()
                             return
-                    except Exception:
-                        pass
+                    except: pass
+
+                    # 2. Check for "Scanned, Pending Confirmation" state
+                    # Common selectors for "scanned successfully"
+                    scanned_indicators = [
+                        ".qrcode-success", ".weui-desktop-qr-code__success", 
+                        "text='扫描成功'", "text='已扫码'", "text='请在手机上确认'"
+                    ]
+                    is_scanned = False
                     try:
                         login_frame = find_login_frame(page)
-                        if login_frame:
-                            for selector in LOGIN_SUCCESS_SELECTORS:
-                                if safe_locator_count(login_frame, selector) > 0:
-                                    print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                                    browser.close()
-                                    return
-                    except Exception:
-                        pass
+                        for sel in scanned_indicators:
+                            if page.locator(sel).count() > 0 or (login_frame and login_frame.locator(sel).count() > 0):
+                                is_scanned = True
+                                break
+                    except: pass
+
+                    if is_scanned and last_check_status != "scanned":
+                        ulog("Scan detected, waiting for phone confirmation...")
+                        print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
+                        last_check_status = "scanned"
+
+                    # 3. Check for QR Code Refresh
+                    if not is_scanned:
+                        current_qr_b64 = get_qr_b64(img_loc)
+                        if current_qr_b64 and current_qr_b64 != last_qr_b64:
+                            ulog("QR code refreshed.")
+                            last_qr_b64 = current_qr_b64
+                            last_check_status = "need_scan"
+                            
+                            # Re-notify Feishu on refresh
+                            if args.feishu_app_id and args.feishu_app_secret and args.feishu_webhook:
+                                image_key = upload_to_feishu(args.feishu_app_id, args.feishu_app_secret, qr_code_path)
+                                if image_key:
+                                    push_to_feishu_webhook(args.feishu_webhook, args.account_id, image_key)
+
+                            print(json.dumps({
+                                "success": True, 
+                                "status": "need_scan", 
+                                "qrCodeBase64": f"data:image/png;base64,{current_qr_b64}",
+                                "message": "二维码已刷新"
+                            }), flush=True)
+
+                    # 4. Check for URL redirects
                     try:
-                        current_url = page.url
-                        if "platform/post/create" in current_url:
+                        if "platform/post/create" in page.url or "platform/details" in page.url:
+                            ulog("Login detected via URL redirect.")
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             browser.close()
                             return
-                    except Exception:
-                        pass
-                    time.sleep(1)
+                    except: pass
 
-                print(json.dumps({"success": False, "status": "expired", "error": "二维码已过期，请重新扫码"}), flush=True)
+                    time.sleep(2)
+
+                ulog("Login check timed out.")
+                print(json.dumps({"success": False, "status": "expired", "error": f"登录超时（{timeout_sec}s）或二维码已过期，请点击重新检测"}), flush=True)
                 browser.close()
                 return
             except Exception as e:
-                ulog(f"Timeout waiting for QR code: {e}")
-                print(json.dumps({"success": False, "error": "无法获取登录二维码或页面结构已变"}), flush=True)
+                ulog(f"Error during login check: {e}")
+                print(json.dumps({"success": False, "error": f"登录检查异常: {str(e)}"}), flush=True)
                 browser.close()
                 return
             
