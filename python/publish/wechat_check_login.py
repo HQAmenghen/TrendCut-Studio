@@ -24,14 +24,11 @@ LOGIN_SUCCESS_SELECTORS = [
     ".creator-name",
     ".nickname",
     ".platform_header",
-    ".status",
-    ".login-status",
-    ".success",
-    ".weui-icon-success",
-    ".success-img",
-    ".icon.success-img",
-    ".scanned",
-    ".mask.scanned",
+    ".avatar",
+    ".platform-nav",
+    ".post-btn",
+    ".weui-desktop-account__nickname",
+    "text='动态管理'", "text='数据统计'", "text='设置'", "text='首页'"
 ]
 
 def safe_frame_url(frame):
@@ -93,9 +90,16 @@ def any_page_url_contains(context, needle: str) -> bool:
     return False
 
 def has_any_success_selector(scope) -> bool:
+    """
+    Checks if any success-only elements are visible.
+    """
     for selector in LOGIN_SUCCESS_SELECTORS:
-        if safe_locator_count(scope, selector) > 0:
-            return True
+        try:
+            loc = scope.locator(selector).first
+            if loc.count() > 0 and loc.is_visible():
+                ulog(f"Login success confirmed via: {selector}")
+                return True
+        except: pass
     return False
 
 def upload_to_feishu(app_id, app_secret, image_path):
@@ -323,10 +327,13 @@ def main():
                     
                     # More specific indicators
                     scanned_indicators = [
-                        (".qrcode-success", ".qrcode-success (indicator)"),
+                        (".mask.show", "mask-show"),
+                        (".icon.success-img", "success-icon"),
+                        (".qrcode-success", "qrcode-success"),
                         (".weui-desktop-qr-code__success", "weui-success-mask"),
                         ("text='扫描成功'", "text-scan-success"),
-                        ("text='已扫码'", "text-already-scanned")
+                        ("text='已扫码'", "text-already-scanned"),
+                        ("text='需在手机上进行确认'", "text-confirm-on-phone")
                     ]
                     
                     for sel, label in scanned_indicators:
