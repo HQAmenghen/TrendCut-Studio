@@ -199,7 +199,8 @@ function createWechatRpaService(deps) {
       throw new Error('视频号 RPA 脚本不存在');
     }
 
-    stopKeepAlive(wechatAccount.id);
+
+    // Removed stopKeepAlive to avoid process competition in headless mode
 
     const rpaPayload = {
       ...buildWechatPublishPayload(job, wechatAccount),
@@ -426,7 +427,6 @@ function createWechatRpaService(deps) {
         return resolve({ success: true, status: 'idle' });
       }
 
-      // Removed stopKeepAlive to avoid process competition
 
       const checkScript = path.join(publishCenterDir, 'wechat_check_login.py');
       const userDataDir = buildWechatProfileDir(accountId);
