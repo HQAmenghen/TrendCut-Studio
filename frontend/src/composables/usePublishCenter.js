@@ -499,16 +499,19 @@ const clearErrorState = () => {
     }
   };
 
-  const saveConfig = async () => {
+  const saveConfig = async (label) => {
+    const tag = label || '平台配置';
     savingConfig.value = true;
     clearErrorState();
-    appendLog('保存平台配置');
+    appendLog(`正在保存${tag}...`);
     try {
       const res = await axios.post('/api/publish/config', config.value);
       config.value = res.data?.config || config.value;
       jobs.value = res.data?.jobs || jobs.value;
+      appendLog(`✅ ${tag}保存成功`);
     } catch (err) {
-      setErrorState(normalizeApiError(err, '保存平台配置失败'));
+      setErrorState(normalizeApiError(err, `保存${tag}失败`));
+      appendLog(`❌ ${tag}保存失败`);
     } finally {
       savingConfig.value = false;
     }

@@ -100,7 +100,7 @@
         <div class="panel" style="margin-bottom: 24px;">
           <div class="panel-header panel-header-between">
             <span>🤖 无人值守全栈托管 (Auto-Pilot)</span>
-            <button type="button" class="save-chip" @click="center.saveConfig" :disabled="center.savingConfig.value">
+            <button type="button" class="save-chip" @click="center.saveConfig('托管配置')" :disabled="center.savingConfig.value">
               {{ center.savingConfig.value ? '保存中...' : '保存托管配置' }}
             </button>
           </div>
@@ -162,7 +162,7 @@
         <div class="panel">
           <div class="panel-header panel-header-between">
             <span>🔐 社交账号授权配置</span>
-            <button type="button" class="save-chip" @click="center.saveConfig" :disabled="center.savingConfig.value">
+            <button type="button" class="save-chip" @click="center.saveConfig('社交账号授权')" :disabled="center.savingConfig.value">
               {{ center.savingConfig.value ? '保存中...' : '保存授权信息' }}
             </button>
           </div>
