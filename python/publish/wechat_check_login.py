@@ -117,16 +117,22 @@ def main():
 
             ulog("Checking for QR code...")
             try:
-                # QR code is inside an iframe (login-for-iframe), must use frame_locator
-                iframe = page.frame_locator("iframe")
-                img_loc = iframe.locator("img.qrcode")
-                img_loc.wait_for(state="visible", timeout=15000)
+                # QR code is inside a nested iframe whose URL contains 'login-for-iframe'
+                # page.frames includes all frames; find the right one
+                qr_frame = None
+                for frame in page.frames:
+                    if 'login-for-iframe' in frame.url:
+                        qr_frame = frame
+                        break
+                if not qr_frame:
+                    raise Exception("找不到包含二维码的 iframe")
+                img_el = qr_frame.wait_for_selector("img.qrcode", state="visible", timeout=15000)
                 
                 # Make sure the image is fully loaded
                 time.sleep(2)
                 
                 # Save screenshot of the QR code
-                img_loc.screenshot(path=qr_code_path)
+                img_el.screenshot(path=qr_code_path)
                 
                 with open(qr_code_path, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode("utf-8")
