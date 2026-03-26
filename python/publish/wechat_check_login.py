@@ -117,8 +117,10 @@ def main():
 
             ulog("Checking for QR code...")
             try:
-                img_loc = page.locator(".qrcode")
-                img_loc.wait_for(state="visible", timeout=10000)
+                # QR code is inside an iframe (login-for-iframe), must use frame_locator
+                iframe = page.frame_locator("iframe")
+                img_loc = iframe.locator("img.qrcode")
+                img_loc.wait_for(state="visible", timeout=15000)
                 
                 # Make sure the image is fully loaded
                 time.sleep(2)
