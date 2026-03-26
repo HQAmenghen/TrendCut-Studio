@@ -417,7 +417,8 @@
                     <option value="all">全部</option>
                   </select>
                   <div class="jobs-toolbar-actions">
-                    <button type="button" class="primary-btn compact-btn" @click="center.runAllWechat('draft')">🚀 一键全部运行</button>
+                    <button type="button" class="primary-btn compact-btn" @click="center.runAllWechat('draft')">🚀 一键到待发布 (草稿)</button>
+                    <button type="button" class="primary-btn compact-btn" @click="center.runAllWechat('publish')">📤 一键全部发布</button>
                     <button type="button" class="dark-chip" @click="center.archiveCompleted">归档已完成任务</button>
                     <button type="button" class="ghost-btn compact-btn" @click="center.clearJobs">清空列表</button>
                   </div>

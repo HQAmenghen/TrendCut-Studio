@@ -76,7 +76,7 @@ function createWechatRpaService(deps) {
 
   function buildLoginCheckResponse(session) {
     return {
-      success: session.status === 'logged_in' || session.status === 'need_scan' || session.status === 'scanned',
+      success: session.status === 'logged_in' || session.status === 'need_scan' || session.status === 'scanned' || session.status === 'starting',
       status: session.status,
       qrCodeBase64: session.qrCodeBase64 || '',
       message: session.message || '',
