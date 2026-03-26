@@ -456,6 +456,12 @@ const clearErrorState = () => {
     };
   };
 
+  const updateAutoPilotArray = (field, index, value) => {
+    const arr = [...(config.value?.global?.[field] || [])];
+    arr[index] = value;
+    updateConfigField('global', field, arr);
+  };
+
   const createWechatAccount = () => ({
     id: `wechat_${Math.random().toString(36).slice(2, 10)}`,
     displayName: '',
@@ -786,6 +792,7 @@ const clearErrorState = () => {
     stopAutoRefresh,
     selectAsset,
     updateConfigField,
+    updateAutoPilotArray,
     applySuggestedTitle,
     applySuggestedTags,
     loadJobIntoEditor,

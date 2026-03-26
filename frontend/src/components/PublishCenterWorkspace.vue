@@ -140,11 +140,7 @@
                     <select
                       class="input-dark text-sm flex-1" style="max-width: 200px;"
                       :value="(center.config.value.global.autoPilotAccountIds || [])[i-1] || ''"
-                      @change="
-                        let arr = [...(center.config.value.global.autoPilotAccountIds || [])];
-                        arr[i-1] = $event.target.value;
-                        center.updateConfigField('global', 'autoPilotAccountIds', arr);
-                      "
+                      @change="center.updateAutoPilotArray('autoPilotAccountIds', i - 1, $event.target.value)"
                     >
                       <option value="">默认（首个绑定）</option>
                       <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
@@ -154,11 +150,7 @@
                     <input
                       type="time" class="input-dark text-sm w-24 ml-1"
                       :value="(center.config.value.global.autoPilotTimes || [])[i-1] || '08:00'"
-                      @input="
-                        let tArr = [...(center.config.value.global.autoPilotTimes || [])];
-                        tArr[i-1] = $event.target.value;
-                        center.updateConfigField('global', 'autoPilotTimes', tArr);
-                      "
+                      @input="center.updateAutoPilotArray('autoPilotTimes', i - 1, $event.target.value)"
                     />
                   </div>
                 </div>
