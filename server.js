@@ -251,7 +251,7 @@ function generatePublishDescription(sourceText, options = {}) {
             }
             const proc = runPythonScriptSync(PUBLISH_DESCRIPTION_SCRIPT, args, {
                 cwd: PUBLISH_CENTER_DIR,
-                timeout: 30000
+                timeout: 60000
             });
             if (proc.status === 0) {
                 result = sanitizePublishDescriptionText(proc.stdout || '', { preserveTags: includeTags });

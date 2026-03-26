@@ -301,10 +301,7 @@ function createWechatRpaService(deps) {
     proc.on('close', (code) => {
       publishRuntimeProcesses.delete(runtimeKey);
       
-      setTimeout(() => {
-        const dir = buildWechatProfileDir(wechatAccount.id);
-        startKeepAlive(wechatAccount.id, dir);
-      }, 5000);
+      // Removed startKeepAlive to avoid process competition in headless mode
 
       if (runtimeEntry.cancelledByUser) {
         appendWechatRuntimeLog(jobId, '[cancelled] 用户已取消视频号自动化任务', publishMode, 'cancelled', '用户已取消当前任务', 100);
