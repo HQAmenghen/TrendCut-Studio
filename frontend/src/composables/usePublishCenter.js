@@ -95,6 +95,7 @@ export function usePublishCenter() {
   const recentLogs = ref([]);
   const errorLogs = ref([]);
   let autoRefreshTimer = null;
+  let qrLoginPollTimer = null;
 
   const appendLog = (message) => {
     const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(message || '').trim()}`;
@@ -119,22 +120,103 @@ export function usePublishCenter() {
     accountId: '',
     base64: '',
     status: '',
-    error: ''
+    error: '',
+    message: ''
   });
 
-  const testWechatLogin = async (accountId) => {
-    qrCodeData.value = { show: true, accountId, base64: '', status: 'loading', error: '' };
+  const stopWechatLoginPolling = () => {
+    if (qrLoginPollTimer) {
+      window.clearInterval(qrLoginPollTimer);
+      qrLoginPollTimer = null;
+    }
+  };
+
+  const applyWechatLoginResponse = (accountId, payload) => {
+    if (payload?.status === 'logged_in') {
+      qrCodeData.value = {
+        show: true,
+        accountId,
+        base64: '',
+        status: 'logged_in',
+        error: '',
+        message: '扫码成功，登录态已恢复'
+      };
+      appendLog(`账号 ${accountId} 登录有效`);
+      stopWechatLoginPolling();
+      window.setTimeout(() => {
+        if (qrCodeData.value.accountId === accountId && qrCodeData.value.status === 'logged_in') {
+          qrCodeData.value.show = false;
+        }
+      }, 1200);
+      return;
+    }
+    if (payload?.status === 'need_scan') {
+      qrCodeData.value = {
+        show: true,
+        accountId,
+        base64: payload.qrCodeBase64 || qrCodeData.value.base64 || '',
+        status: 'need_scan',
+        error: '',
+        message: '请使用微信扫码并在手机上确认登录'
+      };
+      return;
+    }
+    if (payload?.status === 'idle') {
+      if (qrCodeData.value.accountId === accountId && qrCodeData.value.base64) {
+        qrCodeData.value.status = 'need_scan';
+        qrCodeData.value.message = '请使用微信扫码并在手机上确认登录';
+        return;
+      }
+      qrCodeData.value.status = 'loading';
+      qrCodeData.value.message = '正在等待二维码生成...';
+    }
+  };
+
+  const pollWechatLoginStatus = (accountId) => {
+    stopWechatLoginPolling();
+    qrLoginPollTimer = window.setInterval(async () => {
+      if (!qrCodeData.value.show || qrCodeData.value.accountId !== accountId) {
+        stopWechatLoginPolling();
+        return;
+      }
+      try {
+        const res = await axios.post(`/api/publish/wechat/test-login/${accountId}`, { poll: true });
+        if (res.data?.success) {
+          applyWechatLoginResponse(accountId, res.data);
+        } else {
+          throw new Error(res.data?.error || '扫码状态查询失败');
+        }
+      } catch (err) {
+        const normalized = normalizeApiError(err, '扫码状态查询失败');
+        qrCodeData.value.status = 'error';
+        qrCodeData.value.error = normalized.message;
+        qrCodeData.value.message = '';
+        appendError(`扫码状态查询失败: ${normalized.message}`);
+        stopWechatLoginPolling();
+      }
+    }, 4000);
+  };
+
+  const testWechatLogin = async (accountId, options = {}) => {
+    if (!options.poll) {
+      stopWechatLoginPolling();
+    }
+    qrCodeData.value = {
+      show: true,
+      accountId,
+      base64: options.preserveBase64 ? qrCodeData.value.base64 : '',
+      status: 'loading',
+      error: '',
+      message: '正在检测当前登录状态...'
+    };
     appendLog(`测试微信视频号登录状态：${accountId}`);
     try {
-      const res = await axios.post(`/api/publish/wechat/test-login/${accountId}`);
+      const res = await axios.post(`/api/publish/wechat/test-login/${accountId}`, { poll: options.poll === true });
       if (res.data?.success) {
-        if (res.data.status === 'logged_in') {
-          qrCodeData.value.status = 'logged_in';
-          appendLog(`账号 ${accountId} 登录有效`);
-        } else if (res.data.status === 'need_scan') {
-          qrCodeData.value.status = 'need_scan';
-          qrCodeData.value.base64 = res.data.qrCodeBase64 || '';
+        applyWechatLoginResponse(accountId, res.data);
+        if (res.data.status === 'need_scan') {
           appendLog(`账号 ${accountId} 需要重新扫码`);
+          pollWechatLoginStatus(accountId);
         }
       } else {
         throw new Error(res.data?.error || '未知错误');
@@ -143,11 +225,14 @@ export function usePublishCenter() {
       const normalized = normalizeApiError(err, '测试登录状态失败');
       qrCodeData.value.status = 'error';
       qrCodeData.value.error = normalized.message;
+      qrCodeData.value.message = '';
       appendError(`测试登录状态失败: ${normalized.message}`);
+      stopWechatLoginPolling();
     }
   };
 
   const closeQrCodeModal = () => {
+    stopWechatLoginPolling();
     qrCodeData.value.show = false;
   };
 
@@ -644,6 +729,7 @@ const clearErrorState = () => {
       window.clearInterval(autoRefreshTimer);
       autoRefreshTimer = null;
     }
+    stopWechatLoginPolling();
   };
 
   watch(selectedAssetId, (value, oldValue) => {

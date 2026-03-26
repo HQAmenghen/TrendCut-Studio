@@ -388,7 +388,9 @@ function createPublishHandlers(deps) {
       try {
         const accountId = String(req.params.accountId || '').trim();
         if (!accountId) return sendError(res, { status: 400, code: 'PUBLISH_ACCOUNT_ID_MISSING', stage: 'publish.wechat', error: '缺少账号 ID' });
-        const result = await checkWechatLogin(accountId);
+        const result = await checkWechatLogin(accountId, {
+          poll: req.body?.poll === true
+        });
         res.json(result);
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_TEST_LOGIN_FAILED', stage: 'publish.wechat', error: '测试视频号登录状态失败', details: err.message });

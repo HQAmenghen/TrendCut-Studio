@@ -398,17 +398,17 @@ const wechatRpaService = createWechatRpaService({
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
-        validateWechatTaskConfig,
-        updatePublishPlatformTask
-    });
+    validateWechatTaskConfig,
+    updatePublishPlatformTask
+});
 
-    const {
-        startWechatRpa,
-        retryWechatRpa,
-        cancelWechatRpa,
-        checkWechatLogin,
-        startAllWechatKeepAlives
-    } = wechatRpaService;
+const {
+    startWechatRpa,
+    retryWechatRpa,
+    cancelWechatRpa,
+    startAllWechatKeepAlives,
+    checkWechatLogin
+} = wechatRpaService;
 
     const systemHandlers = createSystemHandlers({
         fs,

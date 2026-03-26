@@ -18,6 +18,7 @@ function createWechatRpaService(deps) {
 
   const publishRuntimeProcesses = new Map();
   const keepAliveProcesses = new Map();
+  const loginCheckSessions = new Map();
 
   function stopKeepAlive(accountId) {
     const entry = keepAliveProcesses.get(accountId);
@@ -71,6 +72,40 @@ function createWechatRpaService(deps) {
     } catch (err) {
       console.error('[KeepAlive] Failed to start all keep alives:', err.message);
     }
+  }
+
+  function buildLoginCheckResponse(session) {
+    return {
+      success: session.status === 'logged_in' || session.status === 'need_scan',
+      status: session.status,
+      qrCodeBase64: session.qrCodeBase64 || '',
+      error: session.error || ''
+    };
+  }
+
+  function finalizeLoginCheckSession(accountId, options = {}) {
+    const session = loginCheckSessions.get(accountId);
+    if (!session) return;
+    if (session.cleanupTimer) {
+      clearTimeout(session.cleanupTimer);
+      session.cleanupTimer = null;
+    }
+    loginCheckSessions.delete(accountId);
+    if (options.restartKeepAlive !== false) {
+      const dir = buildWechatProfileDir(accountId);
+      startKeepAlive(accountId, dir);
+    }
+  }
+
+  function scheduleLoginCheckCleanup(accountId, delayMs = 30000) {
+    const session = loginCheckSessions.get(accountId);
+    if (!session) return;
+    if (session.cleanupTimer) {
+      clearTimeout(session.cleanupTimer);
+    }
+    session.cleanupTimer = setTimeout(() => {
+      finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+    }, delayMs);
   }
 
   function safeUpdatePublishPlatformTask(jobId, platform, patch) {
@@ -420,11 +455,30 @@ function createWechatRpaService(deps) {
   }
 
 
-  function checkWechatLogin(accountId) {
+  function checkWechatLogin(accountId, options = {}) {
     return new Promise((resolve, reject) => {
+      const shouldPoll = options?.poll === true;
       const activeAccountRuntime = getActiveWechatRuntimeForAccount(accountId);
       if (activeAccountRuntime) {
         return reject(new Error('当前账号正在执行发布任务，无法测试登录'));
+      }
+
+      const existingSession = loginCheckSessions.get(accountId);
+      if (existingSession) {
+        existingSession.updatedAt = new Date().toISOString();
+        if (existingSession.status === 'failed' || existingSession.status === 'expired') {
+          finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+          return reject(new Error(existingSession.error || '扫码登录已失效，请重新获取二维码'));
+        }
+        if (existingSession.status === 'logged_in') {
+          finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+          return resolve({ success: true, status: 'logged_in' });
+        }
+        return resolve(buildLoginCheckResponse(existingSession));
+      }
+
+      if (shouldPoll) {
+        return resolve({ success: true, status: 'idle' });
       }
 
       stopKeepAlive(accountId);
@@ -451,14 +505,77 @@ function createWechatRpaService(deps) {
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
       });
 
+      const session = {
+        proc,
+        accountId,
+        userDataDir,
+        status: 'starting',
+        qrCodeBase64: '',
+        error: '',
+        updatedAt: new Date().toISOString(),
+        cleanupTimer: null
+      };
+      loginCheckSessions.set(accountId, session);
+
       let outBuffer = '';
       let errBuffer = '';
+      let settled = false;
+
+      const resolveOnce = (payload) => {
+        if (settled) return;
+        settled = true;
+        resolve(payload);
+      };
+
+      const rejectOnce = (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+
+      const handleJsonLine = (line) => {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(line.trim());
+        } catch (_err) {
+          return false;
+        }
+        if (parsed.success === undefined) return false;
+        session.updatedAt = new Date().toISOString();
+        if (parsed.status === 'need_scan') {
+          session.status = 'need_scan';
+          session.qrCodeBase64 = String(parsed.qrCodeBase64 || '').trim();
+          session.error = '';
+          resolveOnce(buildLoginCheckResponse(session));
+          return true;
+        }
+        if (parsed.status === 'logged_in') {
+          session.status = 'logged_in';
+          session.error = '';
+          resolveOnce({ success: true, status: 'logged_in' });
+          scheduleLoginCheckCleanup(accountId, 1000);
+          return true;
+        }
+        if (parsed.success === false) {
+          session.status = parsed.status === 'expired' ? 'expired' : 'failed';
+          session.error = parsed.error || '脚本执行失败';
+          if (!settled) {
+            rejectOnce(new Error(session.error));
+            finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+          }
+          return true;
+        }
+        return false;
+      };
       
       proc.stdout.on('data', d => {
           const text = d.toString();
           outBuffer += text;
           const lines = text.split(/\r?\n/);
           for (const line of lines) {
+              if (handleJsonLine(line)) {
+                  continue;
+              }
               if (line.includes('WECHAT_LOGIN_CHECK|')) {
                   console.log(line.trim());
               }
@@ -467,12 +584,21 @@ function createWechatRpaService(deps) {
       proc.stderr.on('data', d => errBuffer += d.toString());
 
       proc.on('error', err => {
-        startKeepAlive(accountId, userDataDir);
-        reject(err);
+        finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+        rejectOnce(err);
       });
 
       proc.on('close', code => {
-        startKeepAlive(accountId, userDataDir);
+        session.updatedAt = new Date().toISOString();
+        if (session.status === 'need_scan') {
+          session.status = 'expired';
+          session.error = '二维码已过期，请重新扫码';
+          scheduleLoginCheckCleanup(accountId, 1000);
+        } else if (session.status === 'logged_in') {
+          scheduleLoginCheckCleanup(accountId, 1000);
+        } else {
+          finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+        }
         try {
           const lines = outBuffer.split(/\r?\n/);
           let resultJson = null;
@@ -489,15 +615,15 @@ function createWechatRpaService(deps) {
           }
           if (resultJson) {
             if (resultJson.success) {
-                resolve(resultJson);
-            } else {
-                reject(new Error(resultJson.error || '脚本执行失败'));
+                resolveOnce(resultJson);
+            } else if (!settled) {
+                rejectOnce(new Error(resultJson.error || '脚本执行失败'));
             }
-          } else {
-            reject(new Error(`解析脚本输出失败 (Exit ${code}): \nstdout: ${outBuffer}\nstderr: ${errBuffer}`));
+          } else if (!settled) {
+            rejectOnce(new Error(`解析脚本输出失败 (Exit ${code}): \nstdout: ${outBuffer}\nstderr: ${errBuffer}`));
           }
         } catch (e) {
-          reject(e);
+          rejectOnce(e);
         }
       });
     });

@@ -494,6 +494,42 @@
       </div>
     </div>
 
+    <div
+      v-if="center.qrCodeData.value.show"
+      class="qr-modal-backdrop"
+      @click.self="center.closeQrCodeModal"
+    >
+      <div class="qr-modal-content">
+        <h4 class="qr-modal-title">微信视频号登录</h4>
+        <div class="qr-state-box">
+          <div v-if="center.qrCodeData.value.status === 'loading'">
+            {{ center.qrCodeData.value.message || '正在检测登录状态...' }}
+          </div>
+          <template v-else-if="center.qrCodeData.value.status === 'need_scan'">
+            <img
+              v-if="center.qrCodeData.value.base64"
+              :src="center.qrCodeData.value.base64"
+              alt="微信扫码二维码"
+              class="qr-image"
+            />
+            <div>{{ center.qrCodeData.value.message || '请使用微信扫码并在手机上确认登录' }}</div>
+            <div class="job-sub">扫码完成后会自动检测并关闭弹窗。</div>
+          </template>
+          <template v-else-if="center.qrCodeData.value.status === 'logged_in'">
+            <strong>登录成功</strong>
+            <div>{{ center.qrCodeData.value.message || '检测到账号已恢复登录' }}</div>
+          </template>
+          <template v-else-if="center.qrCodeData.value.status === 'error'">
+            <strong>检测失败</strong>
+            <div>{{ center.qrCodeData.value.error || '请稍后重试' }}</div>
+          </template>
+        </div>
+        <div class="qr-modal-actions">
+          <button type="button" class="ghost-btn compact-btn" @click="center.closeQrCodeModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <RunLogPanel title="📝 运行摘要" :recent-logs="center.recentLogs.value" :error-logs="center.errorLogs.value" />
   </section>
 </template>

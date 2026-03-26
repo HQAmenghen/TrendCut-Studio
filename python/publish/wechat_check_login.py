@@ -11,6 +11,69 @@ from playwright.sync_api import sync_playwright
 def ulog(msg: str):
     print(f"WECHAT_LOGIN_CHECK|{msg}", flush=True)
 
+
+QR_SELECTORS = [
+    ".qrcode-wrap img.qrcode",
+    "img.qrcode",
+    ".qrcode",
+]
+
+LOGIN_SUCCESS_SELECTORS = [
+    ".weui-desktop-layout__main__bd",
+    ".status",
+    ".login-status",
+    ".success",
+    ".weui-icon-success",
+    ".success-img",
+]
+
+
+def safe_frame_url(frame):
+    try:
+        return frame.url or ""
+    except Exception:
+        return ""
+
+
+def safe_locator_count(scope, selector: str) -> int:
+    try:
+        return scope.locator(selector).count()
+    except Exception:
+        return 0
+
+
+def score_login_frame(frame):
+    score = 0
+    frame_url = safe_frame_url(frame)
+    if "login-for-iframe" in frame_url:
+        score += 10
+    elif "channels.weixin.qq.com/platform/login" in frame_url:
+        score += 6
+    if safe_locator_count(frame, ".qrcode-wrap") > 0:
+        score += 20
+    if safe_locator_count(frame, "img.qrcode") > 0:
+        score += 25
+    if safe_locator_count(frame, ".qrcode") > 0:
+        score += 10
+    if safe_locator_count(frame, ".login-qrcode-wrap") > 0:
+        score += 12
+    if safe_locator_count(frame, ".finder-page") > 0:
+        score += 4
+    return score
+
+
+def find_login_frame(page):
+    best_frame = None
+    best_score = 0
+    for frame in page.frames:
+        score = score_login_frame(frame)
+        if score > best_score:
+            best_score = score
+            best_frame = frame
+    if best_frame:
+        ulog(f"Selected login iframe score={best_score} url={safe_frame_url(best_frame)}")
+    return best_frame
+
 def upload_to_feishu(app_id: str, app_secret: str, image_path: str):
     try:
         # 1. Get tenant base access token
@@ -83,6 +146,7 @@ def main():
     parser.add_argument("--feishu-app-id", default="")
     parser.add_argument("--feishu-app-secret", default="")
     parser.add_argument("--feishu-webhook", default="")
+    parser.add_argument("--wait-after-qr-seconds", type=int, default=90)
     args = parser.parse_args()
 
     user_data_dir = os.path.abspath(args.user_data_dir)
@@ -117,22 +181,47 @@ def main():
 
             ulog("Checking for QR code...")
             try:
-                # QR code is inside a nested iframe whose URL contains 'login-for-iframe'
-                # page.frames includes all frames; find the right one
-                qr_frame = None
-                for frame in page.frames:
-                    if 'login-for-iframe' in frame.url:
-                        qr_frame = frame
+                login_frame = None
+                frame_deadline = time.time() + 12
+                while time.time() < frame_deadline:
+                    login_frame = find_login_frame(page)
+                    if login_frame:
                         break
-                if not qr_frame:
-                    raise Exception("找不到包含二维码的 iframe")
-                img_el = qr_frame.wait_for_selector("img.qrcode", state="visible", timeout=15000)
+                    time.sleep(0.5)
+
+                img_loc = None
+
+                if login_frame:
+                    ulog(f"Found login iframe: {safe_frame_url(login_frame)}")
+                    for selector in QR_SELECTORS:
+                        candidate = login_frame.locator(selector).first
+                        try:
+                            candidate.wait_for(state="visible", timeout=4000)
+                            img_loc = candidate
+                            ulog(f"QR selector matched in iframe: {selector}")
+                            break
+                        except Exception:
+                            continue
+
+                if img_loc is None:
+                    for selector in QR_SELECTORS:
+                        candidate = page.locator(selector).first
+                        try:
+                            candidate.wait_for(state="visible", timeout=2000)
+                            img_loc = candidate
+                            ulog(f"QR selector matched in page: {selector}")
+                            break
+                        except Exception:
+                            continue
+
+                if img_loc is None:
+                    raise RuntimeError(f"二维码节点未找到，当前 URL: {page.url}")
                 
                 # Make sure the image is fully loaded
                 time.sleep(2)
                 
                 # Save screenshot of the QR code
-                img_el.screenshot(path=qr_code_path)
+                img_loc.screenshot(path=qr_code_path)
                 
                 with open(qr_code_path, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -149,19 +238,50 @@ def main():
                     "success": True, 
                     "status": "need_scan", 
                     "qrCodeBase64": f"data:image/png;base64,{b64}"
-                }))
-                
+                }), flush=True)
+
+                ulog("Waiting for scan confirmation...")
+                deadline = time.time() + max(10, int(args.wait_after_qr_seconds))
+                while time.time() < deadline:
+                    try:
+                        if page.locator(".weui-desktop-layout__main__bd").count() > 0:
+                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                            browser.close()
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        login_frame = find_login_frame(page)
+                        if login_frame:
+                            for selector in LOGIN_SUCCESS_SELECTORS:
+                                if safe_locator_count(login_frame, selector) > 0:
+                                    print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                                    browser.close()
+                                    return
+                    except Exception:
+                        pass
+                    try:
+                        current_url = page.url
+                        if "platform/post/create" in current_url:
+                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                            browser.close()
+                            return
+                    except Exception:
+                        pass
+                    time.sleep(1)
+
+                print(json.dumps({"success": False, "status": "expired", "error": "二维码已过期，请重新扫码"}), flush=True)
                 browser.close()
                 return
             except Exception as e:
                 ulog(f"Timeout waiting for QR code: {e}")
-                print(json.dumps({"success": False, "error": "无法获取登录二维码或页面结构已变"}))
+                print(json.dumps({"success": False, "error": "无法获取登录二维码或页面结构已变"}), flush=True)
                 browser.close()
                 return
             
     except Exception as e:
         ulog(f"Fatal error: {e}")
-        print(json.dumps({"success": False, "error": str(e)}))
+        print(json.dumps({"success": False, "error": str(e)}), flush=True)
 
 if __name__ == "__main__":
     main()
