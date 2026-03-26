@@ -451,7 +451,7 @@ const clearErrorState = () => {
       ...config.value,
       [platformKey]: {
         ...config.value[platformKey],
-        [field]: typeof config.value[platformKey][field] === 'boolean' ? Boolean(value) : String(value ?? '')
+        [field]: typeof config.value[platformKey][field] === 'boolean' ? Boolean(value) : (Array.isArray(value) ? value : String(value ?? ''))
       }
     };
   };
