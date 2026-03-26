@@ -133,20 +133,19 @@ def is_logged_in_dashboard(page, context=None):
     if has_indicators:
         return True
 
-    # 5. Success if we are on platform AND the login iframe is gone
-    if is_on_platform or not is_still_login_url:
-        is_login_iframe_present = False
-        for frame in page.frames:
-            try:
-                if "login-for-iframe" in (frame.url or ""):
-                    is_login_iframe_present = True
-                    break
-            except: pass
-        
-        # If we were scanned and now the iframe is gone, it's a success
-        if not is_login_iframe_present:
-            ulog("Login iframe disappeared - treating as success.")
-            return True
+    # 5. Success if the login iframe is gone/removed (This often happens *before* the main URL redirects)
+    is_login_iframe_present = False
+    for frame in page.frames:
+        try:
+            if "login-for-iframe" in (frame.url or ""):
+                is_login_iframe_present = True
+                break
+        except: pass
+    
+    # If the login iframe is gone, and we were previously in the 'scanned' state, that's a huge sign
+    if not is_login_iframe_present:
+        ulog("Login iframe disappeared - treating as potential success.")
+        return True
 
     return False
 
@@ -393,11 +392,17 @@ def main():
                             trigger_sel = label
                             break
                         if login_frame:
-                            f_loc = login_frame.locator(sel).first
-                            if f_loc.count() > 0 and f_loc.is_visible():
-                                is_scanned = True
-                                trigger_sel = f"frame:{label}"
-                                break
+                            try:
+                                f_loc = login_frame.locator(sel).first
+                                if f_loc.count() > 0 and f_loc.is_visible():
+                                    is_scanned = True
+                                    trigger_sel = f"frame:{label}"
+                                    break
+                            except Exception as e:
+                                if "Frame was detached" in str(e) and last_check_status == "scanned":
+                                    ulog("Login frame detached during scan - likely success.")
+                                    is_scanned = False # Let it fall through to success check
+                                    break
                     
                     if not is_scanned:
                         for text in ["请在手机上确认", "请在手机端确认"]:
