@@ -132,6 +132,7 @@ function createPublishStore(deps) {
 
   function normalizePublishConfig(config) {
     const base = {
+      global: { autoPilotEnabled: false, autoPilotFetchTime: '07:30', autoPilotTime: '08:00', autoPilotCount: 1, autoPilotAccountIds: [] },
       wechatChannels: { enabled: false, accounts: [] },
       douyin: { enabled: false, displayName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
       xiaohongshu: { enabled: false, displayName: '', appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
@@ -140,6 +141,16 @@ function createPublishStore(deps) {
     };
     const source = config && typeof config === 'object' ? config : {};
     const next = deepClone(base);
+
+    const incomingGlobal = source?.global;
+    if (incomingGlobal && typeof incomingGlobal === 'object') {
+      next.global.autoPilotEnabled = Boolean(incomingGlobal.autoPilotEnabled);
+      next.global.autoPilotFetchTime = String(incomingGlobal.autoPilotFetchTime || '07:30').trim();
+      next.global.autoPilotTime = String(incomingGlobal.autoPilotTime || '08:00').trim();
+      next.global.autoPilotCount = Math.max(1, Math.min(10, parseInt(incomingGlobal.autoPilotCount || 1, 10)));
+      next.global.autoPilotAccountIds = Array.isArray(incomingGlobal.autoPilotAccountIds) ? incomingGlobal.autoPilotAccountIds.map(s => String(s || '').trim()) : [];
+      next.global.autoPilotTimes = Array.isArray(incomingGlobal.autoPilotTimes) ? incomingGlobal.autoPilotTimes.map(s => String(s || '').trim()) : [];
+    }
 
     for (const platform of ['douyin', 'xiaohongshu', 'x', 'youtube']) {
       const incoming = source?.[platform];
@@ -511,6 +522,21 @@ function createPublishStore(deps) {
     return payload;
   }
 
+  function getDueScheduledJobs(timestamp) {
+    try {
+      const dbDate = new Date(timestamp).toISOString();
+      const rows = db.prepare(`
+        SELECT data FROM publish_jobs_v1 
+        WHERE json_extract(data, '$.status') = 'scheduled_wait' 
+          AND datetime(json_extract(data, '$.scheduledTime')) <= datetime(?)
+      `).all(dbDate);
+      return rows.map(r => JSON.parse(r.data));
+    } catch(err) {
+      console.error('SQLite query error for scheduled jobs:', err);
+      return [];
+    }
+  }
+
   return {
     getWechatAccountMap,
     readPublishConfig,
@@ -525,7 +551,9 @@ function createPublishStore(deps) {
     collectPlatformValidation,
     sanitizePlatformConfigInput,
     validateWechatTaskConfig,
-    reconcileAndPersistPublishJobs
+    reconcileAndPersistPublishJobs,
+    getDueScheduledJobs,
+    makeJobId
   };
 }
 

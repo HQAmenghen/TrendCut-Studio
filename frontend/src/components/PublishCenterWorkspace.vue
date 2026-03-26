@@ -105,6 +105,66 @@
             </button>
           </div>
           <div class="panel-body config-scroll">
+            <div class="platform-block" style="border: 1px dashed var(--strong-text); background: rgba(0,0,0,0.1);">
+              <div class="platform-block-head">
+                <div>
+                  <div class="platform-name">🤖 无人值守全栈托管 (Auto-Pilot)</div>
+                  <div class="platform-tip">开启后：到达设定抓榜时间将自动获取榜单，按选定数量自动送入本地竖屏渲染，产出后自动建档并等待定点发布。</div>
+                </div>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    :checked="!!center.config.value?.global?.autoPilotEnabled"
+                    @change="center.updateConfigField('global', 'autoPilotEnabled', $event.target.checked)"
+                  />
+                  全面接管
+                </label>
+              </div>
+              <div class="px-3 pb-3 pt-0" v-if="center.config.value?.global?.autoPilotEnabled">
+                <div class="flex gap-4 items-center mb-4">
+                  <div>
+                    <label class="control-label text-xs mb-1 block">自动抓榜时间</label>
+                    <input type="time" class="input-dark text-sm w-24" :value="center.config.value.global.autoPilotFetchTime || '07:30'" @input="center.updateConfigField('global', 'autoPilotFetchTime', $event.target.value)" />
+                  </div>
+                  <div>
+                    <label class="control-label text-xs mb-1 block">发帖数量 (Top N)</label>
+                    <input type="number" min="1" max="10" class="input-dark text-sm w-24" :value="center.config.value.global.autoPilotCount" @input="center.updateConfigField('global', 'autoPilotCount', $event.target.value)" />
+                  </div>
+                </div>
+                
+                <div class="mt-2 border-t border-gray-700/50 pt-3">
+                  <label class="control-label text-xs mb-2 block">精细化定点分发策略</label>
+                  <div class="text-xs text-gray-500 mb-3">为不同名次的素材独立指定其目标账号与确切投递时间：</div>
+                  <div v-for="i in Number(center.config.value.global.autoPilotCount) || 1" :key="i" class="flex gap-2 items-center mb-2">
+                    <span class="text-xs text-gray-400 w-12" style="font-family: monospace;">Top {{ i }}:</span>
+                    <select
+                      class="input-dark text-sm flex-1" style="max-width: 200px;"
+                      :value="(center.config.value.global.autoPilotAccountIds || [])[i-1] || ''"
+                      @change="
+                        let arr = [...(center.config.value.global.autoPilotAccountIds || [])];
+                        arr[i-1] = $event.target.value;
+                        center.updateConfigField('global', 'autoPilotAccountIds', arr);
+                      "
+                    >
+                      <option value="">默认（首个绑定）</option>
+                      <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
+                        {{ account.label }}
+                      </option>
+                    </select>
+                    <input
+                      type="time" class="input-dark text-sm w-24 ml-1"
+                      :value="(center.config.value.global.autoPilotTimes || [])[i-1] || '08:00'"
+                      @input="
+                        let tArr = [...(center.config.value.global.autoPilotTimes || [])];
+                        tArr[i-1] = $event.target.value;
+                        center.updateConfigField('global', 'autoPilotTimes', tArr);
+                      "
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div
               v-for="platform in center.platformDefs"
               :key="platform.key"
@@ -341,8 +401,16 @@
                     </select>
                   </div>
 
+                  <div>
+                    <div class="field-row">
+                      <label class="control-label">定时发布（选填）</label>
+                    </div>
+                    <div class="summary-meta" style="margin-bottom: 8px;">设定时间后，只要本地服务器保持运行，系统将在指定时间自动提交发布。</div>
+                    <input type="datetime-local" class="input-dark text-sm" :value="center.editor.value.scheduledTime" @input="center.editor.value.scheduledTime = $event.target.value" />
+                  </div>
+
                   <button type="button" class="btn-primary" @click="center.createJob" :disabled="center.creating.value">
-                    <span v-if="!center.creating.value">🚀 创建一键发布任务</span>
+                    <span v-if="!center.creating.value">{{ center.editor.value.scheduledTime ? '⏰ 加入定时发布队列' : '🚀 创建一键发布任务' }}</span>
                     <span v-else>⏳ 正在整理发布任务...</span>
                   </button>
 

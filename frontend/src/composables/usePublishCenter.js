@@ -247,6 +247,7 @@ const clearErrorState = () => {
     tagStrategy: 'system',
     tags: '',
     coverUrl: '',
+    scheduledTime: '',
     platforms: ['wechatChannels'],
     platformSelections: {
       wechatChannels: {
@@ -417,6 +418,15 @@ const clearErrorState = () => {
     editor.value.tagStrategy = job?.publishData?.tagStrategy === 'model' ? 'model' : 'system';
     editor.value.tags = normalizeTags(job?.publishData?.tags || []).join(', ');
     editor.value.coverUrl = job?.publishData?.coverUrl || '';
+    
+    if (job?.scheduledTime) {
+      // datetime-local 格式需求: YYYY-MM-DDThh:mm
+      const rawDate = new Date(job.scheduledTime);
+      editor.value.scheduledTime = new Date(rawDate.getTime() - (rawDate.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
+    } else {
+      editor.value.scheduledTime = '';
+    }
+    
     editor.value.platforms = Array.isArray(job?.selectedPlatforms) && job.selectedPlatforms.length ? [...job.selectedPlatforms] : ['wechatChannels'];
     editor.value.platformSelections = job?.platformSelections && typeof job.platformSelections === 'object'
       ? JSON.parse(JSON.stringify(job.platformSelections))
@@ -522,6 +532,7 @@ const clearErrorState = () => {
         tagStrategy: editor.value.tagStrategy,
         tags: normalizeTags(editor.value.tags),
         coverUrl: editor.value.coverUrl,
+        scheduledTime: editor.value.scheduledTime,
         platforms: editor.value.platforms,
         platformSelections: editor.value.platformSelections
       });

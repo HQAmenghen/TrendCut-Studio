@@ -167,6 +167,7 @@ function createPublishHandlers(deps) {
         const description = String(req.body?.description || '').trim();
         const tags = Array.isArray(req.body?.tags) ? req.body.tags : String(req.body?.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
         const coverUrl = String(req.body?.coverUrl || '').trim();
+        const scheduledTime = String(req.body?.scheduledTime || '').trim();
         const tagStrategy = String(req.body?.tagStrategy || 'system').trim() === 'model' ? 'model' : 'system';
 
         if (!assetId) return sendError(res, { status: 400, code: 'PUBLISH_ASSET_MISSING', stage: 'publish.create_job', error: '请选择要发布的视频素材' });
@@ -250,7 +251,8 @@ function createPublishHandlers(deps) {
           updatedAt: new Date().toISOString(),
           archived: false,
           archivedAt: null,
-          status: platformErrors.length > 0 ? 'partial_ready' : 'ready',
+          status: scheduledTime ? 'scheduled_wait' : (platformErrors.length > 0 ? 'partial_ready' : 'ready'),
+          scheduledTime: scheduledTime ? new Date(scheduledTime).toISOString() : null,
           asset,
           publishData,
           selectedPlatforms,

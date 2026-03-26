@@ -53,6 +53,7 @@ const { createSystemHandlers } = require('./server/services/system/handlers');
 const { createSelfCheckService } = require('./server/services/system/selfCheck');
 const { registerPublishRoutes } = require('./server/routes/publish');
 const { registerSystemRoutes } = require('./server/routes/system');
+const { startScheduler } = require('./server/services/system/scheduler');
 
 loadProjectEnv(__dirname);
 
@@ -688,7 +689,14 @@ const {
 
     registerPublishRoutes(app, publishHandlers);
 
-
+    startScheduler({
+        publishStore,
+        wechatRpaService,
+        xaiService,
+        verticalQueueService,
+        generatePublishDescription,
+        publishAssetsService
+    });
 
     const PORT = Number(process.env.PORT || 3001);
     const HOST = process.env.HOST || "0.0.0.0";
