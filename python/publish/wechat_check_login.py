@@ -299,8 +299,10 @@ def main():
 
                 # 2. Redirect check
                 try:
-                    if any_frame_url_contains(page, "platform/post/create") or any_page_url_contains(browser, "platform/post/create") or "platform/details" in page.url:
-                        ulog("Login detected via URL redirect.")
+                    current_url = page.url
+                    is_dashboard = ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url)
+                    if is_dashboard or any_frame_url_contains(page, "platform/post/create") or any_page_url_contains(browser, "platform/post/create") or "platform/details" in current_url:
+                        ulog(f"Login detected via URL redirect: {current_url}")
                         print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                         browser.close()
                         return
@@ -319,7 +321,21 @@ def main():
                         print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
                         last_check_status = "scanned"
                     
-                    if not is_scanned:
+                    # If we WERE scanned and now the QR or its frame is gone, it's a strong login signal
+                    if last_check_status == "scanned":
+                        qr_still_there = False
+                        try:
+                            if img_loc and img_loc.is_visible(timeout=500):
+                                qr_still_there = True
+                        except: pass
+                        
+                        if not qr_still_there:
+                            ulog("QR disappeared after scan; checking for login success...")
+                            if has_any_success_selector(page) or (login_frame and has_any_success_selector(login_frame)) or "login" not in page.url:
+                                ulog("Login confirmed after QR disappearance.")
+                                print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                                browser.close()
+                                return
                         # Check QR refresh
                         current_qr_b64 = get_qr_b64(img_loc)
                         if current_qr_b64 and current_qr_b64 != last_qr_b64:
