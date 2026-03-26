@@ -452,25 +452,15 @@ def main():
                         
                         if not qr_still_there:
                             ulog("QR disappeared after scan; checking for login success...")
-                            # Verification before final logged_in
-                            cur_url = page.url
-                            on_dash = ("channels.weixin.qq.com/platform" in cur_url and "login" not in cur_url)
-                            if on_dash or has_any_success_selector(page) or (login_frame and has_any_success_selector(login_frame)):
-                                ulog(f"Login confirmed after scan & QR disappearance. URL: {cur_url}")
+                            if is_logged_in_dashboard(page, browser):
+                                ulog("Login confirmed after scan & QR disappearance.")
                                 print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                                 time.sleep(3)
                                 browser.close()
                                 return
-                        # Check QR refresh
-                        current_qr_b64 = get_qr_b64(img_loc)
-                        if current_qr_b64 and current_qr_b64 != last_qr_b64:
-                            ulog("QR refreshed.")
-                            last_qr_b64 = current_qr_b64
-                            last_check_status = "need_scan"
-                            if args.feishu_app_id and args.feishu_app_secret and args.feishu_webhook:
-                                image_key = upload_to_feishu(args.feishu_app_id, args.feishu_app_secret, qr_code_path)
-                                if image_key: push_to_feishu_webhook(args.feishu_webhook, args.account_id, image_key)
-                            print(json.dumps({"success": True, "status": "need_scan", "qrCodeBase64": f"data:image/png;base64,{current_qr_b64}", "message": "二维码已刷新"}), flush=True)
+                        
+                        # Only check for QR refresh if we are NOT scanned anymore
+                        # (The previous 'QR refreshed' logic here was causing a loop because masks are dynamic)
                 except: pass
 
                 time.sleep(2)
