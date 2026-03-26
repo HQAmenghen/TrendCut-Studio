@@ -373,7 +373,6 @@ const {
     readPublishConfig,
     writePublishConfig,
     readPublishJobs,
-        readPublishConfig,
     writePublishJobs,
     updatePublishJob,
     updatePublishPlatformTask,
