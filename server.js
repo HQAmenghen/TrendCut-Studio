@@ -397,311 +397,312 @@ const wechatRpaService = createWechatRpaService({
     wechatRpaProfileRoot: WECHAT_RPA_PROFILE_ROOT,
     buildShortTitle,
     readPublishJobs,
-    readPublishConfig,
-    validateWechatTaskConfig,
-    updatePublishPlatformTask
-});
+        validateWechatTaskConfig,
+        updatePublishPlatformTask
+    });
 
-const {
-    startWechatRpa,
-    retryWechatRpa,
-    cancelWechatRpa
-} = wechatRpaService;
+    const {
+        startWechatRpa,
+        retryWechatRpa,
+        cancelWechatRpa,
+        startAllWechatKeepAlives
+    } = wechatRpaService;
 
-const systemHandlers = createSystemHandlers({
-    fs,
-    path,
-    spawn,
-    sendError,
-    baseDir: __dirname,
-    pipelineDir: PIPELINE_DIR,
-    selfCheckService: createSelfCheckService({
+    const systemHandlers = createSystemHandlers({
         fs,
-        spawnSync,
-        envRequirements: [
-            { key: 'COMFYUI_BASE_URL', label: 'ComfyUI 地址', level: 'warn', hint: '未配置时数字人生成链路不可用' },
-            { key: 'GEMINI_API_KEY', label: 'Gemini API Key', level: 'warn', hint: '若只配置 GOOGLE_API_KEY 可忽略此项' },
-            { key: 'GOOGLE_API_KEY', label: 'Google API Key', level: 'warn', hint: '若已配置 GEMINI_API_KEY 可忽略此项' },
-            { key: 'XAI_API_KEY', label: 'xAI API Key', level: 'warn', hint: '未配置时 xai 榜单链路不可用' }
-        ],
-        directoryChecks: [
-            { key: 'public', label: 'public 目录', path: PUBLIC_DIR },
-            { key: 'uploads', label: 'uploads 目录', path: UPLOADS_DIR },
-            { key: 'runtime', label: 'runtime_jobs 目录', path: RUNTIME_ROOT, level: 'warn' },
-            { key: 'publish', label: 'publish 目录', path: PUBLISH_CENTER_DIR }
-        ],
-        fileChecks: [
-            { key: 'workflow', label: '工作流配置', path: WORKFLOW_PATH },
-            { key: 'run_asr', label: 'ASR 脚本', path: path.join(PIPELINE_DIR, 'run_asr.py') },
-            { key: 'generate_title', label: '标题生成脚本', path: path.join(PIPELINE_DIR, 'generate_title.py') },
-            { key: 'publish_description', label: '发布描述脚本', path: PUBLISH_DESCRIPTION_SCRIPT },
-            { key: 'wechat_rpa', label: '微信发布脚本', path: WECHAT_RPA_SCRIPT },
-            { key: 'xai_runner', label: 'xAI 榜单脚本', path: XAI_TOP10_SCRIPT }
-        ],
-        commandChecks: [
-            { key: 'python', label: 'Python', command: 'python', args: ['--version'], hint: '请确认 python 已加入 PATH' },
-            { key: 'ffmpeg', label: 'FFmpeg', command: 'ffmpeg', args: ['-version'], hint: '请确认 ffmpeg 已加入 PATH' },
-            {
-                key: 'playwright_python',
-                label: 'Playwright Python',
-                command: 'python',
-                args: ['-c', 'from playwright.sync_api import sync_playwright; print("playwright-ok")'],
-                level: 'warn',
-                hint: '未安装时微信视频号自动发布不可用'
-            }
-        ]
-    }),
-    editableJsonFiles: EDITABLE_JSON_FILES,
-    resolveEditableJsonPath,
-    workflowPath: WORKFLOW_PATH,
-    readWorkflow,
-    extractWorkflowConfig,
-    applyWorkflowConfig,
-    writeWorkflow,
-    runPythonScript
-});
+        path,
+        spawn,
+        sendError,
+        baseDir: __dirname,
+        pipelineDir: PIPELINE_DIR,
+        selfCheckService: createSelfCheckService({
+            fs,
+            spawnSync,
+            envRequirements: [
+                { key: 'COMFYUI_BASE_URL', label: 'ComfyUI 地址', level: 'warn', hint: '未配置时数字人生成链路不可用' },
+                { key: 'GEMINI_API_KEY', label: 'Gemini API Key', level: 'warn', hint: '若只配置 GOOGLE_API_KEY 可忽略此项' },
+                { key: 'GOOGLE_API_KEY', label: 'Google API Key', level: 'warn', hint: '若已配置 GEMINI_API_KEY 可忽略此项' },
+                { key: 'XAI_API_KEY', label: 'xAI API Key', level: 'warn', hint: '未配置时 xai 榜单链路不可用' }
+            ],
+            directoryChecks: [
+                { key: 'public', label: 'public 目录', path: PUBLIC_DIR },
+                { key: 'uploads', label: 'uploads 目录', path: UPLOADS_DIR },
+                { key: 'runtime', label: 'runtime_jobs 目录', path: RUNTIME_ROOT, level: 'warn' },
+                { key: 'publish', label: 'publish 目录', path: PUBLISH_CENTER_DIR }
+            ],
+            fileChecks: [
+                { key: 'workflow', label: '工作流配置', path: WORKFLOW_PATH },
+                { key: 'run_asr', label: 'ASR 脚本', path: path.join(PIPELINE_DIR, 'run_asr.py') },
+                { key: 'generate_title', label: '标题生成脚本', path: path.join(PIPELINE_DIR, 'generate_title.py') },
+                { key: 'publish_description', label: '发布描述脚本', path: PUBLISH_DESCRIPTION_SCRIPT },
+                { key: 'wechat_rpa', label: '微信发布脚本', path: WECHAT_RPA_SCRIPT },
+                { key: 'xai_runner', label: 'xAI 榜单脚本', path: XAI_TOP10_SCRIPT }
+            ],
+            commandChecks: [
+                { key: 'python', label: 'Python', command: 'python', args: ['--version'], hint: '请确认 python 已加入 PATH' },
+                { key: 'ffmpeg', label: 'FFmpeg', command: 'ffmpeg', args: ['-version'], hint: '请确认 ffmpeg 已加入 PATH' },
+                {
+                    key: 'playwright_python',
+                    label: 'Playwright Python',
+                    command: 'python',
+                    args: ['-c', 'from playwright.sync_api import sync_playwright; print("playwright-ok")'],
+                    level: 'warn',
+                    hint: '未安装时微信视频号自动发布不可用'
+                }
+            ]
+        }),
+        editableJsonFiles: EDITABLE_JSON_FILES,
+        resolveEditableJsonPath,
+        workflowPath: WORKFLOW_PATH,
+        readWorkflow,
+        extractWorkflowConfig,
+        applyWorkflowConfig,
+        writeWorkflow,
+        runPythonScript
+    });
 
-function spawnScript(scriptPath, args, options = {}) {
-    return runPythonScript(scriptPath, args, options);
-}
-
-async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json") {
-    const subtitlesPath = path.join(pipelineDir, subtitlesFileName);
-    const scriptPath = path.join(PIPELINE_DIR, 'generate_title.py');
-    try {
-        const result = await runPythonScript(scriptPath, ['--subtitles', subtitlesPath], { cwd: PIPELINE_DIR });
-        const title = String(result.protocol?.result?.title || result.stdout || '').trim();
-        if (title) {
-            return title;
-        }
-        throw new Error('generate_title.py 未输出有效标题');
-    } catch (err) {
-        const reason = err?.details || err?.message || 'generate_title.py 未输出有效标题';
-        console.error(`generate_title.py failed: ${reason}`);
-        throw new Error(`自动标题生成失败: ${reason}`);
+    function spawnScript(scriptPath, args, options = {}) {
+        return runPythonScript(scriptPath, args, options);
     }
-}
 
-attachProgressRoute(app);
-const pipelineHandlers = createPipelineHandlers({
-    baseDir: __dirname,
-    pipelineDir: PIPELINE_DIR,
-    defaultComfyBaseUrl: DEFAULT_COMFYUI_BASE_URL,
-    getProgressClient,
-    sendProgressEvent,
-    uploadToComfyUI,
-    listenComfyUIProgress,
-    waitForCompletion,
-    applyWorkflowConfig,
-    readWorkflow,
-    workflowPath: WORKFLOW_PATH,
-    createRuntimeJobDir,
-    readJsonIfExists,
-    writeMediaMetadata,
-    buildFallbackTitleFromSubtitles,
-    generateHotTitle,
-    writeJsonFile,
-    runPythonScript
-});
-
-registerPipelineRoutes(app, upload, pipelineHandlers);
-const xaiService = createXaiService({
-    sendError,
-    resultPath: XAI_TOP10_RESULT,
-    partialPath: XAI_TOP10_PARTIAL,
-    logPath: XAI_TOP10_LOG,
-    errorLogPath: XAI_TOP10_ERROR_LOG,
-    accountsPath: XAI_TOP10_ACCOUNTS,
-    scriptPath: XAI_TOP10_SCRIPT,
-    translateScriptPath: XAI_TOP10_TRANSLATE_SCRIPT,
-    scriptCwd: XAI_TOP10_DIR,
-    fixedAccounts: XAI_TOP10_FIXED_ACCOUNTS,
-    readJsonIfExists,
-    readTextIfExists,
-    tailLines,
-    getProgressClient,
-    sendProgressEvent,
-    runPythonScript,
-    runPythonScriptSync
-});
-
-registerXaiRoutes(app, {
-    getResult: (req, res) => {
+    async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json") {
+        const subtitlesPath = path.join(pipelineDir, subtitlesFileName);
+        const scriptPath = path.join(PIPELINE_DIR, 'generate_title.py');
         try {
-            if (!fs.existsSync(XAI_TOP10_RESULT)) {
-                return sendError(res, { status: 404, code: 'XAI_RESULT_NOT_FOUND', stage: 'xai.result', error: '结果文件不存在，请先运行一次榜单任务' });
+            const result = await runPythonScript(scriptPath, ['--subtitles', subtitlesPath], { cwd: PIPELINE_DIR });
+            const title = String(result.protocol?.result?.title || result.stdout || '').trim();
+            if (title) {
+                return title;
             }
-            const result = xaiService.ensureTranslatedResult();
-            res.json({ success: true, result });
+            throw new Error('generate_title.py 未输出有效标题');
         } catch (err) {
-            sendError(res, { status: 500, code: 'XAI_RESULT_READ_FAILED', stage: 'xai.result', error: '读取榜单结果失败', details: err.message });
-        }
-    },
-    getStatus: (_req, res) => {
-        try {
-            res.json({ success: true, status: xaiService.getStatus() });
-        } catch (err) {
-            sendError(res, { status: 500, code: 'XAI_STATUS_READ_FAILED', stage: 'xai.status', error: '读取榜单状态失败', details: err.message });
-        }
-    },
-    getConfig: (_req, res) => {
-        try {
-            res.json({ success: true, config: xaiService.readConfig() });
-        } catch (err) {
-            sendError(res, { status: 500, code: 'XAI_CONFIG_READ_FAILED', stage: 'xai.config', error: '读取账号池配置失败', details: err.message });
-        }
-    },
-    postConfig: (req, res) => {
-        try {
-            const config = xaiService.writeConfig(req.body?.accounts || []);
-            res.json({ success: true, config });
-        } catch (err) {
-            const status = err.message === '账号池不能为空' ? 400 : 500;
-            sendError(res, { status, code: status === 400 ? 'XAI_ACCOUNTS_EMPTY' : 'XAI_CONFIG_WRITE_FAILED', stage: 'xai.config', error: err.message, details: err.message });
-        }
-    },
-    run: (req, res) => xaiService.run(req.body?.clientId, res)
-});
-verticalQueueService = createVerticalQueueService({
-    baseDir: __dirname,
-    pipelineDir: PIPELINE_DIR,
-    verticalQueueRoot: VERTICAL_QUEUE_ROOT,
-    verticalPublicDir: VERTICAL_PUBLIC_DIR,
-    ensureDir,
-    makeJobId,
-    slugifyText,
-    sanitizeProcessLogLines,
-    formatElapsedSeconds,
-    stopProcessTree,
-    removeDirIfExists,
-    buildFallbackTitleFromSubtitles,
-    spawnScript,
-    writeJsonFile,
-    runPythonScript
-});
-
-registerVerticalRoutes(app, {
-    getStatus: (_req, res) => {
-        try {
-            res.json({ success: true, status: verticalQueueService.getStatus() });
-        } catch (err) {
-            sendError(res, { status: 500, code: 'VERTICAL_STATUS_FAILED', stage: 'vertical.queue', error: '读取竖屏队列状态失败', details: err.message });
-        }
-    },
-    enqueue: (req, res) => {
-        try {
-            const items = Array.isArray(req.body?.items) ? req.body.items : [];
-            verticalQueueService.setConcurrency(req.body?.concurrency);
-            const validItems = items
-                .map((item) => ({
-                    sourceType: 'xai_top10',
-                    author: item.author,
-                    postId: item.post_id || item.postId,
-                    postUrl: item.post_url || item.postUrl,
-                    title: item.title,
-                    summary: item.author_summary || item.summary,
-                    videoUrl: item.video_url || item.videoUrl,
-                    renderOptions: item.renderOptions || {}
-                }))
-                .filter((item) => item.videoUrl);
-
-            if (validItems.length === 0) {
-                return sendError(res, { status: 400, code: 'VERTICAL_VIDEO_URLS_EMPTY', stage: 'vertical.queue', error: '没有可入队的视频链接' });
-            }
-
-            const jobs = validItems.map((item) => verticalQueueService.enqueue(item));
-            resetPublishAssetsCache();
-            res.json({
-                success: true,
-                queued: jobs.length,
-                jobs,
-                status: verticalQueueService.getStatus()
-            });
-        } catch (err) {
-            sendError(res, { status: 500, code: 'VERTICAL_ENQUEUE_FAILED', stage: 'vertical.queue', error: '创建竖屏队列任务失败', details: err.message });
-        }
-    },
-    cancel: (req, res) => {
-        try {
-            verticalQueueService.cancel(req.params.jobId);
-            res.json({ success: true, status: verticalQueueService.getStatus() });
-        } catch (err) {
-            sendError(res, { status: err.status || 500, code: 'VERTICAL_CANCEL_FAILED', stage: 'vertical.queue', error: err.message, details: err.message });
-        }
-    },
-    remove: (req, res) => {
-        try {
-            verticalQueueService.remove(req.params.jobId);
-            resetPublishAssetsCache();
-            res.json({ success: true, status: verticalQueueService.getStatus() });
-        } catch (err) {
-            sendError(res, { status: err.status || 500, code: 'VERTICAL_REMOVE_FAILED', stage: 'vertical.queue', error: err.message, details: err.message });
+            const reason = err?.details || err?.message || 'generate_title.py 未输出有效标题';
+            console.error(`generate_title.py failed: ${reason}`);
+            throw new Error(`自动标题生成失败: ${reason}`);
         }
     }
-});
 
-const standaloneHandler = createStandaloneHandler({
-    sendError,
-    baseDir: __dirname,
-    pipelineDir: PIPELINE_DIR,
-    upload,
-    getProgressClient,
-    sendProgressEvent,
-    createRuntimeJobDir,
-    generateHotTitle,
-    writeJsonFile,
-    writeMediaMetadata,
-    readJsonIfExists,
-    runPythonScript
-});
+    attachProgressRoute(app);
+    const pipelineHandlers = createPipelineHandlers({
+        baseDir: __dirname,
+        pipelineDir: PIPELINE_DIR,
+        defaultComfyBaseUrl: DEFAULT_COMFYUI_BASE_URL,
+        getProgressClient,
+        sendProgressEvent,
+        uploadToComfyUI,
+        listenComfyUIProgress,
+        waitForCompletion,
+        applyWorkflowConfig,
+        readWorkflow,
+        workflowPath: WORKFLOW_PATH,
+        createRuntimeJobDir,
+        readJsonIfExists,
+        writeMediaMetadata,
+        buildFallbackTitleFromSubtitles,
+        generateHotTitle,
+        writeJsonFile,
+        runPythonScript
+    });
 
-registerStandaloneRoute(app, standaloneHandler);
-registerSystemRoutes(app, systemHandlers);
+    registerPipelineRoutes(app, upload, pipelineHandlers);
+    const xaiService = createXaiService({
+        sendError,
+        resultPath: XAI_TOP10_RESULT,
+        partialPath: XAI_TOP10_PARTIAL,
+        logPath: XAI_TOP10_LOG,
+        errorLogPath: XAI_TOP10_ERROR_LOG,
+        accountsPath: XAI_TOP10_ACCOUNTS,
+        scriptPath: XAI_TOP10_SCRIPT,
+        translateScriptPath: XAI_TOP10_TRANSLATE_SCRIPT,
+        scriptCwd: XAI_TOP10_DIR,
+        fixedAccounts: XAI_TOP10_FIXED_ACCOUNTS,
+        readJsonIfExists,
+        readTextIfExists,
+        tailLines,
+        getProgressClient,
+        sendProgressEvent,
+        runPythonScript,
+        runPythonScriptSync
+    });
 
-const publishHandlers = createPublishHandlers({
-    sendError,
-    readPublishConfig,
-    maskPlatformConfig,
-    sanitizePlatformConfigInput,
-    writePublishConfig,
-    reconcileAndPersistPublishJobs,
-    getCachedPublishAssets,
-    readPublishJobs,
-    writePublishJobs,
-    updatePublishJob,
-    archivePublishJob,
-    archiveCompletedPublishJobs,
-    collectPublishAssets,
-    makeJobId,
-    buildShortTitle,
-    generatePublishDescription,
-    getWechatAccountMap,
-    buildPublishTask,
-    validateWechatTaskConfig,
-    collectPlatformValidation,
-    startWechatRpa,
-    retryWechatRpa,
-    cancelWechatRpa
-});
+    registerXaiRoutes(app, {
+        getResult: (req, res) => {
+            try {
+                if (!fs.existsSync(XAI_TOP10_RESULT)) {
+                    return sendError(res, { status: 404, code: 'XAI_RESULT_NOT_FOUND', stage: 'xai.result', error: '结果文件不存在，请先运行一次榜单任务' });
+                }
+                const result = xaiService.ensureTranslatedResult();
+                res.json({ success: true, result });
+            } catch (err) {
+                sendError(res, { status: 500, code: 'XAI_RESULT_READ_FAILED', stage: 'xai.result', error: '读取榜单结果失败', details: err.message });
+            }
+        },
+        getStatus: (_req, res) => {
+            try {
+                res.json({ success: true, status: xaiService.getStatus() });
+            } catch (err) {
+                sendError(res, { status: 500, code: 'XAI_STATUS_READ_FAILED', stage: 'xai.status', error: '读取榜单状态失败', details: err.message });
+            }
+        },
+        getConfig: (_req, res) => {
+            try {
+                res.json({ success: true, config: xaiService.readConfig() });
+            } catch (err) {
+                sendError(res, { status: 500, code: 'XAI_CONFIG_READ_FAILED', stage: 'xai.config', error: '读取账号池配置失败', details: err.message });
+            }
+        },
+        postConfig: (req, res) => {
+            try {
+                const config = xaiService.writeConfig(req.body?.accounts || []);
+                res.json({ success: true, config });
+            } catch (err) {
+                const status = err.message === '账号池不能为空' ? 400 : 500;
+                sendError(res, { status, code: status === 400 ? 'XAI_ACCOUNTS_EMPTY' : 'XAI_CONFIG_WRITE_FAILED', stage: 'xai.config', error: err.message, details: err.message });
+            }
+        },
+        run: (req, res) => xaiService.run(req.body?.clientId, res)
+    });
+    verticalQueueService = createVerticalQueueService({
+        baseDir: __dirname,
+        pipelineDir: PIPELINE_DIR,
+        verticalQueueRoot: VERTICAL_QUEUE_ROOT,
+        verticalPublicDir: VERTICAL_PUBLIC_DIR,
+        ensureDir,
+        makeJobId,
+        slugifyText,
+        sanitizeProcessLogLines,
+        formatElapsedSeconds,
+        stopProcessTree,
+        removeDirIfExists,
+        buildFallbackTitleFromSubtitles,
+        spawnScript,
+        writeJsonFile,
+        runPythonScript
+    });
 
-registerPublishRoutes(app, publishHandlers);
+    registerVerticalRoutes(app, {
+        getStatus: (_req, res) => {
+            try {
+                res.json({ success: true, status: verticalQueueService.getStatus() });
+            } catch (err) {
+                sendError(res, { status: 500, code: 'VERTICAL_STATUS_FAILED', stage: 'vertical.queue', error: '读取竖屏队列状态失败', details: err.message });
+            }
+        },
+        enqueue: (req, res) => {
+            try {
+                const items = Array.isArray(req.body?.items) ? req.body.items : [];
+                verticalQueueService.setConcurrency(req.body?.concurrency);
+                const validItems = items
+                    .map((item) => ({
+                        sourceType: 'xai_top10',
+                        author: item.author,
+                        postId: item.post_id || item.postId,
+                        postUrl: item.post_url || item.postUrl,
+                        title: item.title,
+                        summary: item.author_summary || item.summary,
+                        videoUrl: item.video_url || item.videoUrl,
+                        renderOptions: item.renderOptions || {}
+                    }))
+                    .filter((item) => item.videoUrl);
+
+                if (validItems.length === 0) {
+                    return sendError(res, { status: 400, code: 'VERTICAL_VIDEO_URLS_EMPTY', stage: 'vertical.queue', error: '没有可入队的视频链接' });
+                }
+
+                const jobs = validItems.map((item) => verticalQueueService.enqueue(item));
+                resetPublishAssetsCache();
+                res.json({
+                    success: true,
+                    queued: jobs.length,
+                    jobs,
+                    status: verticalQueueService.getStatus()
+                });
+            } catch (err) {
+                sendError(res, { status: 500, code: 'VERTICAL_ENQUEUE_FAILED', stage: 'vertical.queue', error: '创建竖屏队列任务失败', details: err.message });
+            }
+        },
+        cancel: (req, res) => {
+            try {
+                verticalQueueService.cancel(req.params.jobId);
+                res.json({ success: true, status: verticalQueueService.getStatus() });
+            } catch (err) {
+                sendError(res, { status: err.status || 500, code: 'VERTICAL_CANCEL_FAILED', stage: 'vertical.queue', error: err.message, details: err.message });
+            }
+        },
+        remove: (req, res) => {
+            try {
+                verticalQueueService.remove(req.params.jobId);
+                resetPublishAssetsCache();
+                res.json({ success: true, status: verticalQueueService.getStatus() });
+            } catch (err) {
+                sendError(res, { status: err.status || 500, code: 'VERTICAL_REMOVE_FAILED', stage: 'vertical.queue', error: err.message, details: err.message });
+            }
+        }
+    });
+
+    const standaloneHandler = createStandaloneHandler({
+        sendError,
+        baseDir: __dirname,
+        pipelineDir: PIPELINE_DIR,
+        upload,
+        getProgressClient,
+        sendProgressEvent,
+        createRuntimeJobDir,
+        generateHotTitle,
+        writeJsonFile,
+        writeMediaMetadata,
+        readJsonIfExists,
+        runPythonScript
+    });
+
+    registerStandaloneRoute(app, standaloneHandler);
+    registerSystemRoutes(app, systemHandlers);
+
+    const publishHandlers = createPublishHandlers({
+        sendError,
+        readPublishConfig,
+        maskPlatformConfig,
+        sanitizePlatformConfigInput,
+        writePublishConfig,
+        reconcileAndPersistPublishJobs,
+        getCachedPublishAssets,
+        readPublishJobs,
+        writePublishJobs,
+        updatePublishJob,
+        archivePublishJob,
+        archiveCompletedPublishJobs,
+        collectPublishAssets,
+        makeJobId,
+        buildShortTitle,
+        generatePublishDescription,
+        getWechatAccountMap,
+        buildPublishTask,
+        validateWechatTaskConfig,
+        collectPlatformValidation,
+        startWechatRpa,
+        retryWechatRpa,
+        cancelWechatRpa
+    });
+
+    registerPublishRoutes(app, publishHandlers);
 
 
 
-const PORT = Number(process.env.PORT || 3001);
-const HOST = process.env.HOST || "0.0.0.0";
+    const PORT = Number(process.env.PORT || 3001);
+    const HOST = process.env.HOST || "0.0.0.0";
 
-ensureDir(VERTICAL_QUEUE_ROOT);
-ensureDir(VERTICAL_PUBLIC_DIR);
-ensureDir(RUNTIME_ROOT);
-ensureDir(PUBLISH_CENTER_DIR);
-ensureDir(WECHAT_RPA_PROFILE_ROOT);
-ensureDir(WECHAT_RPA_TASK_DIR);
-cleanupRuntimeJobDirs();
-if (!fs.existsSync(PUBLISH_JOBS_PATH)) {
-    writePublishJobs({ jobs: [] });
-}
+    ensureDir(VERTICAL_QUEUE_ROOT);
+    ensureDir(VERTICAL_PUBLIC_DIR);
+    ensureDir(RUNTIME_ROOT);
+    ensureDir(PUBLISH_CENTER_DIR);
+    ensureDir(WECHAT_RPA_PROFILE_ROOT);
+    ensureDir(WECHAT_RPA_TASK_DIR);
+    cleanupRuntimeJobDirs();
+    if (!fs.existsSync(PUBLISH_JOBS_PATH)) {
+        writePublishJobs({ jobs: [] });
+    }
 
-app.listen(PORT, HOST, () => {
-    console.log(`🚀 AI面板服务端启动成功: http://${HOST}:${PORT}`);
-});
+    app.listen(PORT, HOST, () => {
+        console.log(`🚀 AI面板服务端启动成功: http://${HOST}:${PORT}`);
+        startAllWechatKeepAlives();
+    });

@@ -11,6 +11,10 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-pro}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://127.0.0.1:8188}
     volumes:
       - ./public/presets:/app/public/presets
-      - ./uploads:/app/uploads
+      - ./data/uploads:/app/data/uploads
+      - ./python/publish/browser_profiles:/app/python/publish/browser_profiles
+      - ./python/publish/publish_jobs.db:/app/python/publish/publish_jobs.db

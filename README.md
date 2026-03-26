@@ -14,7 +14,7 @@
 ## 目录说明
 
 - `server.js`：Node.js 后端入口
-- `server/`：后端 `core / routes / services` 模块
+- `server/`：后端 `core / routes / services` 模块（目前底层使用 `better-sqlite3` 存储数据库）
 - `frontend/`：Vue 组件化前端源码
 - `frontend-dist/`：构建后的默认前端产物
 - `public/`：静态资源与最终成片输出
@@ -40,10 +40,10 @@
 npm install
 ```
 
-安装 Python 依赖：
+为了方便，项目根目录提供了 `requirements.txt`，可直接一键安装 Python 依赖：
 
 ```bash
-pip install -r python/pipeline/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 2. 配置环境变量
@@ -151,6 +151,8 @@ http://192.168.1.23:3001
 ## Docker 运行
 
 ### 1. 构建并启动
+
+当前的 Docker 构建过程会自动拉取依赖、编译打包 Vue 前端代码，最后再启动服务。
 
 ```bash
 docker compose up --build

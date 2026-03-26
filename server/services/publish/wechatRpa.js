@@ -17,6 +17,61 @@ function createWechatRpaService(deps) {
   } = deps;
 
   const publishRuntimeProcesses = new Map();
+  const keepAliveProcesses = new Map();
+
+  function stopKeepAlive(accountId) {
+    const entry = keepAliveProcesses.get(accountId);
+    if (!entry) return;
+    try {
+      stopProcessTree(entry.proc);
+    } catch (_err) {}
+    keepAliveProcesses.delete(accountId);
+    console.log(`[KeepAlive] Stopped daemon for account ${accountId}`);
+  }
+
+  function startKeepAlive(accountId, userDataDir) {
+    if (keepAliveProcesses.has(accountId)) return;
+    const activeAccountRuntime = getActiveWechatRuntimeForAccount(accountId);
+    if (activeAccountRuntime) return;
+
+    const keepAliveScript = path.join(publishCenterDir, 'wechat_keep_alive.py');
+    if (!fs.existsSync(keepAliveScript)) return;
+
+    console.log(`[KeepAlive] Starting daemon for account ${accountId}`);
+    const proc = spawn('python', [keepAliveScript, '--user-data-dir', userDataDir], {
+      cwd: publishCenterDir,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+
+    proc.stdout.on('data', (d) => {
+      const line = d.toString().trim();
+      if (line) console.log(`[KeepAlive ${accountId}]`, line);
+    });
+    proc.stderr.on('data', (d) => {
+      const line = d.toString().trim();
+      if (line) console.error(`[KeepAlive ${accountId} ERR]`, line);
+    });
+    proc.on('close', () => {
+      keepAliveProcesses.delete(accountId);
+    });
+
+    keepAliveProcesses.set(accountId, { proc, userDataDir });
+  }
+
+  function startAllWechatKeepAlives() {
+    try {
+      const publishConfig = readPublishConfig();
+      const wechatConfig = publishConfig.wechatChannels || { enabled: false, accounts: [] };
+      if (!wechatConfig.enabled) return;
+      for (const acc of wechatConfig.accounts || []) {
+        if (!acc.id) continue;
+        const dir = buildWechatProfileDir(acc.id);
+        startKeepAlive(acc.id, dir);
+      }
+    } catch (err) {
+      console.error('[KeepAlive] Failed to start all keep alives:', err.message);
+    }
+  }
 
   function safeUpdatePublishPlatformTask(jobId, platform, patch) {
     try {
@@ -24,6 +79,137 @@ function createWechatRpaService(deps) {
     } catch (err) {
       // console.warn(`Ignore update for deleted job ${jobId}`);
     }
+  }
+
+  function buildWechatProfileDir(accountId) {
+    const safeAccountId = slugifyText(accountId || '', 'default');
+    return path.join(wechatRpaProfileRoot, safeAccountId);
+  }
+
+  function buildWechatPublishPayload(job, wechatAccount) {
+    const tagStrategy = job.publishData?.tagStrategy === 'model' ? 'model' : 'system';
+    const tags = tagStrategy === 'model'
+      ? []
+      : (Array.isArray(job.publishData?.tags) ? job.publishData.tags : []);
+    return {
+      title: job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布',
+      shortTitle: job.publishData?.shortTitle || job.asset?.metadata?.suggestedShortTitle || buildShortTitle(job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布'),
+      description: job.publishData?.description || job.asset?.metadata?.suggestedDescription || '',
+      tags,
+      originalDeclaration: true,
+      publishMode: 'draft',
+      videoPath: job.asset?.path,
+      userDataDir: buildWechatProfileDir(wechatAccount?.id),
+      loginTimeoutSec: 240,
+      headless: false,
+      finderUserName: wechatAccount?.finderUserName || '',
+      helperAccount: wechatAccount?.helperAccount || '',
+      accountId: wechatAccount?.id || '',
+      accountLabel: wechatAccount?.displayName || wechatAccount?.helperAccount || wechatAccount?.finderUserName || ''
+    };
+  }
+
+  function parseWechatRpaLine(line) {
+    const text = String(line || '').trim();
+    if (!text.startsWith('STATUS|')) return null;
+    const parts = text.split('|');
+    if (parts.length < 4) return null;
+    let extra = {};
+    try {
+      extra = parts[4] ? JSON.parse(parts[4]) : {};
+    } catch (_err) {}
+    return {
+      state: parts[1],
+      message: parts[3] || parts[2] || '',
+      extra
+    };
+  }
+
+  function parseWechatLogLine(line) {
+    const text = String(line || '').trim();
+    if (!text.startsWith('LOG|')) return null;
+    return text.slice(4).trim();
+  }
+
+  function getWechatStateProgress(state) {
+    const map = {
+      starting: 3,
+      navigating: 8,
+      need_login: 15,
+      login_ready: 24,
+      uploading: 42,
+      uploaded: 58,
+      editing: 72,
+      edited: 86,
+      ready_for_manual_publish: 100,
+      publishing: 94,
+      success: 100,
+      failed: 100
+    };
+    return map[state] ?? 0;
+  }
+
+  function readWechatRuntimeLogs(jobId) {
+    const payload = readPublishJobs();
+    const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
+    const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
+    return Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
+  }
+
+  function appendWechatRuntimeLog(jobId, line, publishMode, state, message, progress) {
+    if (!line) return;
+    safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
+      runtime: {
+        state,
+        lastMessage: message,
+        updatedAt: new Date().toISOString(),
+        publishMode,
+        progress,
+        logs: [...readWechatRuntimeLogs(jobId), line].slice(-120)
+      }
+    });
+  }
+
+  function stopWechatRpaProcess(runtimeEntry) {
+    if (!runtimeEntry?.proc || runtimeEntry.proc.killed) return;
+    try {
+      stopProcessTree(runtimeEntry.proc);
+    } catch (_err) {}
+  }
+
+  function getActiveWechatRuntimeForAccount(accountId) {
+    for (const entry of publishRuntimeProcesses.values()) {
+      if (entry?.platform === 'wechatChannels' && String(entry.accountId || '').trim() === String(accountId || '').trim()) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  function startWechatRpa(jobId, publishMode = 'draft') {
+    const runtimeKey = `${jobId}:wechatChannels`;
+    if (publishRuntimeProcesses.has(runtimeKey)) {
+      throw new Error('视频号自动发布任务已在运行');
+    }
+
+    const payload = readPublishJobs();
+    const job = (payload.jobs || []).find((item) => item.id === jobId);
+    if (!job) throw new Error('发布任务不存在');
+    const task = (job.platformTasks || []).find((item) => item.platform === 'wechatChannels');
+    if (!task) throw new Error('该任务未选择微信视频号');
+    const publishConfig = readPublishConfig();
+    const wechatConfig = publishConfig.wechatChannels || { enabled: false, accounts: [] };
+    const validation = validateWechatTaskConfig(wechatConfig, task);
+    const missingFields = validation.missingFields;
+    if (missingFields.length > 0) {
+      throw new Error(`微信视频号配置不完整，缺少：${validation.missingFieldLabels.join('，')}`);
+    }
+    const wechatAccount = validation.account;
+    if (!wechatAccount) {
+      throw new Error('未找到对应的视频号发布账号');
+    }
+    const activeAccountRuntime = getActiveWechatRuntimeForAccount(wechatAccount.id);
+    if (activeAccountRuntime && activeAccountRuntime.jobId !== jobId) {
   }
 
   function buildWechatProfileDir(accountId) {
@@ -164,6 +350,8 @@ function createWechatRpaService(deps) {
       throw new Error('视频号 RPA 脚本不存在');
     }
 
+    stopKeepAlive(wechatAccount.id);
+
     const rpaPayload = {
       ...buildWechatPublishPayload(job, wechatAccount),
       publishMode
@@ -262,6 +450,12 @@ function createWechatRpaService(deps) {
     });
     proc.on('close', (code) => {
       publishRuntimeProcesses.delete(runtimeKey);
+      
+      setTimeout(() => {
+        const dir = buildWechatProfileDir(wechatAccount.id);
+        startKeepAlive(wechatAccount.id, dir);
+      }, 5000);
+
       if (runtimeEntry.cancelledByUser) {
         appendWechatRuntimeLog(jobId, '[cancelled] 用户已取消视频号自动化任务', publishMode, 'cancelled', '用户已取消当前任务', 100);
         return;
@@ -336,6 +530,12 @@ function createWechatRpaService(deps) {
     }
     runtimeEntry.cancelledByUser = true;
     stopWechatRpaProcess(runtimeEntry);
+    
+    setTimeout(() => {
+      const dir = buildWechatProfileDir(runtimeEntry.accountId);
+      startKeepAlive(runtimeEntry.accountId, dir);
+    }, 5000);
+    
     safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
       status: 'cancelled',
       lastCancelledAt: new Date().toISOString(),
@@ -353,7 +553,8 @@ function createWechatRpaService(deps) {
   return {
     startWechatRpa,
     retryWechatRpa,
-    cancelWechatRpa
+    cancelWechatRpa,
+    startAllWechatKeepAlives
   };
 }
 
