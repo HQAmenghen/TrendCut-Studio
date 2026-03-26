@@ -17,7 +17,7 @@ def main():
     # Optional performance optimization: Minimal viewport, no download
     browser = p.chromium.launch_persistent_context(
         str(user_data_dir),
-        headless=True,
+        headless=False,
         viewport={"width": 1280, "height": 800},
         accept_downloads=False
     )

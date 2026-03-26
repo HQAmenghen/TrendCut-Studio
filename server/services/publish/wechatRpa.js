@@ -554,7 +554,8 @@ function createWechatRpaService(deps) {
           session.status = 'logged_in';
           session.error = '';
           resolveOnce({ success: true, status: 'logged_in' });
-          scheduleLoginCheckCleanup(accountId, 1000);
+          // Ensure we give the python script enough time to flush its session (currently has a 5s sleep)
+          scheduleLoginCheckCleanup(accountId, 8000);
           return true;
         }
         if (parsed.status === 'scanned') {

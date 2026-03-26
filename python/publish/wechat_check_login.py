@@ -165,7 +165,7 @@ def main():
         with sync_playwright() as p:
             browser = p.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
-                headless=True,
+                headless=False,
                 viewport={"width": 1280, "height": 800},
                 args=["--disable-blink-features=AutomationControlled"]
             )
@@ -191,6 +191,7 @@ def main():
                 if ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url) or has_any_success_selector(page):
                     ulog(f"Login detected! URL: {current_url}")
                     print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                    time.sleep(5)
                     browser.close()
                     return
                 
@@ -216,6 +217,7 @@ def main():
                     if not img_loc and has_any_success_selector(login_frame):
                         ulog("Login detected in iframe!")
                         print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                        time.sleep(5)
                         browser.close()
                         return
                 
@@ -293,6 +295,7 @@ def main():
                     if has_any_success_selector(page) or (login_frame and has_any_success_selector(login_frame)):
                         ulog("Login detected via selector.")
                         print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                        time.sleep(5)
                         browser.close()
                         return
                 except: pass
@@ -304,6 +307,7 @@ def main():
                     if is_dashboard or any_frame_url_contains(page, "platform/post/create") or any_page_url_contains(browser, "platform/post/create") or "platform/details" in current_url:
                         ulog(f"Login detected via URL redirect: {current_url}")
                         print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                        time.sleep(5)
                         browser.close()
                         return
                 except: pass
@@ -334,6 +338,7 @@ def main():
                             if has_any_success_selector(page) or (login_frame and has_any_success_selector(login_frame)) or "login" not in page.url:
                                 ulog("Login confirmed after QR disappearance.")
                                 print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                                time.sleep(5)
                                 browser.close()
                                 return
                         # Check QR refresh
