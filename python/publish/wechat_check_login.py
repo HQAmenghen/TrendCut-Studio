@@ -317,38 +317,55 @@ def main():
 
                 # 3. Scanned state check
                 try:
-                    scanned_indicators = [".qrcode-success", ".weui-desktop-qr-code__success", "text='扫描成功'", "text='已扫码'"]
                     is_scanned = False
-                    for sel in scanned_indicators:
-                        # Check main page
+                    trigger_sel = ""
+                    
+                    # More specific indicators
+                    scanned_indicators = [
+                        (".qrcode-success", ".qrcode-success (indicator)"),
+                        (".weui-desktop-qr-code__success", "weui-success-mask"),
+                        ("text='扫描成功'", "text-scan-success"),
+                        ("text='已扫码'", "text-already-scanned")
+                    ]
+                    
+                    for sel, label in scanned_indicators:
                         loc = page.locator(sel).first
                         if loc.count() > 0 and loc.is_visible():
                             is_scanned = True
+                            trigger_sel = label
                             break
-                        # Check login frame
                         if login_frame:
                             f_loc = login_frame.locator(sel).first
                             if f_loc.count() > 0 and f_loc.is_visible():
                                 is_scanned = True
+                                trigger_sel = f"frame:{label}"
                                 break
-                    # Stronger text check for confirmation
+                    
                     if not is_scanned:
                         for text in ["请在手机上确认", "请在手机端确认"]:
-                            t_loc = page.get_by_text(text).first
+                            t_loc = page.get_by_text(text, exact=False).first
                             if t_loc.count() > 0 and t_loc.is_visible():
                                 is_scanned = True
+                                trigger_sel = f"text:{text}"
                                 break
                             if login_frame:
-                                ft_loc = login_frame.get_by_text(text).first
+                                ft_loc = login_frame.get_by_text(text, exact=False).first
                                 if ft_loc.count() > 0 and ft_loc.is_visible():
                                     is_scanned = True
+                                    trigger_sel = f"frame:text:{text}"
                                     break
+                    
                     if is_scanned and last_check_status != "scanned":
-                        ulog("Scan detected.")
+                        ulog(f"CONFIRMED scan detected via: {trigger_sel}")
                         print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
                         last_check_status = "scanned"
                     
-                    # If we WERE scanned and now the QR or its frame is gone, it's a strong login signal
+                    if not is_scanned and last_check_status == "scanned":
+                        # If scan indicator disappeared, maybe it transitioned back to QR?
+                        ulog("Scan indicator lost, checking if QR returned...")
+                        if img_loc and img_loc.is_visible(timeout=1000):
+                             last_check_status = "need_scan"
+                             ulog("Scan aborted, returned to need_scan.")
                     if last_check_status == "scanned":
                         qr_still_there = False
                         try:
@@ -358,10 +375,13 @@ def main():
                         
                         if not qr_still_there:
                             ulog("QR disappeared after scan; checking for login success...")
-                            if has_any_success_selector(page) or (login_frame and has_any_success_selector(login_frame)) or "login" not in page.url:
-                                ulog("Login confirmed after QR disappearance.")
+                            # Verification before final logged_in
+                            cur_url = page.url
+                            on_dash = ("channels.weixin.qq.com/platform" in cur_url and "login" not in cur_url)
+                            if on_dash or has_any_success_selector(page) or (login_frame and has_any_success_selector(login_frame)):
+                                ulog(f"Login confirmed after scan & QR disappearance. URL: {cur_url}")
                                 print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                                time.sleep(5)
+                                time.sleep(3)
                                 browser.close()
                                 return
                         # Check QR refresh
