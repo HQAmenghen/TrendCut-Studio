@@ -10,6 +10,92 @@ function createPublishStore(deps) {
     buildPublishTask
   } = deps;
 
+  
+  const Database = require('better-sqlite3');
+  const pathLib = require('path');
+  const fsLib = require('fs');
+
+  const dbPath = publishJobsPath.replace('.json', '.db');
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS publish_jobs_v1 (
+      id TEXT PRIMARY KEY,
+      data JSON,
+      updatedAt TEXT
+    );
+  `);
+
+  if (fsLib.existsSync(publishJobsPath)) {
+    try {
+      const oldPayload = readJsonIfExists(publishJobsPath, { jobs: [] });
+      if (Array.isArray(oldPayload.jobs) && oldPayload.jobs.length > 0) {
+        const stmt = db.prepare('INSERT OR IGNORE INTO publish_jobs_v1 (id, data, updatedAt) VALUES (?, ?, ?)');
+        const insertMany = db.transaction((jobs) => {
+          for (const job of jobs) {
+            stmt.run(job.id, JSON.stringify(job), job.updatedAt || new Date().toISOString());
+          }
+        });
+        insertMany(oldPayload.jobs);
+      }
+      fsLib.renameSync(publishJobsPath, publishJobsPath + '.bak');
+      console.log('Migrated publish_jobs.json to SQLite database.');
+    } catch(err) {
+      console.error('Migration to SQLite failed:', err);
+    }
+  }
+
+  function readPublishJobs() {
+    try {
+      const rows = db.prepare('SELECT data FROM publish_jobs_v1 ORDER BY updatedAt DESC').all();
+      const jobs = rows.map(r => JSON.parse(r.data));
+      const raw = { jobs };
+      const { payload, changed } = sanitizePublishJobPayload(raw);
+      if (changed) {
+         writePublishJobs(payload);
+      }
+      return payload;
+    } catch(err) {
+      console.error('SQLite read error:', err);
+      return { jobs: [] };
+    }
+  }
+
+  function writePublishJobs(payload) {
+    try {
+      const stmt = db.prepare('INSERT OR REPLACE INTO publish_jobs_v1 (id, data, updatedAt) VALUES (?, ?, ?)');
+      const replaceAll = db.transaction((jobs) => {
+        db.prepare('DELETE FROM publish_jobs_v1').run();
+        for (const job of jobs) {
+          stmt.run(job.id, JSON.stringify(job), job.updatedAt || new Date().toISOString());
+        }
+      });
+      replaceAll(payload.jobs || []);
+    } catch(err) {
+      console.error('SQLite write error:', err);
+    }
+  }
+
+  function updatePublishJob(jobId, updater) {
+    let row;
+    try {
+      row = db.prepare('SELECT data FROM publish_jobs_v1 WHERE id = ?').get(jobId);
+    } catch(e) {}
+    if (!row) {
+      throw new Error('发布任务不存在');
+    }
+    const current = JSON.parse(row.data);
+    const next = updater ? updater(deepClone(current)) || current : current;
+    next.updatedAt = new Date().toISOString();
+    
+    db.prepare('UPDATE publish_jobs_v1 SET data = ?, updatedAt = ? WHERE id = ?').run(
+      JSON.stringify(next), next.updatedAt, jobId
+    );
+    return next;
+  }
+
+
   function createEmptyWechatAccount() {
     return {
       id: makeJobId(),
@@ -144,19 +230,7 @@ function createPublishStore(deps) {
     return { payload: next, changed };
   }
 
-  function readPublishJobs() {
-    const raw = readJsonIfExists(publishJobsPath, { jobs: [] }) || { jobs: [] };
-    const { payload, changed } = sanitizePublishJobPayload(raw);
-    if (changed) {
-      writeJsonFile(publishJobsPath, payload);
-    }
-    return payload;
-  }
-
-  function writePublishJobs(payload) {
-    writeJsonFile(publishJobsPath, payload);
-  }
-
+  
   function getJobTerminalStatus(job) {
     const tasks = Array.isArray(job?.platformTasks) ? job.platformTasks : [];
     if (!tasks.length) return job?.status || 'pending';
@@ -170,20 +244,7 @@ function createPublishStore(deps) {
     return job?.status || 'ready';
   }
 
-  function updatePublishJob(jobId, updater) {
-    const payload = readPublishJobs();
-    const index = (payload.jobs || []).findIndex((job) => job.id === jobId);
-    if (index === -1) {
-      throw new Error('发布任务不存在');
-    }
-    const current = payload.jobs[index];
-    const next = updater ? updater(deepClone(current)) || current : current;
-    next.updatedAt = new Date().toISOString();
-    payload.jobs[index] = next;
-    writePublishJobs(payload);
-    return next;
-  }
-
+  
   function updatePublishPlatformTask(jobId, platformKey, patch) {
     return updatePublishJob(jobId, (job) => {
       const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];

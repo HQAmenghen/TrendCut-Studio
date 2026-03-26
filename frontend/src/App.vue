@@ -55,7 +55,8 @@
       @optimize-text="pipeline.optimizeText"
       @submit-generate="pipeline.submitGenerate"
       @submit-edit="pipeline.submitEdit"
-      @convert="pipeline.convertVideo"
+      @to-publish="handleToPublish"
+      @to-vertical="handleToVertical"
       @use-generated-video="pipeline.useGeneratedVideoAsAiman"
     />
 
@@ -159,6 +160,37 @@ const currentModuleTitle = computed(() => navItems.find((item) => item.key === a
 
 const setThemeMode = (mode) => {
   themeMode.value = mode;
+};
+
+const handleToPublish = async () => {
+  activeModule.value = "publishCenter";
+  try {
+    if (typeof publishCenter.fetchAssets === "function") {
+      await publishCenter.fetchAssets(true);
+    } else {
+      await publishCenter.refresh();
+    }
+    const targetAsset = publishCenter.assets?.value?.find((a) => a.url === pipeline.finalVideoUrl.value);
+    if (targetAsset && typeof publishCenter.selectAsset === "function") {
+      publishCenter.selectAsset(targetAsset.id);
+    }
+  } catch (err) {
+    console.warn("Failed to candidate video for publish", err);
+  }
+};
+
+const handleToVertical = async () => {
+  activeModule.value = "standalone";
+  if (!pipeline.finalVideoUrl.value) return;
+  try {
+    const response = await fetch(pipeline.finalVideoUrl.value);
+    const blob = await response.blob();
+    const file = new File([blob], "output_final.mp4", { type: "video/mp4" });
+    standalone.handleFile("video", file);
+    // standalone.handleFile deals with name already
+  } catch (err) {
+    console.warn("Failed to load video for standalone", err);
+  }
 };
 
 const handoffXaiToPipeline = (item) => {

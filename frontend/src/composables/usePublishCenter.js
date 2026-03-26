@@ -433,6 +433,24 @@ export function usePublishCenter() {
     }
   };
 
+  const runAllWechat = async (mode = "draft") => {
+    clearErrorState();
+    appendLog(`一键启动所有微信视频号任务：${mode === "publish" ? "自动发布" : "填充到待发布页"}`);
+    try {
+      const res = await axios.post(`/api/publish/jobs/wechat-channels/start-all`, { mode });
+      jobs.value = res.data?.jobs || jobs.value;
+      if (res.data?.failedCount > 0) {
+        appendLog(`一键启动完成：成功启动 ${res.data.startedCount} 个，失败 ${res.data.failedCount} 个`);
+        if (res.data.errors?.length) {
+          appendLog(`错误详情：\n${res.data.errors.join("\n")}`);
+        }
+      } else {
+        appendLog(`一键启动成功，共启动 ${res.data.startedCount} 个任务`);
+      }
+    } catch (err) {
+      setErrorState(normalizeApiError(err, "一键启动所有任务失败"));
+    }
+  };
   const runWechat = async (job, mode = 'draft') => {
     clearErrorState();
     appendLog(`启动微信视频号任务：${mode === 'publish' ? '自动发布' : '填充到待发布页'} / ${job.id}`);
@@ -641,6 +659,7 @@ export function usePublishCenter() {
     toggleEditorPlatform,
     createJob,
     generateEditorDescription,
+    runAllWechat,
     runWechat,
     retryWechat,
     cancelWechat,

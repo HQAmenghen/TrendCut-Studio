@@ -87,6 +87,7 @@ function createPublishHandlers(deps) {
     },
     getJobs: (_req, res) => {
       try {
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -97,6 +98,7 @@ function createPublishHandlers(deps) {
       try {
         const jobId = String(req.params.jobId || '').trim();
         if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.jobs', error: '缺少任务 ID' });
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         const beforeCount = (payload.jobs || []).length;
         payload.jobs = (payload.jobs || []).filter((job) => job.id !== jobId);
@@ -111,6 +113,10 @@ function createPublishHandlers(deps) {
     },
     deleteAllJobs: (_req, res) => {
       try {
+        const payload = readPublishJobs();
+        (payload.jobs || []).forEach(job => {
+          try { cancelWechatRpa(job.id); } catch (_err) {}
+        });
         writePublishJobs({ jobs: [] });
         res.json({ success: true, jobs: [] });
       } catch (err) {
@@ -122,6 +128,7 @@ function createPublishHandlers(deps) {
         const jobId = String(req.params.jobId || '').trim();
         if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.jobs', error: '缺少任务 ID' });
         archivePublishJob(jobId, true);
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -133,6 +140,7 @@ function createPublishHandlers(deps) {
         const jobId = String(req.params.jobId || '').trim();
         if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.jobs', error: '缺少任务 ID' });
         archivePublishJob(jobId, false);
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -233,6 +241,7 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 400, code: 'PUBLISH_TASKS_EMPTY', stage: 'publish.create_job', error: '没有可创建的发布任务，请检查平台启用状态', details: JSON.stringify(platformErrors) });
         }
 
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         const job = {
           id: makeJobId(),
@@ -260,6 +269,7 @@ function createPublishHandlers(deps) {
         const jobId = String(req.params.jobId || '').trim();
         if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.regenerate_description', error: '缺少任务 ID' });
 
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         const job = (payload.jobs || []).find((item) => item.id === jobId);
         if (!job) return sendError(res, { status: 404, code: 'PUBLISH_JOB_NOT_FOUND', stage: 'publish.regenerate_description', error: '发布任务不存在' });
@@ -302,6 +312,40 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_REGENERATE_DESCRIPTION_FAILED', stage: 'publish.regenerate_description', error: '重新生成描述失败', details: err.message });
       }
     },
+    startAllWechat: (req, res) => {
+      try {
+        const mode = String(req.body?.mode || "draft").trim();
+        if (!["draft", "publish"].includes(mode)) {
+          return sendError(res, { status: 400, code: "PUBLISH_MODE_INVALID", stage: "publish.wechat", error: "mode 仅支持 draft 或 publish" });
+        }
+        const payload = readPublishJobs();
+        const jobs = payload.jobs || [];
+        let startedCount = 0;
+        let failedCount = 0;
+        const errors = [];
+
+        for (const job of jobs) {
+          const task = (job.platformTasks || []).find((item) => item.platform === "wechatChannels");
+          if (!task) continue;
+          const status = task.status || "draft_preparing";
+          if (["published", "publishing", "starting", "navigating", "login_ready", "need_login", "uploading", "uploaded", "editing", "edited", "ready_for_manual_publish"].includes(status)) {
+            continue;
+          }
+          try {
+            startWechatRpa(job.id, mode);
+            startedCount++;
+          } catch (err) {
+            failedCount++;
+            errors.push(`[${job.publishData?.title || job.id}]: ${err.message}`);
+          }
+        }
+
+        const newPayload = readPublishJobs();
+        res.json({ success: true, startedCount, failedCount, errors, jobs: newPayload.jobs || [] });
+      } catch (err) {
+        sendError(res, { status: 500, code: "PUBLISH_WECHAT_START_ALL_FAILED", stage: "publish.wechat", error: "一键启动所有任务失败", details: err.message });
+      }
+    },
     runWechat: (req, res) => {
       try {
         const jobId = String(req.params.jobId || '').trim();
@@ -310,6 +354,7 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 400, code: 'PUBLISH_MODE_INVALID', stage: 'publish.wechat', error: 'mode 仅支持 draft 或 publish' });
         }
         startWechatRpa(jobId, mode);
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -321,6 +366,7 @@ function createPublishHandlers(deps) {
         const jobId = String(req.params.jobId || '').trim();
         const mode = String(req.body?.mode || '').trim();
         retryWechatRpa(jobId, mode);
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -331,6 +377,7 @@ function createPublishHandlers(deps) {
       try {
         const jobId = String(req.params.jobId || '').trim();
         cancelWechatRpa(jobId);
+        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {

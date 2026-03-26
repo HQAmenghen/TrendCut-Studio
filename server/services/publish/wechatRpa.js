@@ -18,6 +18,14 @@ function createWechatRpaService(deps) {
 
   const publishRuntimeProcesses = new Map();
 
+  function safeUpdatePublishPlatformTask(jobId, platform, patch) {
+    try {
+      updatePublishPlatformTask(jobId, platform, patch);
+    } catch (err) {
+      // console.warn(`Ignore update for deleted job ${jobId}`);
+    }
+  }
+
   function buildWechatProfileDir(accountId) {
     const safeAccountId = slugifyText(accountId || '', 'default');
     return path.join(wechatRpaProfileRoot, safeAccountId);
@@ -95,7 +103,7 @@ function createWechatRpaService(deps) {
 
   function appendWechatRuntimeLog(jobId, line, publishMode, state, message, progress) {
     if (!line) return;
-    updatePublishPlatformTask(jobId, 'wechatChannels', {
+    safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
       runtime: {
         state,
         lastMessage: message,
@@ -163,7 +171,7 @@ function createWechatRpaService(deps) {
     const payloadFile = path.join(wechatRpaTaskDir, `${jobId}_wechatChannels.json`);
     fs.writeFileSync(payloadFile, JSON.stringify(rpaPayload, null, 2), 'utf-8');
 
-    updatePublishPlatformTask(jobId, 'wechatChannels', {
+    safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
       status: publishMode === 'publish' ? 'publishing' : 'draft_preparing',
       lastRunAt: new Date().toISOString(),
       lastRunMode: publishMode,
@@ -219,7 +227,7 @@ function createWechatRpaService(deps) {
         latestRuntimeState = parsed.state;
         latestRuntimeMessage = parsed.message;
         latestRuntimeProgress = Number.isFinite(Number(parsed.extra?.percent)) ? Number(parsed.extra.percent) : getWechatStateProgress(parsed.state);
-        updatePublishPlatformTask(jobId, 'wechatChannels', {
+        safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
           status: parsed.state === 'success' ? (publishMode === 'publish' ? 'published' : 'ready_for_manual_publish') : parsed.state,
           runtime: {
             state: parsed.state,
@@ -239,7 +247,7 @@ function createWechatRpaService(deps) {
     proc.on('error', (error) => {
       publishRuntimeProcesses.delete(runtimeKey);
       if (runtimeEntry.cancelledByUser) return;
-      updatePublishPlatformTask(jobId, 'wechatChannels', {
+      safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
         status: 'failed',
         lastFailureAt: new Date().toISOString(),
         runtime: {
@@ -259,7 +267,7 @@ function createWechatRpaService(deps) {
         return;
       }
       if (code !== 0) {
-        updatePublishPlatformTask(jobId, 'wechatChannels', {
+        safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
           status: 'failed',
           lastFailureAt: new Date().toISOString(),
           runtime: {
@@ -276,7 +284,7 @@ function createWechatRpaService(deps) {
         const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
         const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
         const existingLogs = Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
-        updatePublishPlatformTask(jobId, 'wechatChannels', {
+        safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
           status: publishMode === 'publish' ? 'published' : 'ready_for_manual_publish',
           publishResult: {
             lastCompletedAt: new Date().toISOString(),
@@ -306,7 +314,7 @@ function createWechatRpaService(deps) {
     const nextMode = ['draft', 'publish'].includes(String(mode || '').trim())
       ? String(mode).trim()
       : String(task?.runtime?.publishMode || task?.lastRunMode || 'draft').trim();
-    updatePublishPlatformTask(jobId, 'wechatChannels', {
+    safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
       retryCount: Number(task?.retryCount || 0) + 1,
       runtime: {
         state: 'draft_preparing',
@@ -328,7 +336,7 @@ function createWechatRpaService(deps) {
     }
     runtimeEntry.cancelledByUser = true;
     stopWechatRpaProcess(runtimeEntry);
-    updatePublishPlatformTask(jobId, 'wechatChannels', {
+    safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
       status: 'cancelled',
       lastCancelledAt: new Date().toISOString(),
       runtime: {

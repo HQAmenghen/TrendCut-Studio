@@ -878,6 +878,8 @@ def main() -> int:
             log("浏览器保持打开，便于人工检查页面状态")
     finally:
         try:
+            if "browser" in locals() and browser:
+                browser.close()
             p.stop()
         except Exception:
             pass

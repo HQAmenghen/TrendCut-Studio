@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import axios from 'axios';
 
 export function usePipeline() {
@@ -81,6 +81,28 @@ export function usePipeline() {
     maxDuration: 20
   });
 
+  try {
+    const cached = localStorage.getItem("comfy_panel_pipeline_state");
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed.audioMode) audioMode.value = parsed.audioMode;
+      if (parsed.imageMode) imageMode.value = parsed.imageMode;
+      if (parsed.generatedVideoUrl) generatedVideoUrl.value = parsed.generatedVideoUrl;
+      if (parsed.finalVideoUrl) finalVideoUrl.value = parsed.finalVideoUrl;
+      if (parsed.recentLogs) recentLogs.value = parsed.recentLogs;
+      if (parsed.errorLogs) errorLogs.value = parsed.errorLogs;
+      if (parsed.lastDurationSeconds) lastDurationSeconds.value = parsed.lastDurationSeconds;
+      if (parsed.gen) {
+        gen.value.text = parsed.gen.text || "";
+        gen.value.serverUrl = parsed.gen.serverUrl || "https://u920820-82c4-2ba7d3b1.westc.seetacloud.com:8443";
+        gen.value.trimSeconds = parsed.gen.trimSeconds || 0;
+        gen.value.maxDuration = parsed.gen.maxDuration || 20;
+        gen.value.audioPreset = parsed.gen.audioPreset || "";
+        gen.value.imagePreset = parsed.gen.imagePreset || "";
+      }
+    }
+  } catch (_e) {}
+
   const genFileName = ref({ audio: '', image: '' });
   const edit = ref({
     aiman: null,
@@ -93,6 +115,49 @@ export function usePipeline() {
     withSubtitles: true
   });
   const editFileName = ref({ aiman: '', material: '' });
+
+  try {
+    const cached = localStorage.getItem("comfy_panel_pipeline_state");
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed.edit) {
+        edit.value.aimanUrl = parsed.edit.aimanUrl || "";
+        edit.value.materialUrl = parsed.edit.materialUrl || "";
+        edit.value.sourceLabel = parsed.edit.sourceLabel || "";
+        edit.value.sourceSummary = parsed.edit.sourceSummary || "";
+        edit.value.sourcePostUrl = parsed.edit.sourcePostUrl || "";
+        edit.value.withSubtitles = parsed.edit.withSubtitles ?? true;
+      }
+    }
+  } catch (_e) {}
+
+  watch([audioMode, imageMode, generatedVideoUrl, finalVideoUrl, recentLogs, errorLogs, lastDurationSeconds, gen, edit], () => {
+    localStorage.setItem("comfy_panel_pipeline_state", JSON.stringify({
+      audioMode: audioMode.value,
+      imageMode: imageMode.value,
+      generatedVideoUrl: generatedVideoUrl.value,
+      finalVideoUrl: finalVideoUrl.value,
+      recentLogs: recentLogs.value,
+      errorLogs: errorLogs.value,
+      lastDurationSeconds: lastDurationSeconds.value,
+      gen: {
+        text: gen.value.text,
+        serverUrl: gen.value.serverUrl,
+        trimSeconds: gen.value.trimSeconds,
+        maxDuration: gen.value.maxDuration,
+        audioPreset: gen.value.audioPreset,
+        imagePreset: gen.value.imagePreset
+      },
+      edit: {
+        aimanUrl: edit.value.aimanUrl,
+        materialUrl: edit.value.materialUrl,
+        sourceLabel: edit.value.sourceLabel,
+        sourceSummary: edit.value.sourceSummary,
+        sourcePostUrl: edit.value.sourcePostUrl,
+        withSubtitles: edit.value.withSubtitles
+      }
+    }));
+  }, { deep: true });
 
   const handleGenFile = (type, file) => {
     gen.value[type] = file || null;

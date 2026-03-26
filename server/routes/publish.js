@@ -11,6 +11,7 @@ function registerPublishRoutes(app, handlers) {
   app.post('/api/publish/jobs/archive-completed', handlers.archiveCompleted);
   app.post('/api/publish/jobs', handlers.createJob);
   app.post('/api/publish/jobs/:jobId/regenerate-description', handlers.regenerateDescription);
+  app.post("/api/publish/jobs/wechat-channels/start-all", handlers.startAllWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels', handlers.runWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/retry', handlers.retryWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/cancel', handlers.cancelWechat);

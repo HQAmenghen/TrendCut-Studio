@@ -275,8 +275,8 @@
             </div>
             <div v-else class="empty-preview">当前还没有最终成片。</div>
             <div class="inline-actions" v-if="finalVideoUrl">
-              <button type="button" class="ghost-btn" @click="$emit('convert', '9:16')" :disabled="converting">转 9:16</button>
-              <button type="button" class="ghost-btn" @click="$emit('convert', '16:9')" :disabled="converting">转 16:9</button>
+              <button type="button" class="primary-btn" @click="$emit('to-vertical')">👉 导入竖屏合成 (9:16)</button>
+              <button type="button" class="ghost-btn" @click="$emit('to-publish')">👉 候选至一键发布 (16:9)</button>
               <a :href="finalVideoUrl" download class="download-link">下载原片</a>
             </div>
           </div>
@@ -326,7 +326,7 @@ const emit = defineEmits([
   'optimize-text',
   'submit-generate',
   'submit-edit',
-  'convert',
+  'to-publish', 'to-vertical',
   'use-generated-video'
 ]);
 

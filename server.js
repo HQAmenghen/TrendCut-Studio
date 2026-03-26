@@ -61,28 +61,19 @@ const DEFAULT_COMFYUI_BASE_URL = process.env.COMFYUI_BASE_URL || 'https://u92082
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const FRONTEND_DIST_DIR = path.join(__dirname, 'frontend-dist');
 const FRONTEND_INDEX_PATH = path.join(FRONTEND_DIST_DIR, 'index.html');
-const LEGACY_INDEX_PATH = path.join(PUBLIC_DIR, 'index_legacy.html');
-const HAS_BUILT_FRONTEND = fs.existsSync(FRONTEND_INDEX_PATH);
+// LEGACY_INDEX_PATH removed
+// HAS_BUILT_FRONTEND removed
 const CONFIG_DIR = path.join(__dirname, 'config');
 const PYTHON_DIR = path.join(__dirname, 'python');
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
-if (HAS_BUILT_FRONTEND) {
-    app.use(express.static(FRONTEND_DIST_DIR));
-}
+app.use(express.static(FRONTEND_DIST_DIR));
 app.use(express.static(PUBLIC_DIR)); // 提供静态产物和旧版兜底页面
 app.use(express.json());
 
-app.get('/index_legacy.html', (_req, res) => {
-    res.sendFile(LEGACY_INDEX_PATH);
-});
-
-app.get('/', (_req, res) => {
-    if (HAS_BUILT_FRONTEND) {
-        return res.sendFile(FRONTEND_INDEX_PATH);
-    }
-    return res.sendFile(LEGACY_INDEX_PATH);
+app.get("/", (_req, res) => {
+    res.sendFile(FRONTEND_INDEX_PATH);
 });
 
 const upload = multer({ dest: UPLOADS_DIR });

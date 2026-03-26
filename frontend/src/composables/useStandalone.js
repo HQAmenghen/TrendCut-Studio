@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import axios from 'axios';
 
 function normalizeApiError(err, fallbackMessage = '请求失败') {
@@ -48,6 +48,38 @@ export function useStandalone() {
       englishMaxLines: 2
     }
   });
+
+  try {
+    const cached = localStorage.getItem("comfy_panel_standalone_state");
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed.finalVideoUrl) finalVideoUrl.value = parsed.finalVideoUrl;
+      if (parsed.localRecentLogs) localRecentLogs.value = parsed.localRecentLogs;
+      if (parsed.localErrorLogs) localErrorLogs.value = parsed.localErrorLogs;
+      if (parsed.lastDurationSeconds) lastDurationSeconds.value = parsed.lastDurationSeconds;
+      if (parsed.form) {
+        form.value.title = parsed.form.title || "";
+        form.value.useASR = parsed.form.useASR ?? true;
+        if (parsed.form.renderOptions) {
+          form.value.renderOptions = { ...form.value.renderOptions, ...parsed.form.renderOptions };
+        }
+      }
+    }
+  } catch (_e) {}
+
+  watch([finalVideoUrl, localRecentLogs, localErrorLogs, lastDurationSeconds, form], () => {
+    localStorage.setItem("comfy_panel_standalone_state", JSON.stringify({
+      finalVideoUrl: finalVideoUrl.value,
+      localRecentLogs: localRecentLogs.value,
+      localErrorLogs: localErrorLogs.value,
+      lastDurationSeconds: lastDurationSeconds.value,
+      form: {
+        title: form.value.title,
+        useASR: form.value.useASR,
+        renderOptions: form.value.renderOptions
+      }
+    }));
+  }, { deep: true });
 
   const appendLog = (message) => {
     const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(message || '').trim()}`;
