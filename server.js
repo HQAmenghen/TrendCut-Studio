@@ -405,6 +405,7 @@ const wechatRpaService = createWechatRpaService({
         startWechatRpa,
         retryWechatRpa,
         cancelWechatRpa,
+        checkWechatLogin,
         startAllWechatKeepAlives
     } = wechatRpaService;
 
@@ -681,7 +682,8 @@ const wechatRpaService = createWechatRpaService({
         collectPlatformValidation,
         startWechatRpa,
         retryWechatRpa,
-        cancelWechatRpa
+        cancelWechatRpa,
+        checkWechatLogin
     });
 
     registerPublishRoutes(app, publishHandlers);
