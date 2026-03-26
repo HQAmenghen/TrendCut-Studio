@@ -373,6 +373,7 @@ const {
     readPublishConfig,
     writePublishConfig,
     readPublishJobs,
+        readPublishConfig,
     writePublishJobs,
     updatePublishJob,
     updatePublishPlatformTask,
@@ -397,6 +398,7 @@ const wechatRpaService = createWechatRpaService({
     wechatRpaProfileRoot: WECHAT_RPA_PROFILE_ROOT,
     buildShortTitle,
     readPublishJobs,
+    readPublishConfig,
         validateWechatTaskConfig,
         updatePublishPlatformTask
     });
