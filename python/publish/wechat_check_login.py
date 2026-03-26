@@ -342,6 +342,7 @@ def main():
             timeout_sec = max(180, int(args.wait_after_qr_seconds))
             deadline = time.time() + timeout_sec
             last_check_status = "need_scan"
+            scanned_start_time = 0
             
             while time.time() < deadline:
                 # 1. Success check
@@ -413,55 +414,59 @@ def main():
                                     break
                     
                     if is_scanned and last_check_status != "scanned":
-                        # Double check: the QR code image itself should NO LONGER be the focus/visible
-                        # Or at least, if it IS visible, it shouldn't be the only thing there.
-                        # Most false positives happen when the "Confirm" text is technically present but the QR is still active.
-                        qr_still_active = False
+                        ulog(f"CONFIRMED scan detected via: {trigger_sel}")
+                        scanned_start_time = time.time()
+                        # Take a debug screenshot
                         try:
-                            if img_loc and img_loc.is_visible(timeout=500):
-                                qr_still_active = True
+                            debug_path = os.path.join(user_data_dir, "debug_scan.png")
+                            page.screenshot(path=debug_path)
+                            ulog(f"Debug screenshot saved to: {debug_path}")
                         except: pass
                         
-                        if qr_still_active and "text:" in trigger_sel:
-                            ulog(f"Scan trigger ignored: {trigger_sel} found but QR is still active.")
-                            is_scanned = False
-                        else:
-                            ulog(f"CONFIRMED scan detected via: {trigger_sel}")
-                            # Take a debug screenshot for the user/us to see what triggered it
-                            try:
-                                debug_path = os.path.join(user_data_dir, "debug_scan.png")
-                                page.screenshot(path=debug_path)
-                                ulog(f"Debug screenshot saved to: {debug_path}")
-                            except: pass
-                            
-                            print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
-                            last_check_status = "scanned"
+                        print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
+                        last_check_status = "scanned"
                     
                     if not is_scanned and last_check_status == "scanned":
-                        # If scan indicator disappeared, maybe it transitioned back to QR?
-                        ulog("Scan indicator lost, checking if QR returned...")
+                        # If scan indicator disappeared, maybe it transitioned back to QR or successfully logged in
+                        ulog("Scan indicator lost, check if QR returned or success...")
                         if img_loc and img_loc.is_visible(timeout=1000):
                              last_check_status = "need_scan"
                              ulog("Scan aborted, returned to need_scan.")
+                             scanned_start_time = 0
+                    
                     if last_check_status == "scanned":
-                        qr_still_there = False
-                        try:
-                            if img_loc and img_loc.is_visible(timeout=500):
-                                qr_still_there = True
-                        except: pass
-                        
-                        if not qr_still_there:
-                            ulog("QR disappeared after scan; checking for login success...")
-                            if is_logged_in_dashboard(page, browser):
-                                ulog("Login confirmed after scan & QR disappearance.")
-                                print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                                time.sleep(3)
-                                browser.close()
-                                return
-                        
-                        # Only check for QR refresh if we are NOT scanned anymore
-                        # (The previous 'QR refreshed' logic here was causing a loop because masks are dynamic)
-                except: pass
+                        # Force redirect check: if stuck in scanned for > 12s, try forcing navigation
+                        if scanned_start_time > 0 and (time.time() - scanned_start_time) > 12:
+                            # Only force if we are still on the login URL
+                            if "login.html" in page.url or "platform/login" in page.url:
+                                ulog("Stuck in scanned state - forcing navigation to dashboard...")
+                                try:
+                                    page.goto("https://channels.weixin.qq.com/platform", wait_until="domcontentloaded", timeout=10000)
+                                    scanned_start_time = time.time() # Reset timer
+                                except Exception as e:
+                                    ulog(f"Force navigate error: {e}")
+
+                        # Check if successful now
+                        if is_logged_in_dashboard(page, browser):
+                            ulog("Login success confirmed after scan.")
+                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                            time.sleep(3)
+                            browser.close()
+                            return
+
+                        # Check for QR refresh ONLY if NOT currently showing a success mask
+                        if not is_scanned:
+                            current_qr_b64 = get_qr_b64(img_loc)
+                            if current_qr_b64 and current_qr_b64 != last_qr_b64:
+                                ulog("QR refreshed (scan was likely lost).")
+                                last_qr_b64 = current_qr_b64
+                                last_check_status = "need_scan"
+                                if args.feishu_app_id and args.feishu_app_secret and args.feishu_webhook:
+                                    image_key = upload_to_feishu(args.feishu_app_id, args.feishu_app_secret, qr_code_path)
+                                    if image_key: push_to_feishu_webhook(args.feishu_webhook, args.account_id, image_key)
+                                print(json.dumps({"success": True, "status": "need_scan", "qrCodeBase64": f"data:image/png;base64,{current_qr_b64}", "message": "二维码已刷新"}), flush=True)
+                except Exception as e:
+                    ulog(f"Loop error: {e}")
 
                 time.sleep(2)
 
