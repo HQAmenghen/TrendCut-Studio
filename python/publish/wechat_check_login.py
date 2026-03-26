@@ -188,12 +188,13 @@ def main():
             while time.time() < wait_deadline:
                 # 1. Check for Login Success (URL or Selectors)
                 current_url = page.url
-                if ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url) or has_any_success_selector(page):
-                    ulog(f"Login detected! URL: {current_url}")
-                    print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                    time.sleep(5)
-                    browser.close()
-                    return
+                if ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url):
+                    if has_any_success_selector(page) or any_frame_url_contains(page, "platform/post/create") or "platform/details" in current_url:
+                        ulog(f"Login detected on initial check! URL: {current_url}")
+                        print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                        time.sleep(5)
+                        browser.close()
+                        return
                 
                 # 2. Check for QR Code in main page or frame
                 for selector in QR_SELECTORS:
@@ -303,23 +304,45 @@ def main():
                 # 2. Redirect check
                 try:
                     current_url = page.url
-                    is_dashboard = ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url)
-                    if is_dashboard or any_frame_url_contains(page, "platform/post/create") or any_page_url_contains(browser, "platform/post/create") or "platform/details" in current_url:
-                        ulog(f"Login detected via URL redirect: {current_url}")
-                        print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                        time.sleep(5)
-                        browser.close()
-                        return
+                    is_on_platform = ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url)
+                    # For a true dashboard success, we want to see the platform URL AND at least one success indicator
+                    if is_on_platform:
+                        if has_any_success_selector(page) or any_frame_url_contains(page, "platform/post/create") or "platform/details" in current_url:
+                            ulog(f"Login confirmed via URL and indicators: {current_url}")
+                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                            time.sleep(5)
+                            browser.close()
+                            return
                 except: pass
 
                 # 3. Scanned state check
                 try:
-                    scanned_indicators = [".qrcode-success", ".weui-desktop-qr-code__success", "text='扫描成功'", "text='已扫码'", "text='请在手机上确认'"]
+                    scanned_indicators = [".qrcode-success", ".weui-desktop-qr-code__success", "text='扫描成功'", "text='已扫码'"]
                     is_scanned = False
                     for sel in scanned_indicators:
-                        if page.locator(sel).count() > 0 or (login_frame and login_frame.locator(sel).count() > 0):
+                        # Check main page
+                        loc = page.locator(sel).first
+                        if loc.count() > 0 and loc.is_visible():
                             is_scanned = True
                             break
+                        # Check login frame
+                        if login_frame:
+                            f_loc = login_frame.locator(sel).first
+                            if f_loc.count() > 0 and f_loc.is_visible():
+                                is_scanned = True
+                                break
+                    # Stronger text check for confirmation
+                    if not is_scanned:
+                        for text in ["请在手机上确认", "请在手机端确认"]:
+                            t_loc = page.get_by_text(text).first
+                            if t_loc.count() > 0 and t_loc.is_visible():
+                                is_scanned = True
+                                break
+                            if login_frame:
+                                ft_loc = login_frame.get_by_text(text).first
+                                if ft_loc.count() > 0 and ft_loc.is_visible():
+                                    is_scanned = True
+                                    break
                     if is_scanned and last_check_status != "scanned":
                         ulog("Scan detected.")
                         print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
