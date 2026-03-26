@@ -97,18 +97,18 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" style="margin-bottom: 24px;">
           <div class="panel-header panel-header-between">
-            <span>🔐 平台配置</span>
+            <span>🤖 无人值守全栈托管 (Auto-Pilot)</span>
             <button type="button" class="save-chip" @click="center.saveConfig" :disabled="center.savingConfig.value">
-              {{ center.savingConfig.value ? '保存中...' : '保存配置' }}
+              {{ center.savingConfig.value ? '保存中...' : '保存托管配置' }}
             </button>
           </div>
-          <div class="panel-body config-scroll">
-            <div class="platform-block" style="border: 1px dashed var(--strong-text); background: rgba(0,0,0,0.1);">
+          <div class="panel-body">
+            <div class="platform-block mb-0" style="background: rgba(0,0,0,0.1); border: none;">
               <div class="platform-block-head">
                 <div>
-                  <div class="platform-name">🤖 无人值守全栈托管 (Auto-Pilot)</div>
+                  <div class="platform-name">自动调度与发稿引擎</div>
                   <div class="platform-tip">开启后：到达设定抓榜时间将自动获取榜单，按选定数量自动送入本地竖屏渲染，产出后自动建档并等待定点发布。</div>
                 </div>
                 <label class="toggle">
@@ -121,25 +121,25 @@
                 </label>
               </div>
               <div class="px-3 pb-3 pt-0" v-if="center.config.value?.global?.autoPilotEnabled">
-                <div class="flex gap-4 items-center mb-4">
+                <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 16px;">
                   <div>
-                    <label class="control-label text-xs mb-1 block">自动抓榜时间</label>
-                    <input type="time" class="input-dark text-sm w-24" :value="center.config.value.global.autoPilotFetchTime || '07:30'" @input="center.updateConfigField('global', 'autoPilotFetchTime', $event.target.value)" />
+                    <label class="control-label mb-1 block" style="font-size: 12px;">自动抓榜时间</label>
+                    <input type="time" class="input-dark" style="font-size: 14px; width: 100px;" :value="center.config.value.global?.autoPilotFetchTime || '07:30'" @input="center.updateConfigField('global', 'autoPilotFetchTime', $event.target.value)" />
                   </div>
                   <div>
-                    <label class="control-label text-xs mb-1 block">发帖数量 (Top N)</label>
-                    <input type="number" min="1" max="10" class="input-dark text-sm w-24" :value="center.config.value.global.autoPilotCount" @input="center.updateConfigField('global', 'autoPilotCount', $event.target.value)" />
+                    <label class="control-label mb-1 block" style="font-size: 12px;">发帖数量 (Top N)</label>
+                    <input type="number" min="1" max="10" class="input-dark" style="font-size: 14px; width: 80px;" :value="center.config.value.global?.autoPilotCount || 1" @input="center.updateConfigField('global', 'autoPilotCount', $event.target.value)" />
                   </div>
                 </div>
                 
-                <div class="mt-2 border-t border-gray-700/50 pt-3">
-                  <label class="control-label text-xs mb-2 block">精细化定点分发策略</label>
-                  <div class="text-xs text-gray-500 mb-3">为不同名次的素材独立指定其目标账号与确切投递时间：</div>
-                  <div v-for="i in Number(center.config.value.global.autoPilotCount) || 1" :key="i" class="flex gap-2 items-center mb-2">
-                    <span class="text-xs text-gray-400 w-12" style="font-family: monospace;">Top {{ i }}:</span>
+                <div style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
+                  <label class="control-label mb-2 block" style="font-size: 12px;">精细化定点分发策略</label>
+                  <div style="font-size: 12px; color: #9ca3af; margin-bottom: 12px;">为不同名次的素材独立指定其目标账号与确切投递时间：</div>
+                  <div v-for="i in Number(center.config.value.global?.autoPilotCount || 1)" :key="i" style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span style="font-size: 12px; color: #9ca3af; width: 48px; font-family: monospace;">Top {{ i }}:</span>
                     <select
-                      class="input-dark text-sm flex-1" style="max-width: 200px;"
-                      :value="(center.config.value.global.autoPilotAccountIds || [])[i-1] || ''"
+                      class="input-dark" style="font-size: 14px; flex: 1; max-width: 200px;"
+                      :value="center.config.value.global?.autoPilotAccountIds?.[i-1] ?? ''"
                       @change="center.updateAutoPilotArray('autoPilotAccountIds', i - 1, $event.target.value)"
                     >
                       <option value="">默认（首个绑定）</option>
@@ -148,15 +148,25 @@
                       </option>
                     </select>
                     <input
-                      type="time" class="input-dark text-sm w-24 ml-1"
-                      :value="(center.config.value.global.autoPilotTimes || [])[i-1] || '08:00'"
+                      type="time" class="input-dark" style="font-size: 14px; width: 100px;"
+                      :value="center.config.value.global?.autoPilotTimes?.[i-1] || '08:00'"
                       @input="center.updateAutoPilotArray('autoPilotTimes', i - 1, $event.target.value)"
                     />
                   </div>
                 </div>
               </div>
             </div>
+          </div>
+        </div>
 
+        <div class="panel">
+          <div class="panel-header panel-header-between">
+            <span>🔐 社交账号授权配置</span>
+            <button type="button" class="save-chip" @click="center.saveConfig" :disabled="center.savingConfig.value">
+              {{ center.savingConfig.value ? '保存中...' : '保存授权信息' }}
+            </button>
+          </div>
+          <div class="panel-body config-scroll">
             <div
               v-for="platform in center.platformDefs"
               :key="platform.key"
