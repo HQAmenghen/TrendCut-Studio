@@ -25,6 +25,9 @@ LOGIN_SUCCESS_SELECTORS = [
     ".success",
     ".weui-icon-success",
     ".success-img",
+    ".icon.success-img",
+    ".scanned",
+    ".mask.scanned",
 ]
 
 
@@ -73,6 +76,30 @@ def find_login_frame(page):
     if best_frame:
         ulog(f"Selected login iframe score={best_score} url={safe_frame_url(best_frame)}")
     return best_frame
+
+
+def any_frame_url_contains(page, needle: str) -> bool:
+    for frame in page.frames:
+        if needle in safe_frame_url(frame):
+            return True
+    return False
+
+
+def any_page_url_contains(context, needle: str) -> bool:
+    for current_page in context.pages:
+        try:
+            if needle in (current_page.url or ""):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def has_any_success_selector(scope) -> bool:
+    for selector in LOGIN_SUCCESS_SELECTORS:
+        if safe_locator_count(scope, selector) > 0:
+            return True
+    return False
 
 def upload_to_feishu(app_id: str, app_secret: str, image_path: str):
     try:
@@ -244,7 +271,7 @@ def main():
                 deadline = time.time() + max(10, int(args.wait_after_qr_seconds))
                 while time.time() < deadline:
                     try:
-                        if page.locator(".weui-desktop-layout__main__bd").count() > 0:
+                        if has_any_success_selector(page):
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             browser.close()
                             return
@@ -252,12 +279,10 @@ def main():
                         pass
                     try:
                         login_frame = find_login_frame(page)
-                        if login_frame:
-                            for selector in LOGIN_SUCCESS_SELECTORS:
-                                if safe_locator_count(login_frame, selector) > 0:
-                                    print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                                    browser.close()
-                                    return
+                        if login_frame and has_any_success_selector(login_frame):
+                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                            browser.close()
+                            return
                     except Exception:
                         pass
                     try:
@@ -266,6 +291,32 @@ def main():
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             browser.close()
                             return
+                    except Exception:
+                        pass
+                    try:
+                        if any_frame_url_contains(page, "platform/post/create") or any_page_url_contains(browser, "platform/post/create"):
+                            ulog("Detected post/create in frame or page URL")
+                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                            browser.close()
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        login_frame = find_login_frame(page)
+                        if login_frame:
+                            qr_visible = False
+                            for selector in QR_SELECTORS:
+                                try:
+                                    if login_frame.locator(selector).first.is_visible(timeout=500):
+                                        qr_visible = True
+                                        break
+                                except Exception:
+                                    continue
+                            if not qr_visible and not safe_locator_count(login_frame, ".err-tips") and not safe_locator_count(login_frame, ".weui-toptips_error"):
+                                ulog("QR code disappeared from login frame; treating as logged in")
+                                print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                                browser.close()
+                                return
                     except Exception:
                         pass
                     time.sleep(1)
