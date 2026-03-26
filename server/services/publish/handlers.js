@@ -354,7 +354,6 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 400, code: 'PUBLISH_MODE_INVALID', stage: 'publish.wechat', error: 'mode 仅支持 draft 或 publish' });
         }
         startWechatRpa(jobId, mode);
-        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
