@@ -25,6 +25,9 @@ LOGIN_SUCCESS_SELECTORS = [
     ".success",
     ".weui-icon-success",
     ".success-img",
+    ".icon.success-img",
+    ".scanned",
+    ".mask.scanned",
 ]
 
 
@@ -73,6 +76,30 @@ def find_login_frame(page):
     if best_frame:
         ulog(f"Selected login iframe score={best_score} url={safe_frame_url(best_frame)}")
     return best_frame
+
+
+def any_frame_url_contains(page, needle: str) -> bool:
+    for frame in page.frames:
+        if needle in safe_frame_url(frame):
+            return True
+    return False
+
+
+def any_page_url_contains(context, needle: str) -> bool:
+    for current_page in context.pages:
+        try:
+            if needle in (current_page.url or ""):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def has_any_success_selector(scope) -> bool:
+    for selector in LOGIN_SUCCESS_SELECTORS:
+        if safe_locator_count(scope, selector) > 0:
+            return True
+    return False
 
 def upload_to_feishu(app_id: str, app_secret: str, image_path: str):
     try:
@@ -255,10 +282,10 @@ def main():
                 last_check_status = "need_scan"
                 
                 while time.time() < deadline:
-                    # 1. Check for Login Success (Main Dashboard)
+                    # 1. Check for Login Success (Main Dashboard or success selectors)
                     try:
-                        if page.locator(".weui-desktop-layout__main__bd").count() > 0:
-                            ulog("Login detected via dashboard selector.")
+                        if has_any_success_selector(page):
+                            ulog("Login detected via success selector.")
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             browser.close()
                             return
@@ -284,6 +311,15 @@ def main():
                         print(json.dumps({"success": True, "status": "scanned", "message": "已扫码，请在手机上确认"}), flush=True)
                         last_check_status = "scanned"
 
+                    if is_scanned:
+                        try:
+                            if (login_frame and has_any_success_selector(login_frame)) or has_any_success_selector(page):
+                                ulog("Login detected via success selector after scan.")
+                                print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                                browser.close()
+                                return
+                        except: pass
+
                     # 3. Check for QR Code Refresh
                     if not is_scanned:
                         current_qr_b64 = get_qr_b64(img_loc)
@@ -305,14 +341,32 @@ def main():
                                 "message": "二维码已刷新"
                             }), flush=True)
 
-                    # 4. Check for URL redirects
+                    # 4. Check for URL redirects or disappeared QR in frame
                     try:
-                        if "platform/post/create" in page.url or "platform/details" in page.url:
-                            ulog("Login detected via URL redirect.")
+                        if any_frame_url_contains(page, "platform/post/create") or any_page_url_contains(browser, "platform/post/create") or "platform/details" in page.url:
+                            ulog("Login detected via URL redirect or page state change.")
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             browser.close()
                             return
+                        
+                        if login_frame:
+                            qr_visible = False
+                            for selector in QR_SELECTORS:
+                                try:
+                                    if login_frame.locator(selector).first.is_visible(timeout=500):
+                                        qr_visible = True
+                                        break
+                                except: continue
+                            if not qr_visible and not safe_locator_count(login_frame, ".err-tips") and not safe_locator_count(login_frame, ".weui-toptips_error"):
+                                ulog("QR code disappeared from login frame; treating as potential login.")
+                                # Check success selector once more to be sure
+                                if has_any_success_selector(page) or has_any_success_selector(login_frame):
+                                    print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                                    browser.close()
+                                    return
                     except: pass
+
+                    time.sleep(2)
 
                     time.sleep(2)
 
