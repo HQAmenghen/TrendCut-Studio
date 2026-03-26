@@ -97,10 +97,58 @@ def has_any_success_selector(scope) -> bool:
         try:
             loc = scope.locator(selector).first
             if loc.count() > 0 and loc.is_visible():
-                ulog(f"Login success confirmed via: {selector}")
+                ulog(f"Login success indicator found: {selector}")
                 return True
         except: pass
     return False
+
+def is_logged_in_dashboard(page, context=None):
+    """
+    Final verification that we are truly on the creator dashboard.
+    """
+    url = page.url
+    # 1. URL check: should be on platform/ and not currently showing the explicit login path
+    is_on_platform = "channels.weixin.qq.com/platform" in url and "platform/login" not in url
+    
+    # 2. Indicators check: search for dashboard-only elements
+    has_indicators = has_any_success_selector(page)
+    
+    if int(time.time()) % 4 == 0:
+        ulog(f"Verification: on_platform={is_on_platform}, indicators={has_indicators}, url={url}")
+
+    # 3. Handle context: check if other pages in context might be the dashboard
+    if context and not has_indicators:
+        for p in context.pages:
+            try:
+                if p.url != url and "channels.weixin.qq.com/platform" in p.url:
+                    if has_any_success_selector(p):
+                        ulog(f"Login success detected on sibling page: {p.url}")
+                        return True
+            except: pass
+
+    # Special case: layout indicators or login iframe removal
+    if is_on_platform:
+        # If the login iframe is gone/removed, that's often a success signal if we're on a platform URL
+        is_login_iframe_gone = True
+        for frame in page.frames:
+            try:
+                if "login-for-iframe" in (frame.url or ""):
+                    is_login_iframe_gone = False
+                    break
+            except: pass
+        
+        if is_login_iframe_gone or has_indicators:
+            return True
+            
+        layout_selectors = [".weui-desktop-layout__main", ".weui-desktop-layout__side-nav", ".nickname"]
+        for sel in layout_selectors:
+            try:
+                if page.locator(sel).first.count() > 0:
+                    ulog(f"Dashboard layout detected via {sel}")
+                    return True
+            except: pass
+
+    return is_on_platform and has_indicators
 
 def upload_to_feishu(app_id, app_secret, image_path):
     try:
@@ -309,16 +357,17 @@ def main():
                 # 2. Redirect check
                 try:
                     current_url = page.url
-                    is_on_platform = ("channels.weixin.qq.com/platform" in current_url and "login" not in current_url)
-                    # For a true dashboard success, we want to see the platform URL AND at least one success indicator
-                    if is_on_platform:
-                        if has_any_success_selector(page) or any_frame_url_contains(page, "platform/post/create") or "platform/details" in current_url:
-                            ulog(f"Login confirmed via URL and indicators: {current_url}")
-                            print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
-                            time.sleep(5)
-                            browser.close()
-                            return
+                    if is_logged_in_dashboard(page, browser):
+                        ulog(f"Login success confirmed! URL: {current_url}")
+                        print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
+                        time.sleep(3)
+                        browser.close()
+                        return
                 except: pass
+    
+                # Log URL occasionally if scanned
+                if last_check_status == "scanned" and int(time.time()) % 5 == 0:
+                    ulog(f"Still in scanned state. Current URL: {page.url}")
 
                 # 3. Scanned state check
                 try:
