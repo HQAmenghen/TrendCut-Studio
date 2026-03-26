@@ -15,6 +15,7 @@ function registerPublishRoutes(app, handlers) {
   app.post('/api/publish/jobs/:jobId/wechat-channels', handlers.runWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/retry', handlers.retryWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/cancel', handlers.cancelWechat);
+  app.post('/api/publish/wechat/test-login/:accountId', handlers.testWechatLogin);
 }
 
 module.exports = {

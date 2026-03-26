@@ -135,7 +135,10 @@
                     <div v-for="account in center.wechatAccounts.value" :key="account.id" class="account-card">
                       <div class="account-card-head">
                         <strong>{{ account.displayName || account.helperAccount || account.finderUserName || account.id }}</strong>
-                        <button type="button" class="ghost-btn compact-btn" @click="center.removeWechatAccount(account.id)">删除账号</button>
+                        <div style="display: flex; gap: 8px;">
+                          <button type="button" class="ghost-btn compact-btn" @click="center.testWechatLogin(account.id)">测登录 / 扫码</button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.removeWechatAccount(account.id)">删除</button>
+                        </div>
                       </div>
                       <div class="platform-fields">
                         <input
@@ -1309,4 +1312,32 @@ function selfCheckStatusLabel(status) {
     position: static;
   }
 }
+
+.qr-modal-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  backdrop-filter: blur(4px);
+}
+.qr-modal-content {
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  padding: 30px;
+  border-radius: 24px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+  width: 400px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  text-align: center;
+}
+.qr-modal-title { margin: 0; color: var(--strong-text); font-size: 1.25rem; }
+.qr-state-box { min-height: 120px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text); }
+.qr-image { width: 200px; height: 200px; border-radius: 12px; border: 1px solid var(--line); background: white; margin: 0 auto; }
+.qr-modal-actions { display: flex; justify-content: center; margin-top: 10px; }
 </style>

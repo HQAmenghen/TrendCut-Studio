@@ -114,7 +114,44 @@ export function usePublishCenter() {
     if (error.value) appendError(error.value);
   };
 
-  const clearErrorState = () => {
+    const qrCodeData = ref({
+    show: false,
+    accountId: '',
+    base64: '',
+    status: '',
+    error: ''
+  });
+
+  const testWechatLogin = async (accountId) => {
+    qrCodeData.value = { show: true, accountId, base64: '', status: 'loading', error: '' };
+    appendLog(`测试微信视频号登录状态：${accountId}`);
+    try {
+      const res = await axios.post(`/api/publish/wechat/test-login/${accountId}`);
+      if (res.data?.success) {
+        if (res.data.status === 'logged_in') {
+          qrCodeData.value.status = 'logged_in';
+          appendLog(`账号 ${accountId} 登录有效`);
+        } else if (res.data.status === 'need_scan') {
+          qrCodeData.value.status = 'need_scan';
+          qrCodeData.value.base64 = res.data.qrCodeBase64 || '';
+          appendLog(`账号 ${accountId} 需要重新扫码`);
+        }
+      } else {
+        throw new Error(res.data?.error || '未知错误');
+      }
+    } catch (err) {
+      const normalized = normalizeApiError(err, '测试登录状态失败');
+      qrCodeData.value.status = 'error';
+      qrCodeData.value.error = normalized.message;
+      appendError(`测试登录状态失败: ${normalized.message}`);
+    }
+  };
+
+  const closeQrCodeModal = () => {
+    qrCodeData.value.show = false;
+  };
+
+const clearErrorState = () => {
     errorState.value = { message: '', code: '', stage: '', hint: '', details: '' };
     error.value = '';
   };
@@ -639,6 +676,9 @@ export function usePublishCenter() {
     platformDefs,
     platformCards,
     wechatAccounts,
+    qrCodeData,
+    testWechatLogin,
+    closeQrCodeModal,
     filteredJobs,
     selfCheckSummary,
     selfCheckHighlights,

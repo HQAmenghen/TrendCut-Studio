@@ -210,137 +210,6 @@ function createWechatRpaService(deps) {
     }
     const activeAccountRuntime = getActiveWechatRuntimeForAccount(wechatAccount.id);
     if (activeAccountRuntime && activeAccountRuntime.jobId !== jobId) {
-  }
-
-  function buildWechatProfileDir(accountId) {
-    const safeAccountId = slugifyText(accountId || '', 'default');
-    return path.join(wechatRpaProfileRoot, safeAccountId);
-  }
-
-  function buildWechatPublishPayload(job, wechatAccount) {
-    const tagStrategy = job.publishData?.tagStrategy === 'model' ? 'model' : 'system';
-    const tags = tagStrategy === 'model'
-      ? []
-      : (Array.isArray(job.publishData?.tags) ? job.publishData.tags : []);
-    return {
-      title: job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布',
-      shortTitle: job.publishData?.shortTitle || job.asset?.metadata?.suggestedShortTitle || buildShortTitle(job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布'),
-      description: job.publishData?.description || job.asset?.metadata?.suggestedDescription || '',
-      tags,
-      originalDeclaration: true,
-      publishMode: 'draft',
-      videoPath: job.asset?.path,
-      userDataDir: buildWechatProfileDir(wechatAccount?.id),
-      loginTimeoutSec: 240,
-      headless: false,
-      finderUserName: wechatAccount?.finderUserName || '',
-      helperAccount: wechatAccount?.helperAccount || '',
-      accountId: wechatAccount?.id || '',
-      accountLabel: wechatAccount?.displayName || wechatAccount?.helperAccount || wechatAccount?.finderUserName || ''
-    };
-  }
-
-  function parseWechatRpaLine(line) {
-    const text = String(line || '').trim();
-    if (!text.startsWith('STATUS|')) return null;
-    const parts = text.split('|');
-    if (parts.length < 4) return null;
-    let extra = {};
-    try {
-      extra = parts[4] ? JSON.parse(parts[4]) : {};
-    } catch (_err) {}
-    return {
-      state: parts[1],
-      message: parts[3] || parts[2] || '',
-      extra
-    };
-  }
-
-  function parseWechatLogLine(line) {
-    const text = String(line || '').trim();
-    if (!text.startsWith('LOG|')) return null;
-    return text.slice(4).trim();
-  }
-
-  function getWechatStateProgress(state) {
-    const map = {
-      starting: 3,
-      navigating: 8,
-      need_login: 15,
-      login_ready: 24,
-      uploading: 42,
-      uploaded: 58,
-      editing: 72,
-      edited: 86,
-      ready_for_manual_publish: 100,
-      publishing: 94,
-      success: 100,
-      failed: 100
-    };
-    return map[state] ?? 0;
-  }
-
-  function readWechatRuntimeLogs(jobId) {
-    const payload = readPublishJobs();
-    const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
-    const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === 'wechatChannels');
-    return Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
-  }
-
-  function appendWechatRuntimeLog(jobId, line, publishMode, state, message, progress) {
-    if (!line) return;
-    safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
-      runtime: {
-        state,
-        lastMessage: message,
-        updatedAt: new Date().toISOString(),
-        publishMode,
-        progress,
-        logs: [...readWechatRuntimeLogs(jobId), line].slice(-120)
-      }
-    });
-  }
-
-  function stopWechatRpaProcess(runtimeEntry) {
-    if (!runtimeEntry?.proc || runtimeEntry.proc.killed) return;
-    try {
-      stopProcessTree(runtimeEntry.proc);
-    } catch (_err) {}
-  }
-
-  function getActiveWechatRuntimeForAccount(accountId) {
-    for (const entry of publishRuntimeProcesses.values()) {
-      if (entry?.platform === 'wechatChannels' && String(entry.accountId || '').trim() === String(accountId || '').trim()) {
-        return entry;
-      }
-    }
-    return null;
-  }
-
-  function startWechatRpa(jobId, publishMode = 'draft') {
-    const runtimeKey = `${jobId}:wechatChannels`;
-    if (publishRuntimeProcesses.has(runtimeKey)) {
-      throw new Error('视频号自动发布任务已在运行');
-    }
-
-    const payload = readPublishJobs();
-    const job = (payload.jobs || []).find((item) => item.id === jobId);
-    if (!job) throw new Error('发布任务不存在');
-    const task = (job.platformTasks || []).find((item) => item.platform === 'wechatChannels');
-    if (!task) throw new Error('该任务未选择微信视频号');
-    const publishConfig = readPublishConfig();
-    const wechatConfig = publishConfig.wechatChannels || { enabled: false, accounts: [] };
-    const validation = validateWechatTaskConfig(wechatConfig, task);
-    const missingFields = validation.missingFields;
-    if (missingFields.length > 0) {
-      throw new Error(`微信视频号配置不完整，缺少：${validation.missingFieldLabels.join('，')}`);
-    }
-    const wechatAccount = validation.account;
-    if (!wechatAccount) {
-      throw new Error('未找到对应的视频号发布账号');
-    }
-    const activeAccountRuntime = getActiveWechatRuntimeForAccount(wechatAccount.id);
-    if (activeAccountRuntime && activeAccountRuntime.jobId !== jobId) {
       throw new Error(`账号 ${wechatAccount.displayName || wechatAccount.helperAccount || wechatAccount.finderUserName || wechatAccount.id} 当前已有发布任务在运行，请稍后再试`);
     }
     if (!job.asset?.path || !fs.existsSync(job.asset.path)) {
@@ -550,11 +419,96 @@ function createWechatRpaService(deps) {
     });
   }
 
+
+  function checkWechatLogin(accountId) {
+    return new Promise((resolve, reject) => {
+      const activeAccountRuntime = getActiveWechatRuntimeForAccount(accountId);
+      if (activeAccountRuntime) {
+        return reject(new Error('当前账号正在执行发布任务，无法测试登录'));
+      }
+
+      stopKeepAlive(accountId);
+
+      const checkScript = path.join(publishCenterDir, 'wechat_check_login.py');
+      const userDataDir = buildWechatProfileDir(accountId);
+      if (!fs.existsSync(checkScript)) {
+        startKeepAlive(accountId, userDataDir);
+        return reject(new Error('检查登录的脚本不存在'));
+      }
+
+      const args = ['--user-data-dir', userDataDir, '--account-id', accountId];
+      
+      const feishuAppId = (process.env.FEISHU_APP_ID || '').trim();
+      const feishuAppSecret = (process.env.FEISHU_APP_SECRET || '').trim();
+      const feishuWebhook = (process.env.FEISHU_WEBHOOK || '').trim();
+
+      if (feishuAppId) args.push('--feishu-app-id', feishuAppId);
+      if (feishuAppSecret) args.push('--feishu-app-secret', feishuAppSecret);
+      if (feishuWebhook) args.push('--feishu-webhook', feishuWebhook);
+
+      const proc = spawn('python', [checkScript, ...args], {
+        cwd: publishCenterDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+
+      let outBuffer = '';
+      let errBuffer = '';
+      
+      proc.stdout.on('data', d => {
+          const text = d.toString();
+          outBuffer += text;
+          const lines = text.split(/\r?\n/);
+          for (const line of lines) {
+              if (line.includes('WECHAT_LOGIN_CHECK|')) {
+                  console.log(line.trim());
+              }
+          }
+      });
+      proc.stderr.on('data', d => errBuffer += d.toString());
+
+      proc.on('error', err => {
+        startKeepAlive(accountId, userDataDir);
+        reject(err);
+      });
+
+      proc.on('close', code => {
+        startKeepAlive(accountId, userDataDir);
+        try {
+          const lines = outBuffer.split(/\r?\n/);
+          let resultJson = null;
+          for (const line of lines) {
+            if (line.includes('"success":')) {
+              try {
+                const parsed = JSON.parse(line.trim());
+                if (parsed.success !== undefined) {
+                  resultJson = parsed;
+                  break;
+                }
+              } catch(e){}
+            }
+          }
+          if (resultJson) {
+            if (resultJson.success) {
+                resolve(resultJson);
+            } else {
+                reject(new Error(resultJson.error || '脚本执行失败'));
+            }
+          } else {
+            reject(new Error(`解析脚本输出失败 (Exit ${code}): \nstdout: ${outBuffer}\nstderr: ${errBuffer}`));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
+
   return {
     startWechatRpa,
     retryWechatRpa,
     cancelWechatRpa,
-    startAllWechatKeepAlives
+    startAllWechatKeepAlives,
+    checkWechatLogin
   };
 }
 
