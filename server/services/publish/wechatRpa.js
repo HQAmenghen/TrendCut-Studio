@@ -430,7 +430,9 @@ function createWechatRpaService(deps) {
 
       const checkScript = path.join(publishCenterDir, 'wechat_check_login.py');
       const userDataDir = buildWechatProfileDir(accountId);
+      if (!fs.existsSync(checkScript)) {
         return reject(new Error('检查登录的脚本不存在'));
+      }
 
       const args = ['--user-data-dir', userDataDir, '--account-id', accountId];
       
