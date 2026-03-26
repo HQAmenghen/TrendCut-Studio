@@ -20,59 +20,7 @@ function createWechatRpaService(deps) {
   const keepAliveProcesses = new Map();
   const loginCheckSessions = new Map();
 
-  function stopKeepAlive(accountId) {
-    const entry = keepAliveProcesses.get(accountId);
-    if (!entry) return;
-    try {
-      stopProcessTree(entry.proc);
-    } catch (_err) {}
-    keepAliveProcesses.delete(accountId);
-    console.log(`[KeepAlive] Stopped daemon for account ${accountId}`);
-  }
-
-  function startKeepAlive(accountId, userDataDir) {
-    if (keepAliveProcesses.has(accountId)) return;
-    const activeAccountRuntime = getActiveWechatRuntimeForAccount(accountId);
-    if (activeAccountRuntime) return;
-
-    const keepAliveScript = path.join(publishCenterDir, 'wechat_keep_alive.py');
-    if (!fs.existsSync(keepAliveScript)) return;
-
-    console.log(`[KeepAlive] Starting daemon for account ${accountId}`);
-    const proc = spawn('python', [keepAliveScript, '--user-data-dir', userDataDir], {
-      cwd: publishCenterDir,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
-    });
-
-    proc.stdout.on('data', (d) => {
-      const line = d.toString().trim();
-      if (line) console.log(`[KeepAlive ${accountId}]`, line);
-    });
-    proc.stderr.on('data', (d) => {
-      const line = d.toString().trim();
-      if (line) console.error(`[KeepAlive ${accountId} ERR]`, line);
-    });
-    proc.on('close', () => {
-      keepAliveProcesses.delete(accountId);
-    });
-
-    keepAliveProcesses.set(accountId, { proc, userDataDir });
-  }
-
-  function startAllWechatKeepAlives() {
-    try {
-      const publishConfig = readPublishConfig();
-      const wechatConfig = publishConfig.wechatChannels || { enabled: false, accounts: [] };
-      if (!wechatConfig.enabled) return;
-      for (const acc of wechatConfig.accounts || []) {
-        if (!acc.id) continue;
-        const dir = buildWechatProfileDir(acc.id);
-        startKeepAlive(acc.id, dir);
-      }
-    } catch (err) {
-      console.error('[KeepAlive] Failed to start all keep alives:', err.message);
-    }
-  }
+  // Keep-alive has been removed to avoid process competition and allow pure headless mode.
 
   function buildLoginCheckResponse(session) {
     return {
@@ -92,10 +40,6 @@ function createWechatRpaService(deps) {
       session.cleanupTimer = null;
     }
     loginCheckSessions.delete(accountId);
-    if (options.restartKeepAlive !== false) {
-      const dir = buildWechatProfileDir(accountId);
-      startKeepAlive(accountId, dir);
-    }
   }
 
   function scheduleLoginCheckCleanup(accountId, delayMs = 30000) {
@@ -468,11 +412,11 @@ function createWechatRpaService(deps) {
       if (existingSession) {
         existingSession.updatedAt = new Date().toISOString();
         if (existingSession.status === 'failed' || existingSession.status === 'expired') {
-          finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+          finalizeLoginCheckSession(accountId);
           return reject(new Error(existingSession.error || '扫码登录已失效，请重新获取二维码'));
         }
         if (existingSession.status === 'logged_in') {
-          finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+          finalizeLoginCheckSession(accountId);
           return resolve({ success: true, status: 'logged_in' });
         }
         return resolve(buildLoginCheckResponse(existingSession));
@@ -482,14 +426,11 @@ function createWechatRpaService(deps) {
         return resolve({ success: true, status: 'idle' });
       }
 
-      stopKeepAlive(accountId);
+      // Removed stopKeepAlive to avoid process competition
 
       const checkScript = path.join(publishCenterDir, 'wechat_check_login.py');
       const userDataDir = buildWechatProfileDir(accountId);
-      if (!fs.existsSync(checkScript)) {
-        startKeepAlive(accountId, userDataDir);
         return reject(new Error('检查登录的脚本不存在'));
-      }
 
       const args = ['--user-data-dir', userDataDir, '--account-id', accountId];
       
@@ -572,7 +513,7 @@ function createWechatRpaService(deps) {
           session.error = parsed.error || '脚本执行失败';
           if (!settled) {
             rejectOnce(new Error(session.error));
-            finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+            finalizeLoginCheckSession(accountId);
           }
           return true;
         }
@@ -595,7 +536,7 @@ function createWechatRpaService(deps) {
       proc.stderr.on('data', d => errBuffer += d.toString());
 
       proc.on('error', err => {
-        finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+        finalizeLoginCheckSession(accountId);
         rejectOnce(err);
       });
 
@@ -608,7 +549,7 @@ function createWechatRpaService(deps) {
         } else if (session.status === 'logged_in') {
           scheduleLoginCheckCleanup(accountId, 1000);
         } else {
-          finalizeLoginCheckSession(accountId, { restartKeepAlive: true });
+          finalizeLoginCheckSession(accountId);
         }
         try {
           const lines = outBuffer.split(/\r?\n/);

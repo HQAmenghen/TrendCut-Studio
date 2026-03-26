@@ -165,7 +165,7 @@ def main():
         with sync_playwright() as p:
             browser = p.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
-                headless=False,
+                headless=True,
                 viewport={"width": 1280, "height": 800},
                 args=["--disable-blink-features=AutomationControlled"]
             )
