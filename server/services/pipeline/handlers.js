@@ -252,6 +252,7 @@ function createPipelineHandlers(deps) {
           '--input', finalSourcePath,
           '--content', contentJsonPath,
           '--subtitles', subtitlesPath,
+          '--plan', path.join(taskDir, 'director.json'),
           '--output', path.join(taskDir, verticalOutputName),
           '--background', path.join(taskDir, 'background_generated.png'),
           '--sub-dir', path.join(taskDir, 'subtitle_cards')

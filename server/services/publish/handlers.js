@@ -23,7 +23,8 @@ function createPublishHandlers(deps) {
     startWechatRpa,
     retryWechatRpa,
     cancelWechatRpa,
-    checkWechatLogin
+    checkWechatLogin,
+    triggerAutoPilotNow
   } = deps;
 
   return {
@@ -37,10 +38,45 @@ function createPublishHandlers(deps) {
     },
     postConfig: (req, res) => {
       try {
-        const config = sanitizePlatformConfigInput(req.body || {});
-        writePublishConfig(config);
+        const previousConfig = readPublishConfig();
+        const sanitizedConfig = sanitizePlatformConfigInput(req.body || {});
+        writePublishConfig(sanitizedConfig);
+        const config = readPublishConfig();
         const payload = reconcileAndPersistPublishJobs(config);
-        res.json({ success: true, config, maskedConfig: maskPlatformConfig(config), jobs: payload.jobs || [] });
+        let autoPilotTrigger = null;
+        if (config?.global?.autoPilotEnabled && typeof triggerAutoPilotNow === 'function') {
+          try {
+            if (config?.global?.autoPilotUseCurrentRanking) {
+              autoPilotTrigger = triggerAutoPilotNow(config, { reason: 'config_save' });
+            } else if (!previousConfig?.global?.autoPilotEnabled && config?.global?.autoPilotEnabled) {
+              autoPilotTrigger = Promise.resolve({ triggered: false, reason: 'scheduled_mode_waiting_for_fetch_time' });
+            }
+          } catch (_err) {}
+        }
+
+        Promise.resolve(autoPilotTrigger)
+          .then((triggerResult) => {
+            res.json({
+              success: true,
+              config,
+              maskedConfig: maskPlatformConfig(config),
+              jobs: payload.jobs || [],
+              autoPilotTrigger: triggerResult || null
+            });
+          })
+          .catch((triggerErr) => {
+            res.json({
+              success: true,
+              config,
+              maskedConfig: maskPlatformConfig(config),
+              jobs: payload.jobs || [],
+              autoPilotTrigger: {
+                triggered: false,
+                reason: 'trigger_failed',
+                error: triggerErr.message
+              }
+            });
+          });
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_CONFIG_WRITE_FAILED', stage: 'publish.config', error: '保存发布配置失败', details: err.message });
       }

@@ -20,8 +20,11 @@ WIDTH = 1080
 HEIGHT = 1920
 TITLE_BOX = (84, 108, 960, 430)
 SUBTITLE_CARD_SIZE = (1080, 360)
-SUBTITLE_OVERLAY_Y = 1220
-DEFAULT_SUBTITLE_OFFSET_Y = 20
+VIDEO_FRAME_WIDTH = 1080
+VIDEO_FRAME_HEIGHT = 810
+VIDEO_FRAME_Y = 470
+SUBTITLE_OVERLAY_Y = 1310
+DEFAULT_SUBTITLE_OFFSET_Y = 10
 SUBTITLE_GAP_SECONDS = 0.08
 TITLE_FONTS = [
     r"C:\Windows\Fonts\msyhbd.ttc",
@@ -51,6 +54,92 @@ DEFAULT_EN_MAX_LINES = 2
 def load_json(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_vertical_plan(path: Path | None):
+    if not path or not path.exists():
+        return []
+    try:
+        payload = load_json(path)
+    except Exception:
+        return []
+
+    if isinstance(payload, list):
+        raw_segments = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("segments"), list):
+        raw_segments = payload["segments"]
+    else:
+        return []
+
+    plan = []
+    for item in raw_segments:
+        try:
+            start = float(item.get("start_time", item.get("start", 0.0)))
+            end = float(item.get("end_time", item.get("end", 0.0)))
+        except Exception:
+            continue
+        if end <= start:
+            continue
+        anchor = str(item.get("crop_anchor", "center")).strip().lower()
+        if anchor not in {"left", "center", "right"}:
+            anchor = "center"
+        vertical_mode = str(item.get("vertical_mode", "center_safe")).strip().lower()
+        plan.append({
+            "start": start,
+            "end": end,
+            "crop_anchor": anchor,
+            "vertical_mode": vertical_mode,
+            "focus_target": str(item.get("focus_target", "context")).strip() or "context",
+            "shot_type": str(item.get("shot_type", "single")).strip() or "single",
+        })
+    return plan
+
+
+def build_crop_x_expression(vertical_plan: list[dict]) -> str:
+    if not vertical_plan:
+        return "(iw-ow)/2"
+
+    def anchor_expr(anchor: str, mode: str) -> str:
+        if mode == "preserve_context":
+            return "(iw-ow)/2"
+        if anchor == "left":
+            return "0"
+        if anchor == "right":
+            return "max(iw-ow,0)"
+        return "(iw-ow)/2"
+
+    expr = "(iw-ow)/2"
+    for segment in reversed(vertical_plan):
+        anchor = anchor_expr(segment["crop_anchor"], segment["vertical_mode"])
+        expr = f"if(between(t,{segment['start']:.3f},{segment['end']:.3f}),{anchor},{expr})"
+    return expr
+
+def probe_media(input_video: Path) -> dict:
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration:stream=duration,codec_type",
+        "-of", "json",
+        str(input_video)
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+    payload = json.loads(result.stdout or "{}")
+    streams = payload.get("streams") or []
+    
+    # 优先使用 format 层的 duration，如果不存在则遍历 streams
+    duration_str = (payload.get("format") or {}).get("duration")
+    if not duration_str or duration_str == "N/A":
+        for s in streams:
+            if s.get("duration") and s.get("duration") != "N/A":
+                duration_str = s.get("duration")
+                break
+    
+    duration = float(duration_str or 0.0)
+    has_audio = any(str(stream.get("codec_type") or "") == "audio" for stream in streams)
+    return {
+        "duration": max(0.0, duration),
+        "has_audio": has_audio
+    }
 
 def resolve_font(candidates: list[str], size: int) -> ImageFont.FreeTypeFont:
     for candidate in candidates:
@@ -161,13 +250,17 @@ def rebalance_two_lines(lines: list[str], font: ImageFont.FreeTypeFont, max_widt
     if not compact:
         return lines
 
-    tokens = [token for token in tokenize_text_units(compact) if token.strip()]
+    # Preserve whitespace tokens so English words do not collapse together when
+    # we rebalance a two-line subtitle block.
+    tokens = tokenize_text_units(compact)
     if len(tokens) < 2:
         return lines
 
     best_pair = None
     best_score = float("inf")
     for index in range(1, len(tokens)):
+        if not "".join(tokens[:index]).strip() or not "".join(tokens[index:]).strip():
+            continue
         first = "".join(tokens[:index]).strip()
         second = "".join(tokens[index:]).strip()
         score = score_line_split(first, second, font, max_width, **kwargs)
@@ -364,12 +457,29 @@ def generate_subtitle_cards(subtitles: list[dict], output_dir: Path, zh_font_siz
         cards.append({"start": start, "end": end, "path": image_path})
     return cards
 
-def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], output_video: Path, subtitle_offset_y: int):
-    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(background), "-i", str(input_video)]
-    for card in subtitle_cards:
-        cmd.extend(["-i", str(card["path"])])
+def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], output_video: Path, subtitle_offset_y: int, vertical_plan: list[dict] | None = None):
+    media_info = probe_media(input_video)
+    duration = media_info["duration"]
+    has_audio = media_info["has_audio"]
+    print(f"INFO: Input video duration={duration:.2f}s, has_audio={has_audio}")
+    crop_x_expr = build_crop_x_expression(vertical_plan or [])
+    if vertical_plan:
+        print(f"INFO: Loaded vertical framing plan with {len(vertical_plan)} segments.")
 
-    filter_parts = ["[1:v]scale=1080:608:force_original_aspect_ratio=increase,crop=1080:608[v0]", "[0:v][v0]overlay=0:560[base0]"]
+    cmd = ["ffmpeg", "-y", "-loop", "1"]
+    if duration > 0:
+        cmd.extend(["-t", f"{duration:.3f}"])
+    cmd.extend(["-i", str(background), "-i", str(input_video)])
+    
+    # 关键修复：所有图片输入必须开启 -loop 1，否则在非 0 秒偏移时 FFmpeg 会因找不到帧而挂起/卡死
+    for card in subtitle_cards:
+        cmd.extend(["-loop", "1", "-i", str(card["path"])])
+
+    # 滤镜链修复：显式应用 setpts=PTS-STARTPTS 确保即使无音轨时时间戳也从 0 开始同步，并强制 30fps 防止丢帧导致卡死
+    filter_parts = [
+        f"[1:v]setpts=PTS-STARTPTS,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:force_original_aspect_ratio=increase,crop={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:x='{crop_x_expr}':y=0,fps=30[v0]",
+        f"[0:v][v0]overlay=0:{VIDEO_FRAME_Y}[base0]"
+    ]
     current_label = "base0"
     subtitle_overlay_y = SUBTITLE_OVERLAY_Y + subtitle_offset_y
     for i, card in enumerate(subtitle_cards, start=2):
@@ -380,10 +490,22 @@ def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], 
 
     filter_complex = ";".join(filter_parts)
     cmd.extend([
-        "-filter_complex", filter_complex, "-map", f"[{current_label}]", "-map", "1:a?",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k", "-shortest", str(output_video)
+        "-filter_complex", filter_complex,
+        "-map", f"[{current_label}]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p"
     ])
+    
+    if has_audio:
+        cmd.extend(["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"])
+    else:
+        cmd.extend(["-an"])
+    
+    # 强制开启 -shortest 且明确指定主视频时长结束，防止因 looped 图像导致的无限运行
+    cmd.extend(["-shortest"])
+    if duration > 0:
+        cmd.extend(["-t", f"{duration:.3f}"])
+    
+    cmd.append(str(output_video))
     print("Running FFmpeg command...")
     subprocess.run(cmd, check=True)
 
@@ -407,6 +529,7 @@ def main():
     parser.add_argument("--english-font-size", type=int, default=DEFAULT_EN_FONT_SIZE)
     parser.add_argument("--english-min-size", type=int, default=DEFAULT_EN_MIN_SIZE)
     parser.add_argument("--english-max-lines", type=int, default=DEFAULT_EN_MAX_LINES)
+    parser.add_argument("--plan", type=str, default="", help="Optional director plan JSON for segment-aware vertical framing.")
     args = parser.parse_args()
 
     base = Path.cwd()
@@ -416,6 +539,7 @@ def main():
     output_video = base / args.output
     background_png = base / args.background
     subtitle_dir = base / args.sub_dir
+    vertical_plan_file = (base / args.plan) if args.plan else None
     
     # --- RIGOROUS CHECKS ---
     print("\n--- [STEP 1] Verifying all input files ---")
@@ -455,10 +579,11 @@ def main():
             print("WARNING: Failed to generate any subtitle cards from the provided JSON.")
     
     print("\n--- [STEP 3] Running FFmpeg to compose final video ---")
-    run_ffmpeg(background_png, input_video, subtitle_cards, output_video, args.subtitle_offset_y)
+    vertical_plan = load_vertical_plan(vertical_plan_file)
+    run_ffmpeg(background_png, input_video, subtitle_cards, output_video, args.subtitle_offset_y, vertical_plan=vertical_plan)
 
     print(f"\n✅ Generation complete: {output_video}")
-    emit_result("竖屏视频生成完成", output_video=str(output_video), subtitle_card_count=len(subtitle_cards))
+    emit_result("竖屏视频生成完成", output_video=str(output_video), subtitle_card_count=len(subtitle_cards), framing_segment_count=len(vertical_plan))
 
 if __name__ == "__main__":
     try:

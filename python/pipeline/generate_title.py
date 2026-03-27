@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import re
-import google.generativeai as genai
 from pathlib import Path
 import sys
 
@@ -15,20 +14,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from gemini_client import create_gemini_client, generate_content
 from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
-
-
-def configure_gemini():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in your environment or .env file.")
-    genai.configure(api_key=api_key)
-
 
 def visible_len(text: str) -> int:
     return len(re.sub(r"\s+", "", text))
@@ -112,8 +104,7 @@ def main():
         print("这条消息可能正在改变支付格局")
         return
 
-    configure_gemini()
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = create_gemini_client()
     prompt = f"""
 你是一名顶级短视频封面标题编辑，专门写财经/科技类爆点标题。
 请根据下面的口播内容，生成一个真正有冲击力、适合竖屏封面大字的中文标题。
@@ -177,7 +168,11 @@ iPhone不是玩具
 口播内容：
 {transcript}
 """
-    response = model.generate_content(prompt)
+    response = generate_content(
+        client,
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
     title = normalize_title(response.text)
     emit_result("标题生成完成", title=title or "这条消息可能正在改变支付格局")
     print(title or "这条消息可能正在改变支付格局")

@@ -7,7 +7,6 @@ import sys
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-import google.generativeai as genai
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,19 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from gemini_client import create_gemini_client, generate_content
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
-
-
-def configure_gemini():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in your environment or .env file.")
-    genai.configure(api_key=api_key)
-
 
 def extract_json(text: str):
     cleaned = text.strip()
@@ -41,7 +33,7 @@ def extract_json(text: str):
     return json.loads(cleaned[start:end + 1])
 
 
-def translate_batch(model, entries):
+def translate_batch(client, entries):
     prompt = f"""
 你是一个财经/热点短视频编辑助手。请把下面每条英文摘要翻译成自然、简洁、适合中文中台列表展示的中文。
 
@@ -56,7 +48,11 @@ def translate_batch(model, entries):
 输入数据：
 {json.dumps(entries, ensure_ascii=False, indent=2)}
 """
-    response = model.generate_content(prompt)
+    response = generate_content(
+        client,
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
     return extract_json(response.text)
 
 
@@ -82,14 +78,13 @@ def main():
         print("no-op")
         return
 
-    configure_gemini()
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = create_gemini_client()
 
     translations = {}
     batch_size = 8
     for start in range(0, len(pending), batch_size):
         batch = pending[start:start + batch_size]
-        result = translate_batch(model, batch)
+        result = translate_batch(client, batch)
         for row in result:
             rank = row.get("rank")
             text = str(row.get("author_summary_zh") or "").strip()

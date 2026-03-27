@@ -109,7 +109,10 @@
               <div class="platform-block-head">
                 <div>
                   <div class="platform-name">自动调度与发稿引擎</div>
-                  <div class="platform-tip">开启后：到达设定抓榜时间将自动获取榜单，按选定数量自动送入本地竖屏渲染，产出后自动建档并等待定点发布。</div>
+                  <div class="platform-tip">
+                    开启后：未勾选“使用当前榜单”时，会在设定抓榜时间自动获取榜单并继续发片；
+                    勾选后，保存配置就会立刻按当前榜单准备任务，只保留下方的发布时间和账号分发策略。
+                  </div>
                 </div>
                 <label class="toggle">
                   <input
@@ -128,30 +131,67 @@
                   </div>
                   <div>
                     <label class="control-label mb-1 block" style="font-size: 12px;">发帖数量 (Top N)</label>
-                    <input type="number" min="1" max="10" class="input-dark" style="font-size: 14px; width: 80px;" :value="center.config.value.global?.autoPilotCount || 1" @input="center.updateConfigField('global', 'autoPilotCount', $event.target.value)" />
+                    <span style="font-size: 13px; color: #9ca3af;">(由下方排名配置自动决定)</span>
                   </div>
+                </div>
+
+                <div style="margin-bottom: 16px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);">
+                  <label class="toggle" style="justify-content: space-between; width: 100%;">
+                    <span>
+                      <strong style="display: block; color: var(--strong-text); font-size: 13px;">使用当前榜单</strong>
+                      <span style="display: block; margin-top: 6px; color: #9ca3af; font-size: 12px; line-height: 1.6;">
+                        开启后，保存托管配置就会立刻按照当前已保存的 Top10 榜单启动渲染和自动发布准备，不再依赖上方抓榜时间。适合直接测试自动发布链路。
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      :checked="!!center.config.value?.global?.autoPilotUseCurrentRanking"
+                      @change="center.updateConfigField('global', 'autoPilotUseCurrentRanking', $event.target.checked)"
+                    />
+                  </label>
                 </div>
                 
                 <div style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
-                  <label class="control-label mb-2 block" style="font-size: 12px;">精细化定点分发策略</label>
+                  <label class="control-label mb-2 block" style="font-size: 12px;">精细化定时分发策略</label>
                   <div style="font-size: 12px; color: #9ca3af; margin-bottom: 12px;">为不同名次的素材独立指定其目标账号与确切投递时间：</div>
-                  <div v-for="i in Number(center.config.value.global?.autoPilotCount || 1)" :key="i" style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                    <span style="font-size: 12px; color: #9ca3af; width: 48px; font-family: monospace;">Top {{ i }}:</span>
+                  <label class="control-label mb-1 block" style="font-size: 13px; font-weight: 800;">🎯 自动分发排名配置 (Rank-to-Account)</label>
+                  <div style="font-size: 12px; color: #9ca3af; margin-bottom: 12px;">您可以自由选择想要自动分发的各个排名（Top 1-10）：</div>
+
+                  <div v-for="m in center.activeAutoPilotMappings.value" :key="m.rank" style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08);">
+                    <div style="font-size: 13px; color: var(--strong-text); width: 60px; font-weight: 800; padding-left: 4px;">Top {{ m.rank }}</div>
                     <select
-                      class="input-dark" style="font-size: 14px; flex: 1; max-width: 200px;"
-                      :value="center.config.value.global?.autoPilotAccountIds?.[i-1] ?? ''"
-                      @change="center.updateAutoPilotArray('autoPilotAccountIds', i - 1, $event.target.value)"
+                      class="input-dark" style="font-size: 14px; flex: 1;"
+                      :value="m.accountId"
+                      @change="center.updateAutoPilotArray('autoPilotAccountIds', m.rank - 1, $event.target.value)"
                     >
-                      <option value="">默认（首个绑定）</option>
                       <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
                         {{ account.label }}
                       </option>
                     </select>
                     <input
                       type="time" class="input-dark" style="font-size: 14px; width: 100px;"
-                      :value="center.config.value.global?.autoPilotTimes?.[i-1] || '08:00'"
-                      @input="center.updateAutoPilotArray('autoPilotTimes', i - 1, $event.target.value)"
+                      :value="m.time"
+                      @input="center.updateAutoPilotArray('autoPilotTimes', m.rank - 1, $event.target.value)"
                     />
+                    <button type="button" class="ghost-btn compact-btn" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.2); width: 32px; height: 32px;" title="移除排名" @click="center.updateAutoPilotArray('autoPilotAccountIds', m.rank - 1, '')">✕</button>
+                  </div>
+
+                  <div v-if="!center.activeAutoPilotMappings.value.length" style="padding: 24px; text-align: center; color: #6b7280; font-size: 13px; border: 1px dashed rgba(255,255,255,0.1); border-radius: 14px; margin-bottom: 12px;">
+                    还没有配置任何自动分发映射。
+                  </div>
+
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px;">
+                    <button
+                      v-for="r in [1,2,3,4,5,6,7,8,9,10]"
+                      :key="r"
+                      v-show="!center.activeAutoPilotMappings.value.find(m => m.rank === r)"
+                      type="button"
+                      class="ghost-btn compact-btn"
+                      style="font-size: 11px; padding: 4px 8px; border-radius: 8px; background: rgba(255,255,255,0.02);"
+                      @click="center.updateAutoPilotArray('autoPilotAccountIds', r - 1, center.wechatAccounts.value[0]?.id || '')"
+                    >
+                      + Top {{ r }}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -439,6 +479,16 @@
                       <div class="summary-title">{{ center.selectedAsset.value?.displayLabel || center.selectedAsset.value?.label || '未选择素材' }}</div>
                       <div class="summary-meta">{{ center.selectedAsset.value ? `${center.selectedAsset.value.sourceMetaLine || center.selectedAsset.value.sourceType} · ${formatDateTime(center.selectedAsset.value.updatedAt)}` : '选择素材后会自动带出标题、描述和标签。' }}</div>
                       <div v-if="center.selectedAsset.value?.metadata?.sourceSummary" class="summary-note">{{ center.selectedAsset.value.metadata.sourceSummary }}</div>
+                      <div v-if="center.selectedAsset.value?.metadata?.descriptionSource" class="summary-note compact-note">
+                        描述来源：
+                        {{
+                          center.selectedAsset.value.metadata.descriptionSource === 'subtitles'
+                            ? '字幕内容'
+                            : center.selectedAsset.value.metadata.descriptionSource === 'post_summary'
+                              ? '帖子摘要'
+                              : '暂无可用文本'
+                        }}
+                      </div>
                     </div>
 
                     <div class="summary-card">
@@ -601,7 +651,12 @@
       </div>
     </div>
 
-    <RunLogPanel title="📝 运行摘要" :recent-logs="center.recentLogs.value" :error-logs="center.errorLogs.value" />
+    <RunLogPanel
+      title="📝 运行摘要"
+      :summary-items="center.autoPilotSummaryItems.value"
+      :recent-logs="center.recentLogs.value"
+      :error-logs="center.errorLogs.value"
+    />
   </section>
 </template>
 
@@ -639,7 +694,7 @@ const editorHealth = computed(() => {
   if ((props.center.editor.value.platforms || []).length) score += 20;
   return {
     percent: score,
-    label: score >= 90 ? '可直接建任务' : score >= 60 ? '需要补充基础内容' : '待完善文案'
+    label: score >= 90 ? '可直接创建任务' : score >= 60 ? '需要补充基础内容' : '待完善文案'
   };
 });
 

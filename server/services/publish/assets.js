@@ -131,6 +131,8 @@ function createPublishAssetsService(deps) {
     const normalizedTitle = sanitizePublishTitle(title, sourceType === 'xai_queue' ? '热点视频速递' : '今日内容速递');
     const subtitleSnippet = extractSubtitleSnippet(subtitles);
     const summaryText = String(summary || '').replace(/^@[^-]+ -\s*/, '').trim();
+    const sourceSummary = subtitleSnippet || summaryText;
+    const descriptionSource = subtitleSnippet ? 'subtitles' : (summaryText ? 'post_summary' : 'none');
     const descriptionText = '';
 
     return {
@@ -138,7 +140,8 @@ function createPublishAssetsService(deps) {
       suggestedShortTitle: buildShortTitle(normalizedTitle, sourceType === 'xai_queue' ? '热点速递' : '内容速递'),
       suggestedDescription: sanitizePublishDescriptionText(descriptionText),
       suggestedTags: buildPublishTags({ title: normalizedTitle, summary: summaryText || subtitleSnippet, sourceType }),
-      sourceSummary: subtitleSnippet || summaryText,
+      sourceSummary,
+      descriptionSource,
       sourceUrl,
       author
     };

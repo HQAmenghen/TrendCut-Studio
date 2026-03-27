@@ -2,7 +2,6 @@ import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-import google.generativeai as genai
 import json
 import os
 from pathlib import Path
@@ -12,21 +11,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from gemini_client import create_gemini_client, generate_content
 from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-
-def configure_gemini():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in your environment or .env file.")
-    genai.configure(api_key=api_key)
-
 def main():
     emit_stage("director", "正在生成导演混剪方案")
-    configure_gemini()
+    client = create_gemini_client()
     print("1. 正在读取听觉轴 (audio.json) 和视觉轴 (result.json)...")
     
     try:
@@ -49,6 +42,14 @@ def main():
         except:
             return
 
+    speaker_scene_data = "{}"
+    try:
+        with open("speaker_scene.json", "r", encoding="utf-8") as f:
+            speaker_scene_data = f.read()
+            print("   已读取人物关系分析：speaker_scene.json")
+    except FileNotFoundError:
+        print("   未找到 speaker_scene.json，将回退为默认居中取景思路。")
+
     print("2. 正在呼叫 AI 导演 (Gemini 1.5 Pro) 进行大模型智能剪辑决策...")
     
     prompt = f"""
@@ -62,6 +63,9 @@ def main():
     2. B卷：空镜头素材轴（result.json），包含画面内容和其自带的原声台词：
     {video_data}
 
+    3. 人物关系与竖屏取景参考（speaker_scene.json），包含主要人物数量、关系、说话时序与 9:16 取景建议：
+    {speaker_scene_data}
+
     【剪辑与视听绝对红线规则】：
     1. **主宰原则**：`aiman.mp4` 是绝对的核心主视频！你的剪辑总时长必须完全等于 A卷（audio.json）的最后一句台词的结束时间。
     2. **画面分配**：在整个视频中，绝大多数时间必须是数字人（`aiman.mp4`）出镜。只有在 B卷（result.json）中找到了与数字人当前台词**极其高度匹配的画面**时，才允许短暂切入 `material.mp4` 的画面作为覆盖（B-roll）。
@@ -74,6 +78,16 @@ def main():
        - 请你**发挥作为顶级大模型的逻辑推理和语言理解能力**，在输出 `subtitle_text` 字段时，不要机械照搬原始数据。
        - **强制动作与字数红线**：结合上下文语境强行纠正所有错别字。**【极其重要】：绝对不允许擅自删减字数、缩写或省略任何词语（例如决不能把“已经”缩减为“已”）！你必须严格保持原始台词的字数长度和完整性，只做同音错别字替换，否则会导致字幕和画面口型严重脱节！** 如果原始素材包含外语，请提供字数适中的中文精翻。
        - 你的 `subtitle_text` 就是最终呈现在屏幕上的硬字幕，绝不能出现类似“万事打卡”、“彭国社”等低级同音字错误。
+    6. **【9:16 竖屏导演规则】**：
+       - 你需要同时为后续竖屏合成提供取景建议。
+       - 请综合 `speaker_scene.json` 的人物数量、关系、活跃说话人和位置提示，给每个片段输出：
+         - `focus_target`: 当前最该跟随的人物 ID，未知时可写 `"context"`
+         - `shot_type`: 仅允许 `single` / `two_shot` / `group` / `graphic`
+         - `vertical_mode`: 仅允许 `follow_speaker` / `center_safe` / `preserve_context`
+         - `crop_anchor`: 仅允许 `left` / `center` / `right`
+       - 如果是单人讲话且人物明显偏左/偏右，可以用 `follow_speaker + left/right`。
+       - 如果是多人同框、图表、PPT、品牌卡片、信息图，优先使用 `preserve_context` 或 `center_safe`，避免过度裁切丢信息。
+       - 这些字段是后续 FFmpeg 竖屏执行脚本的输入，不要省略。
 
     【输出要求】：
     输出一份严格连续的 JSON 数组（不要包含 ```json 标记）。时间线必须从 0.0 秒开始，无缝首尾相连，直到数字人视频结束：
@@ -84,6 +98,10 @@ def main():
         "video_source": "aiman.mp4",
         "audio_source": "main",
         "subtitle_text": "数字人说的开场白",
+        "focus_target": "speaker_1",
+        "shot_type": "single",
+        "vertical_mode": "follow_speaker",
+        "crop_anchor": "center",
         "cut_start": 0.0,
         "cut_end": 3.5
       }},
@@ -93,6 +111,10 @@ def main():
         "video_source": "material.mp4",
         "audio_source": "main",
         "subtitle_text": "数字人的画外音解说词",
+        "focus_target": "speaker_1",
+        "shot_type": "single",
+        "vertical_mode": "follow_speaker",
+        "crop_anchor": "right",
         "cut_start": 1.0,
         "cut_end": 3.5
       }},
@@ -102,6 +124,10 @@ def main():
         "video_source": "material.mp4",
         "audio_source": "b_roll",
         "subtitle_text": "素材里的人大喊：太棒了！",
+        "focus_target": "context",
+        "shot_type": "group",
+        "vertical_mode": "preserve_context",
+        "crop_anchor": "center",
         "cut_start": 4.0,
         "cut_end": 6.0
       }}
@@ -109,12 +135,11 @@ def main():
     注意：最终序列的 start_time 必须从 0 开始连续，不能有缝隙！
     """
 
-    model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL))
-    
-    # 强制让大模型吐出标准 JSON 格式
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
+    response = generate_content(
+        client,
+        model=os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        contents=prompt,
+        response_mime_type="application/json",
     )
     
     print("3. AI 导演决策完成！结果如下：\n")

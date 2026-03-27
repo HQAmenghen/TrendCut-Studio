@@ -132,7 +132,14 @@ function createPublishStore(deps) {
 
   function normalizePublishConfig(config) {
     const base = {
-      global: { autoPilotEnabled: false, autoPilotFetchTime: '07:30', autoPilotTime: '08:00', autoPilotCount: 1, autoPilotAccountIds: [] },
+      global: {
+        autoPilotEnabled: false,
+        autoPilotFetchTime: '07:30',
+        autoPilotTime: '08:00',
+        autoPilotCount: 1,
+        autoPilotAccountIds: [],
+        autoPilotUseCurrentRanking: false
+      },
       wechatChannels: { enabled: false, accounts: [] },
       douyin: { enabled: false, displayName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
       xiaohongshu: { enabled: false, displayName: '', appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
@@ -150,6 +157,7 @@ function createPublishStore(deps) {
       next.global.autoPilotCount = Math.max(1, Math.min(10, parseInt(incomingGlobal.autoPilotCount || 1, 10)));
       next.global.autoPilotAccountIds = Array.isArray(incomingGlobal.autoPilotAccountIds) ? incomingGlobal.autoPilotAccountIds.map(s => String(s || '').trim()) : [];
       next.global.autoPilotTimes = Array.isArray(incomingGlobal.autoPilotTimes) ? incomingGlobal.autoPilotTimes.map(s => String(s || '').trim()) : [];
+      next.global.autoPilotUseCurrentRanking = Boolean(incomingGlobal.autoPilotUseCurrentRanking);
     }
 
     for (const platform of ['douyin', 'xiaohongshu', 'x', 'youtube']) {
@@ -397,7 +405,22 @@ function createPublishStore(deps) {
   function sanitizePlatformConfigInput(input) {
     const current = readPublishConfig();
     const next = deepClone(current);
+    const incomingGlobal = input?.global;
+    if (incomingGlobal && typeof incomingGlobal === 'object') {
+      next.global.autoPilotEnabled = Boolean(incomingGlobal.autoPilotEnabled);
+      next.global.autoPilotFetchTime = String(incomingGlobal.autoPilotFetchTime || next.global.autoPilotFetchTime || '07:30').trim();
+      next.global.autoPilotTime = String(incomingGlobal.autoPilotTime || next.global.autoPilotTime || '08:00').trim();
+      next.global.autoPilotCount = Math.max(1, Math.min(10, parseInt(incomingGlobal.autoPilotCount || next.global.autoPilotCount || 1, 10)));
+      next.global.autoPilotAccountIds = Array.isArray(incomingGlobal.autoPilotAccountIds)
+        ? incomingGlobal.autoPilotAccountIds.map((item) => String(item || '').trim())
+        : [];
+      next.global.autoPilotTimes = Array.isArray(incomingGlobal.autoPilotTimes)
+        ? incomingGlobal.autoPilotTimes.map((item) => String(item || '').trim())
+        : [];
+      next.global.autoPilotUseCurrentRanking = Boolean(incomingGlobal.autoPilotUseCurrentRanking);
+    }
     for (const platform of Object.keys(next)) {
+      if (platform === 'global') continue;
       const source = input?.[platform];
       if (!source || typeof source !== 'object') continue;
       if (platform === 'wechatChannels') {
@@ -440,18 +463,18 @@ function createPublishStore(deps) {
     };
   }
 
-  function reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig) {
+  function reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig, selection = {}) {
     const preservedOptions = platformKey === 'wechatChannels'
       ? {
-          accountId: existingTask?.accountId || '',
-          accountLabel: existingTask?.accountLabel || ''
+          accountId: String(selection?.accountId || existingTask?.accountId || '').trim(),
+          accountLabel: String(selection?.accountLabel || existingTask?.accountLabel || '').trim()
         }
       : {};
     const rebuiltTask = buildPublishTask(platformKey, publishData, assetUrl, platformConfig, preservedOptions);
     const validation = platformKey === 'wechatChannels'
       ? validateWechatTaskConfig(platformConfig, rebuiltTask)
       : collectPlatformValidation(platformKey, platformConfig, rebuiltTask.requiredFields || []);
-    const activeStatuses = new Set(['draft_preparing', 'publishing', 'need_login', 'uploading', 'processing', 'ready_to_publish', 'success']);
+    const activeStatuses = new Set(['draft_preparing', 'publishing', 'need_login', 'uploading', 'processing', 'ready_to_publish', 'success', 'scheduled_wait']);
 
     if (validation.missingFields.length > 0) {
       rebuiltTask.status = 'config_missing';
@@ -494,7 +517,7 @@ function createPublishStore(deps) {
       const baseTask = existingTask
         ? { ...existingTask, accountId: selection.accountId || existingTask.accountId || '', accountLabel: selection.accountLabel || existingTask.accountLabel || '' }
         : existingTask;
-      const task = reconcilePlatformTask(platformKey, baseTask, job.publishData || {}, job.asset?.url || '', platformConfig);
+      const task = reconcilePlatformTask(platformKey, baseTask, job.publishData || {}, job.asset?.url || '', platformConfig, selection);
       if (task.validation?.missingFields?.length) {
         platformErrors.push({
           platform: platformKey,
@@ -506,10 +529,18 @@ function createPublishStore(deps) {
       platformTasks.push(task);
     }
 
+    const nextStatus = (
+      String(job?.status || '').trim() === 'scheduled_wait'
+      && !platformErrors.length
+      && job?.scheduledTime
+    )
+      ? 'scheduled_wait'
+      : (platformErrors.length > 0 ? 'partial_ready' : 'ready');
+
     return {
       ...job,
       updatedAt: new Date().toISOString(),
-      status: platformErrors.length > 0 ? 'partial_ready' : 'ready',
+      status: nextStatus,
       platformTasks,
       platformErrors
     };

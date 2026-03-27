@@ -3,10 +3,6 @@ import io
 import os
 import re
 import sys
-import warnings
-
-warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
-import google.generativeai as genai
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -17,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from gemini_client import create_gemini_client, generate_content
 from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
@@ -26,15 +23,6 @@ GEMINI_MODEL = os.getenv(
     "PUBLISH_DESCRIPTION_GEMINI_MODEL",
     os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
 )
-
-
-def configure_gemini() -> None:
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in your environment or .env file.")
-    genai.configure(api_key=api_key)
-
-
 def normalize_output(text: str, strip_tags: bool = True) -> str:
     cleaned = str(text or "").strip()
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
@@ -61,8 +49,7 @@ def main() -> None:
         print("")
         return
 
-    configure_gemini()
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = create_gemini_client()
     tag_instruction = """
 10. 不要输出任何 #话题标签，标签由系统单独追加。
 11. 只输出最终文案，不要解释，不要换行。
@@ -100,7 +87,11 @@ def main() -> None:
 视频内容：
 {source_text}
 """
-    response = model.generate_content(prompt)
+    response = generate_content(
+        client,
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
     description = normalize_output(response.text, strip_tags=not args.include_tags)
     emit_result("发布描述生成完成", description=description)
     print(description)

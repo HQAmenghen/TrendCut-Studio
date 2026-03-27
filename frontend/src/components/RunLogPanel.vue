@@ -4,6 +4,15 @@
       <span>{{ title }}</span>
     </div>
     <div class="log-body">
+      <div v-if="summaryItems.length" class="log-card">
+        <div class="log-kicker">任务信息</div>
+        <div class="summary-lines">
+          <div v-for="(item, index) in summaryItems" :key="`summary_${index}`" class="summary-line">
+            <span class="summary-label">{{ item.label }}</span>
+            <strong class="summary-value">{{ item.value }}</strong>
+          </div>
+        </div>
+      </div>
       <div class="log-card">
         <div class="log-kicker">最近日志</div>
         <div v-if="recentLogs.length" class="log-lines">
@@ -25,6 +34,7 @@
 <script setup>
 defineProps({
   title: { type: String, default: '📝 运行摘要' },
+  summaryItems: { type: Array, default: () => [] },
   recentLogs: { type: Array, default: () => [] },
   errorLogs: { type: Array, default: () => [] }
 });
@@ -81,6 +91,34 @@ defineProps({
 
 .log-lines.error {
   color: #ef4444;
+}
+
+.summary-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.summary-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.summary-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.summary-value {
+  color: var(--strong-text);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: right;
 }
 
 .empty-log {

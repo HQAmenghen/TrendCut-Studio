@@ -97,13 +97,17 @@ function buildPythonArgs(scriptPath, args = []) {
   return [scriptPath, ...args];
 }
 
-function createPythonError(scriptPath, protocol, fallbackMessage) {
+function createPythonError(scriptPath, protocol, fallbackMessage, extra = {}) {
   const err = new Error(protocol?.message || fallbackMessage || `${path.basename(scriptPath)} failed`);
   err.code = protocol?.code || 'PYTHON_SCRIPT_FAILED';
   err.stage = protocol?.stage || 'python';
   err.details = protocol?.details || fallbackMessage || '';
   err.hint = protocol?.hint || '';
   err.protocol = protocol || null;
+  err.scriptPath = scriptPath;
+  err.stdout = String(extra.stdout || '');
+  err.stderr = String(extra.stderr || '');
+  err.exitCode = extra.exitCode;
   return err;
 }
 
@@ -147,7 +151,7 @@ function runPythonScript(scriptPath, args = [], options = {}) {
 
     proc.on('error', (error) => {
       if (heartbeatHandle) clearInterval(heartbeatHandle);
-      reject(createPythonError(scriptPath, protocol.error, error.message));
+      reject(createPythonError(scriptPath, protocol.error, error.message, { stdout, stderr, exitCode: null }));
     });
 
     proc.on('close', (code) => {
@@ -171,7 +175,7 @@ function runPythonScript(scriptPath, args = [], options = {}) {
       }
 
       const fallbackMessage = stderr.trim() || stdout.trim() || `${path.basename(scriptPath)} failed`;
-      reject(createPythonError(scriptPath, protocol.error, fallbackMessage));
+      reject(createPythonError(scriptPath, protocol.error, fallbackMessage, { stdout, stderr, exitCode: code }));
     });
   });
 }
@@ -195,10 +199,15 @@ function runPythonScriptSync(scriptPath, args = [], options = {}) {
   };
 
   if (proc.error) {
-    throw createPythonError(scriptPath, protocol.error, proc.error.message);
+    throw createPythonError(scriptPath, protocol.error, proc.error.message, { stdout, stderr, exitCode: proc.status });
   }
   if (proc.status !== 0) {
-    throw createPythonError(scriptPath, protocol.error, stderr.trim() || stdout.trim() || `${path.basename(scriptPath)} failed`);
+    throw createPythonError(
+      scriptPath,
+      protocol.error,
+      stderr.trim() || stdout.trim() || `${path.basename(scriptPath)} failed`,
+      { stdout, stderr, exitCode: proc.status }
+    );
   }
   return result;
 }

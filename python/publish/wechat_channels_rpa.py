@@ -807,18 +807,102 @@ def click_publish(page, publish_mode: str) -> None:
         'button:has-text("发布")',
         'button:has-text("立即发布")'
     ]
-    for selector in selectors:
-        try:
-            button = page.locator(selector).first
-            button.wait_for(timeout=20000)
-            button.click()
-            page.wait_for_timeout(5000)
-            log(f"点击发表按钮成功，选择器: {selector}")
-            emit_progress("success", "已触发视频号发表操作，请检查页面结果", 100)
-            return
-        except Exception:
-            continue
-    raise RuntimeError("未找到可点击的发表按钮，页面结构可能已变化。")
+    
+    # 增加对按钮“可用性”的严谨判定（封面生成、视频处理都需要时间）
+    deadline = time.time() + 120  # 最多等待2分钟
+    while time.time() < deadline:
+        for selector in selectors:
+            try:
+                for context_name, context in get_editor_contexts(page):
+                    locator = context.locator(selector)
+                    count = locator.count()
+                    if count == 0:
+                        continue
+                        
+                    for index in range(count):
+                        button = locator.nth(index)
+                        if not button.is_visible():
+                            continue
+                            
+                        # 获取更多信息辅助调试
+                        attr_info = button.evaluate("""el => ({
+                            tag: el.tagName,
+                            text: el.innerText,
+                            disabled: el.disabled,
+                            classList: Array.from(el.classList),
+                            opacity: window.getComputedStyle(el).opacity,
+                            pointerEvents: window.getComputedStyle(el).pointerEvents
+                        })""")
+                        
+                        classList = attr_info.get("classList") or []
+                        is_disabled_attr = attr_info.get("disabled") is True
+                        has_disabled_class = any("disabled" in c.lower() for c in classList)
+                        is_low_opacity = float(attr_info.get("opacity") or 1.0) < 0.5
+                        
+                        log(f"发现候选项 {selector}[{index}] (上下文: {context_name}): tag={attr_info['tag']}, disabled={is_disabled_attr}, classes={classList}, opacity={attr_info['opacity']}")
+                        
+                        # 判定逻辑：如果没有明显的 disabled 属性
+                        # 我们按照用户建议采取“更积极”的策略：只要按钮不是 HTML 层面的禁选且看起来不是半透明
+                        if not is_disabled_attr and not is_low_opacity:
+                            log(f"发现可用发表按钮 (状态: ready)，开始点击策略 (上下文: {context_name})")
+                            button.click()
+                            
+                            # 点击后只给 3.5 秒的响应窗口，在这期间如果不成功我们就重试
+                            wait_deadline = time.time() + 3.5
+                            while time.time() < wait_deadline:
+                                page.wait_for_timeout(500)
+                                # 1. 检查是否出现了表示拦截的弹窗文字，如果有，直接提前判定为失败并中断等待
+                                try:
+                                    tips = context.locator('.weui-desktop-msg-growl, .ant-message, .weui-desktop-popover, .weui-desktop-dialog').all()
+                                    for t in tips:
+                                        if t.is_visible():
+                                            txt = t.inner_text()
+                                            if any(k in txt for k in ["处理中", "请上传视频", "解析中", "上传中", "请完善", "提示", "失败", "封面"]):
+                                                log(f"点击后收到拦截提示: '{txt}'，判定点击无效")
+                                                wait_deadline = 0 # 终止内部等待循环
+                                                break
+                                except: pass
+                                
+                                # 2. 检查是否成功（跳转或者成功文案）
+                                if "list" in page.url or context.locator('text=发表成功').count() > 0:
+                                    log("识别到成功信号，发布流程完成")
+                                    emit_progress("success", "已成功发表", 100)
+                                    return
+                            
+                            # 3. 如果经过等待，发表按钮仍然可见且可用，说明需要继续点
+                            try:
+                                if button.count() > 0 and button.is_visible():
+                                    log("按钮依然存在，将执行下一轮尝试...")
+                            except: pass
+                            continue # 进入下一轮寻找按钮的逻辑
+                        else:
+                            log(f"候选项状态不满足点击条件: disabled={is_disabled_attr}, opacity={is_low_opacity}")
+            except Exception as e:
+                log(f"检查发表按钮时出错 (选择器 {selector}): {e}")
+                continue
+        page.wait_for_timeout(3000)
+        log("所有已知的发表按钮候选项均未就绪，继续等待...")
+
+    raise RuntimeError("等待发表按钮就绪超时，请检查视频状态或手动处理。")
+
+
+def wait_for_publish_result(page) -> bool:
+    """等待并验证发布结果"""
+    log("正在通过页面状态验证发布结果...")
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        url = page.url or ""
+        # 如果跳转到了内容管理列表页，说明发布成功
+        if "channels.weixin.qq.com/platform/post/list" in url:
+            log("页面已跳转至作品列表，判定发布成功")
+            return True
+        # 检查成功提示文字
+        for context_name, context in get_contexts(page):
+            if context.locator('text=发表成功').count() > 0 or context.locator('text=已发表').count() > 0:
+                log(f"检测到成功提示文字，判定发布成功 (上下文: {context_name})")
+                return True
+        page.wait_for_timeout(2000)
+    return False
 
 
 def wait_for_manual_close(browser) -> None:
@@ -870,12 +954,26 @@ def main() -> int:
                 fill_short_title(page, short_title)
             enable_original_declaration(page, original_declaration)
             click_publish(page, publish_mode)
-            if publish_mode == "draft":
+            
+            if publish_mode == "publish":
+                # 对于直接发布的模式，增加结果验证
+                success = wait_for_publish_result(page)
+                if success:
+                    emit_progress("success", "视频号流程圆满完成，内容已发表", 100)
+                    log("已检测到发布成功，准备自动关闭浏览器")
+                else:
+                    log("未检测到明确的发布成功状态，将保持浏览器开启供检查")
+                    wait_for_manual_close(browser)
+            else:
+                # 草稿模式
                 page.wait_for_timeout(1500)
                 wait_for_manual_close(browser)
             return 0
         finally:
-            log("浏览器保持打开，便于人工检查页面状态")
+            if publish_mode == "publish":
+                log("视频号自动发布流程结束，浏览器将自动关闭")
+            else:
+                log("浏览器保持打开，便于人工检查页面状态")
     finally:
         try:
             if "browser" in locals() and browser:

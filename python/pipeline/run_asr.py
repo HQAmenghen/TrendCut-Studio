@@ -3,7 +3,6 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from faster_whisper import WhisperModel
-import google.generativeai as genai
 import json
 import time
 import os
@@ -17,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
+from gemini_client import create_gemini_client, generate_content
 from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
@@ -24,14 +24,6 @@ load_project_env(__file__)
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
 GLOSSARY_PATH = os.path.join(os.path.dirname(__file__), "glossary.json")
-
-
-def configure_gemini():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in your environment or .env file.")
-    genai.configure(api_key=api_key)
-
 
 def visible_text(text: str) -> str:
     return re.sub(r"[\s，。！？；：、“”‘’,.!?;:()\[\]{}\"'…·-]", "", text or "")
@@ -83,8 +75,7 @@ def backfill_chinese_translations(raw_segments, normalized_subtitles):
     if not targets:
         return normalized_subtitles
 
-    configure_gemini()
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = create_gemini_client()
     payload = json.dumps(targets, ensure_ascii=False)
     prompt = f"""
 你是一名专业字幕翻译，请把下面英文口播字幕翻译成简洁、自然、适合视频字幕展示的中文。
@@ -107,9 +98,11 @@ def backfill_chinese_translations(raw_segments, normalized_subtitles):
   }}
 ]
 """
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
+    response = generate_content(
+        client,
+        model=GEMINI_MODEL,
+        contents=prompt,
+        response_mime_type="application/json",
     )
     result = json.loads(response.text)
     if not isinstance(result, list):
@@ -127,9 +120,160 @@ def backfill_chinese_translations(raw_segments, normalized_subtitles):
     return normalized_subtitles
 
 
+def load_optional_visual_context():
+    result_path = Path("result.json")
+    if not result_path.exists():
+        return None
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def build_default_speaker_scene(subtitles):
+    timeline = []
+    for entry in subtitles:
+        time_range = entry.get("time") or [0.0, 0.0]
+        if len(time_range) < 2:
+            continue
+        timeline.append({
+            "start": float(time_range[0]),
+            "end": float(time_range[1]),
+            "active_speakers": ["speaker_1"],
+            "speaker_count": 1,
+            "relationship_hint": "默认主讲",
+            "focus_target": "speaker_1",
+            "shot_type": "single",
+            "vertical_mode": "follow_speaker",
+            "crop_anchor": "center",
+            "reason": "未识别到可靠多人关系信息，回退为默认单人主讲居中方案。"
+        })
+
+    return {
+        "participant_count": 1,
+        "relationship_summary": "默认单人主讲场景，适合 9:16 居中取景。",
+        "participants": [
+            {
+                "speaker_id": "speaker_1",
+                "label": "主讲人",
+                "role": "主说话人",
+                "visual_hint": "center",
+                "confidence": 0.2
+            }
+        ],
+        "timeline": timeline,
+        "global_guidance": {
+            "default_vertical_mode": "follow_speaker",
+            "default_crop_anchor": "center",
+            "notes": [
+                "若后续视觉轴提供多人位置信息，可升级为左右切换或多人中景。"
+            ]
+        }
+    }
+
+
+def analyze_speaker_scene(subtitles, visual_context):
+    fallback = build_default_speaker_scene(subtitles)
+    if not subtitles:
+        return fallback
+
+    client = create_gemini_client()
+    subtitle_payload = json.dumps(subtitles, ensure_ascii=False)
+    visual_payload = json.dumps(visual_context or {}, ensure_ascii=False)
+    prompt = f"""
+你是一名短视频导播分析师。请根据字幕时间轴和可选视觉轴，输出一份供 AI 导演使用的人物关系与 9:16 取景分析 JSON。
+
+输入一：
+字幕时间轴（subtitles）
+{subtitle_payload}
+
+输入二：
+视觉轴（visual_context，可为空）
+{visual_payload}
+
+你的任务：
+1. 判断这段视频大约有几位主要参与者（participant_count）。
+2. 给出参与者关系摘要，例如“主播 + 嘉宾”“主持人 + 两位连线嘉宾”“单人解说”“多人圆桌讨论”。
+3. 为每个参与者生成稳定 ID，例如 speaker_1 / speaker_2。
+4. 结合字幕和视觉轴，给出时间线级别的主讲人与竖屏取景建议。
+5. 如果视觉轴明确提到人物位置或多人分屏，请据此决定 crop_anchor：
+   - left / center / right
+6. vertical_mode 仅允许：
+   - follow_speaker
+   - center_safe
+   - preserve_context
+7. shot_type 仅允许：
+   - single
+   - two_shot
+   - group
+   - graphic
+8. 不要编造过细的事实；不确定时保持保守，优先 center_safe。
+9. timeline 尽量覆盖字幕时间轴中的主要段落，但不要求逐字逐句一一对应。
+10. 严格输出 JSON 对象，不要输出 markdown。
+
+输出格式：
+{{
+  "participant_count": 2,
+  "relationship_summary": "主持人和嘉宾对谈",
+  "participants": [
+    {{
+      "speaker_id": "speaker_1",
+      "label": "主持人",
+      "role": "提问者/主持",
+      "visual_hint": "left",
+      "confidence": 0.82
+    }}
+  ],
+  "timeline": [
+    {{
+      "start": 0.0,
+      "end": 5.2,
+      "active_speakers": ["speaker_1"],
+      "speaker_count": 1,
+      "relationship_hint": "主持人开场",
+      "focus_target": "speaker_1",
+      "shot_type": "single",
+      "vertical_mode": "follow_speaker",
+      "crop_anchor": "left",
+      "reason": "主持人发言，适合偏左单人取景。"
+    }}
+  ],
+  "global_guidance": {{
+    "default_vertical_mode": "center_safe",
+    "default_crop_anchor": "center",
+    "notes": ["补充说明"]
+  }}
+}}
+"""
+    try:
+        response = generate_content(
+            client,
+            model=GEMINI_MODEL,
+            contents=prompt,
+            response_mime_type="application/json",
+        )
+        result = json.loads(response.text)
+        if not isinstance(result, dict):
+            return fallback
+        if not isinstance(result.get("timeline"), list) or not result.get("timeline"):
+            result["timeline"] = fallback["timeline"]
+        if not isinstance(result.get("participants"), list) or not result.get("participants"):
+            result["participants"] = fallback["participants"]
+        if not result.get("participant_count"):
+            result["participant_count"] = max(1, len(result["participants"]))
+        if not result.get("relationship_summary"):
+            result["relationship_summary"] = fallback["relationship_summary"]
+        if not isinstance(result.get("global_guidance"), dict):
+            result["global_guidance"] = fallback["global_guidance"]
+        return result
+    except Exception as err:
+        print(f"   ⚠️ 人物关系分析失败，回退默认单人方案: {err}")
+        return fallback
+
+
 def refine_and_translate(raw_segments):
-    configure_gemini()
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = create_gemini_client()
     payload = json.dumps(raw_segments, ensure_ascii=False)
     prompt = f"""
 你是一名顶级字幕校对师和双语译者。下面是一段中文短视频口播经过 Whisper 打轴后的初稿，
@@ -167,9 +311,11 @@ def refine_and_translate(raw_segments):
   }}
 ]
 """
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
+    response = generate_content(
+        client,
+        model=GEMINI_MODEL,
+        contents=prompt,
+        response_mime_type="application/json",
     )
     result = json.loads(response.text)
     if not isinstance(result, list) or len(result) != len(raw_segments):
@@ -222,11 +368,53 @@ def build_raw_segments(audio_file):
     return raw_segments
 
 
+def video_has_audio_stream(input_video: str) -> bool:
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=index",
+            "-of", "json",
+            input_video
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8"
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(f"ffprobe 检测音轨失败: {probe.stderr.strip() or probe.stdout.strip() or 'unknown error'}")
+    try:
+        payload = json.loads(probe.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ffprobe 输出解析失败: {exc}") from exc
+    return bool(payload.get("streams") or [])
+
+
 def main():
     parser = argparse.ArgumentParser(description="ASR and Translation script.")
     parser.add_argument("--input", default="aiman.mp4", help="Input video file.")
+    parser.add_argument("--allow-no-audio", action="store_true", help="Allow silent videos and generate empty subtitle files instead of failing.")
     args = parser.parse_args()
     input_video = args.input
+
+    emit_stage("audio_probe", f"正在检测视频音轨: {input_video}")
+    if not video_has_audio_stream(input_video):
+        if args.allow_no_audio:
+            print("0. 检测到输入视频无音轨，已切换为空字幕降级模式。")
+            with open("audio.json", "w", encoding="utf-8") as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
+            with open("subtitles.json", "w", encoding="utf-8") as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
+            emit_result(
+                "输入视频无音轨，已生成空字幕文件",
+                audio_json="audio.json",
+                subtitles_json="subtitles.json",
+                segment_count=0,
+                no_audio_stream=True,
+            )
+            return
+        raise RuntimeError(f"输入视频没有可用音轨: {input_video}")
 
     emit_stage("audio_extract", f"正在从视频中提取音频: {input_video}")
     print(f"0. 正在从视频 '{input_video}' 中提取音频...")
@@ -256,6 +444,12 @@ def main():
         except Exception as err:
             print(f"   ⚠️ Gemini 精修失败，回退为原始 ASR 文本: {err}")
             final_subtitles = [{"time": [s["start"], s["end"]], "zh": s["text"], "en": ""} for s in raw_segments]
+            try:
+                print("   -> 正在尝试仅补齐中文字幕翻译...")
+                final_subtitles = backfill_chinese_translations(raw_segments, final_subtitles)
+                print("   ✅ 已补齐可恢复的中文字幕翻译。")
+            except Exception as translation_err:
+                print(f"   ⚠️ 中文字幕补翻失败，保留原始 ASR 文本: {translation_err}")
 
     director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["zh"]} for seg in final_subtitles]
     with open("audio.json", "w", encoding="utf-8") as f:
@@ -264,7 +458,12 @@ def main():
     with open("subtitles.json", "w", encoding="utf-8") as f:
         json.dump(final_subtitles, f, ensure_ascii=False, indent=2)
 
-    print("   ✅ audio.json 与 subtitles.json 已生成！")
+    visual_context = load_optional_visual_context()
+    speaker_scene = analyze_speaker_scene(final_subtitles, visual_context)
+    with open("speaker_scene.json", "w", encoding="utf-8") as f:
+        json.dump(speaker_scene, f, ensure_ascii=False, indent=2)
+
+    print("   ✅ audio.json、subtitles.json 与 speaker_scene.json 已生成！")
     if os.path.exists(audio_file):
         os.remove(audio_file)
 
@@ -275,6 +474,7 @@ def main():
         "ASR 与字幕生成完成",
         audio_json="audio.json",
         subtitles_json="subtitles.json",
+        speaker_scene_json="speaker_scene.json",
         segment_count=len(final_subtitles),
         elapsed_seconds=elapsed,
     )

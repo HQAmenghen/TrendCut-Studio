@@ -223,14 +223,23 @@ function sanitizePublishDescriptionText(text, options = {}) {
         .trim();
 }
 
-function containsChineseText(text) {
-    return /[\u3400-\u9fff]/.test(String(text || ''));
+function buildFallbackPublishDescription(sourceText, title = '') {
+    const normalizedTitle = String(title || '').replace(/\s+/g, ' ').trim();
+    const normalizedSource = String(sourceText || '').replace(/\s+/g, ' ').trim();
+    if (normalizedTitle) {
+        return sanitizePublishDescriptionText(`${normalizedTitle}，更多内容请看视频。`);
+    }
+    if (normalizedSource) {
+        const compact = normalizedSource.slice(0, 72).trim();
+        return sanitizePublishDescriptionText(`热点内容整理如下：${compact}`);
+    }
+    return '';
 }
 
 function generatePublishDescription(sourceText, options = {}) {
     const normalized = String(sourceText || '').replace(/\s+/g, ' ').trim();
     const normalizedTitle = String(options?.title || '').replace(/\s+/g, ' ').trim();
-    if (!normalized || !containsChineseText(normalized)) {
+    if (!normalized && !normalizedTitle) {
         return '';
     }
 
@@ -242,7 +251,7 @@ function generatePublishDescription(sourceText, options = {}) {
 
     let result = '';
     try {
-        if (fs.existsSync(PUBLISH_DESCRIPTION_SCRIPT)) {
+        if (normalized && fs.existsSync(PUBLISH_DESCRIPTION_SCRIPT)) {
             const args = ['--source-text', normalized];
             if (normalizedTitle) {
                 args.push('--title', normalizedTitle);
@@ -266,9 +275,11 @@ function generatePublishDescription(sourceText, options = {}) {
         }
     }
 
-    if (result) {
-        publishDescriptionCache.set(cacheKey, result);
+    if (!result) {
+        result = buildFallbackPublishDescription(normalized, normalizedTitle);
     }
+
+    if (result) publishDescriptionCache.set(cacheKey, result);
     return result;
 }
 
@@ -660,6 +671,8 @@ const {
     registerStandaloneRoute(app, standaloneHandler);
     registerSystemRoutes(app, systemHandlers);
 
+    let schedulerService = null;
+
     const publishHandlers = createPublishHandlers({
         sendError,
         readPublishConfig,
@@ -684,12 +697,13 @@ const {
         startWechatRpa,
         retryWechatRpa,
         cancelWechatRpa,
-        checkWechatLogin
+        checkWechatLogin,
+        triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args)
     });
 
     registerPublishRoutes(app, publishHandlers);
 
-    startScheduler({
+    schedulerService = startScheduler({
         publishStore,
         wechatRpaService,
         xaiService,

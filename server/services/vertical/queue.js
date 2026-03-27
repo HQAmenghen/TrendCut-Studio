@@ -25,6 +25,70 @@ function createVerticalQueueService(deps) {
   const verticalJobQueue = [];
   let verticalActiveCount = 0;
   let verticalJobConcurrency = 2;
+  const verticalQueueLogPath = path.join(baseDir, 'data', 'logs', 'vertical_queue.log');
+
+  function appendPersistentLine(filePath, line) {
+    try {
+      ensureDir(path.dirname(filePath));
+      fs.appendFileSync(filePath, `${line}\n`, 'utf8');
+    } catch (_error) {}
+  }
+
+  function formatPersistentLogLine(job, message, extra = null) {
+    const payload = {
+      timestamp: new Date().toISOString(),
+      jobId: job?.id || '',
+      status: job?.status || '',
+      progress: Number.isFinite(Number(job?.progress)) ? Number(job.progress) : null,
+      message: String(message || '').trim()
+    };
+    if (extra && typeof extra === 'object' && Object.keys(extra).length) {
+      payload.extra = extra;
+    }
+    return JSON.stringify(payload, ensureAsciiSafeReplacer);
+  }
+
+  function ensureAsciiSafeReplacer(_key, value) {
+    return value;
+  }
+
+  function summarizePythonError(error) {
+    const stderrLines = sanitizeProcessLogLines(error?.stderr || '').slice(-20);
+    const stdoutLines = sanitizeProcessLogLines(error?.stdout || '').slice(-12);
+    return {
+      message: String(error?.message || '未知错误'),
+      code: String(error?.code || ''),
+      stage: String(error?.stage || ''),
+      details: String(error?.details || ''),
+      hint: String(error?.hint || ''),
+      exitCode: Number.isFinite(Number(error?.exitCode)) ? Number(error.exitCode) : null,
+      stderrTail: stderrLines,
+      stdoutTail: stdoutLines,
+      protocol: error?.protocol || null
+    };
+  }
+
+  function persistJobFailure(job, failureSummary, jobDir) {
+    const payload = {
+      jobId: job.id,
+      status: job.status,
+      sourceType: job.sourceType || '',
+      author: job.author || '',
+      title: job.title || '',
+      videoUrl: job.videoUrl || '',
+      createdAt: job.createdAt || '',
+      startedAt: job.startedAt || '',
+      completedAt: job.completedAt || '',
+      updatedAt: job.updatedAt || '',
+      failure: failureSummary,
+      recentLogs: Array.isArray(job.logs) ? job.logs.slice(-80) : []
+    };
+    writeJsonFile(path.join(jobDir, 'failure.json'), payload);
+    appendPersistentLine(
+      path.join(jobDir, 'vertical_queue.log'),
+      JSON.stringify(payload, null, 2)
+    );
+  }
 
   function listJobs() {
     return Array.from(verticalJobs.values())
@@ -41,6 +105,15 @@ function createVerticalQueueService(deps) {
     const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(message).trim()}`;
     job.logs = [...(Array.isArray(job.logs) ? job.logs : []), line].slice(-120);
     job.updatedAt = new Date().toISOString();
+    appendPersistentLine(
+      verticalQueueLogPath,
+      formatPersistentLogLine(job, message)
+    );
+    const jobLogPath = path.join(verticalQueueRoot, job.id, 'vertical_queue.log');
+    appendPersistentLine(
+      jobLogPath,
+      formatPersistentLogLine(job, message)
+    );
   }
 
   function getStatus() {
@@ -138,6 +211,7 @@ function createVerticalQueueService(deps) {
       }
     };
     const renderOptions = job.renderOptions || {};
+    const descriptionSource = String(job.summary || '').trim() ? 'post_summary' : 'none';
 
     if (job.cancelRequested) {
       updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, '任务在开始前被取消');
@@ -152,7 +226,7 @@ function createVerticalQueueService(deps) {
     }
 
     updateJob({ status: 'transcribing', progress: 35, message: '正在执行 ASR 自动打轴...' }, '进入 ASR 自动打轴阶段');
-    await spawnScript(runAsrPath, ['--input', sourceVideoPath], {
+    await spawnScript(runAsrPath, ['--input', sourceVideoPath, '--allow-no-audio'], {
       cwd: jobDir,
       onSpawn: (proc) => { job.currentProc = proc; },
       onStdout: pipeProcessLogs('ASR'),
@@ -160,6 +234,15 @@ function createVerticalQueueService(deps) {
       onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
     });
     job.currentProc = null;
+    const subtitlesPayload = path.join(jobDir, 'subtitles.json');
+    const subtitlesData = fs.existsSync(subtitlesPayload) ? readJsonSafe(subtitlesPayload, []) : [];
+    if (Array.isArray(subtitlesData) && subtitlesData.length > 0) {
+      appendLog(job, '发布描述来源已切换为字幕内容');
+    } else if (descriptionSource === 'post_summary') {
+      appendLog(job, '检测到视频无有效字幕，发布描述将回退到帖子摘要');
+    } else {
+      appendLog(job, '检测到视频无有效字幕，且帖子摘要为空，后续描述信息会较弱');
+    }
     if (job.cancelRequested) {
       updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, 'ASR 阶段后任务被取消');
       return;
@@ -220,6 +303,14 @@ function createVerticalQueueService(deps) {
     }, `竖屏视频已完成，用时结果已生成：${finalTitle}`);
   }
 
+  function readJsonSafe(filePath, fallbackValue) {
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (_error) {
+      return fallbackValue;
+    }
+  }
+
   async function processQueue() {
     while (verticalActiveCount < verticalJobConcurrency && verticalJobQueue.length > 0) {
       const job = verticalJobQueue.shift();
@@ -260,6 +351,12 @@ function createVerticalQueueService(deps) {
           job.completedAt = job.updatedAt;
           job.durationSeconds = job.startedAt ? Math.max(0, Math.floor((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null;
           appendLog(job, `任务失败：${error.message}`);
+          const failureSummary = summarizePythonError(error);
+          persistJobFailure(job, failureSummary, path.join(verticalQueueRoot, job.id));
+          appendPersistentLine(
+            verticalQueueLogPath,
+            formatPersistentLogLine(job, '任务失败详情已持久化', failureSummary)
+          );
         })
         .finally(() => {
           job.currentProc = null;

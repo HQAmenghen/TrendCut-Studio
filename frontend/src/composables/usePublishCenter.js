@@ -66,6 +66,19 @@ function normalizeTags(tags) {
     .filter(Boolean);
 }
 
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? '').trim());
+  }
+  if (value === null || value === undefined || value === '') {
+    return [];
+  }
+  if (typeof value === 'string') {
+    return [value.trim()];
+  }
+  return [];
+}
+
 function normalizeApiError(err, fallbackMessage = '请求失败') {
   const payload = err?.response?.data || {};
   return {
@@ -267,6 +280,56 @@ const clearErrorState = () => {
   }));
 
   const wechatAccounts = computed(() => Array.isArray(config.value?.wechatChannels?.accounts) ? config.value.wechatChannels.accounts : []);
+  const activeAutoPilotMappings = computed(() => {
+    const global = config.value?.global || {};
+    const accountIds = normalizeStringArray(global.autoPilotAccountIds);
+    const times = normalizeStringArray(global.autoPilotTimes);
+    const mappings = [];
+    const maxLen = Math.max(accountIds.length, times.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (accountIds[i]) {
+        mappings.push({
+          rank: i + 1,
+          accountId: accountIds[i],
+          time: times[i] || global.autoPilotTime || '08:00'
+        });
+      }
+    }
+    return mappings;
+  });
+
+  const autoPilotSummaryItems = computed(() => {
+    const global = config.value?.global || {};
+    const enabled = Boolean(global.autoPilotEnabled);
+    const fetchTime = String(global.autoPilotFetchTime || '07:30').trim();
+    const useCurrentRanking = Boolean(global.autoPilotUseCurrentRanking);
+    
+    const assignedAccounts = activeAutoPilotMappings.value.map(m => {
+      const account = wechatAccounts.value.find((item) => item.id === m.accountId);
+      const label = account?.displayName || account?.helperAccount || account?.finderUserName || m.accountId || '未知账号';
+      return `Top ${m.rank}: ${label} @ ${m.time}`;
+    });
+
+    if (!assignedAccounts.length) {
+      assignedAccounts.push(`未配置任何映射 (将使用默认策略)`);
+    }
+
+    const now = new Date();
+    const nextTrigger = new Date(now);
+    const [hour, minute] = fetchTime.split(':').map((item) => Number(item || 0));
+    nextTrigger.setHours(hour || 0, minute || 0, 0, 0);
+    if (nextTrigger.getTime() <= now.getTime()) {
+      nextTrigger.setDate(nextTrigger.getDate() + 1);
+    }
+
+    return [
+      { label: '托管状态', value: enabled ? '已开启' : '未开启' },
+      { label: '榜单来源', value: useCurrentRanking ? '使用当前榜单' : '到点重新抓榜' },
+      { label: '抓榜时间', value: useCurrentRanking ? '保存配置即触发' : fetchTime },
+      { label: '触发计划', value: enabled ? (useCurrentRanking ? '保存配置时立即检测任务' : `周期性触发 (下次: ${nextTrigger.toLocaleString('zh-CN', { hour12: false })})`) : '托管关闭' },
+      { label: '分发策略', value: assignedAccounts.join(' | ') }
+    ];
+  });
 
   const platformCards = computed(() => platformDefs.map((platform) => {
     const item = config.value?.[platform.key] || {};
@@ -457,9 +520,25 @@ const clearErrorState = () => {
   };
 
   const updateAutoPilotArray = (field, index, value) => {
-    const arr = [...(config.value?.global?.[field] || [])];
+    const arr = normalizeStringArray(config.value?.global?.[field]);
     arr[index] = value;
     updateConfigField('global', field, arr);
+  };
+
+  const addAutoPilotMapping = (rank) => {
+    const rIdx = rank - 1;
+    if (rIdx < 0) return;
+    const accountIds = normalizeStringArray(config.value?.global?.autoPilotAccountIds);
+    if (!accountIds[rIdx] && wechatAccounts.value.length > 0) {
+      updateAutoPilotArray('autoPilotAccountIds', rIdx, wechatAccounts.value[0].id);
+      updateAutoPilotArray('autoPilotTimes', rIdx, config.value.global?.autoPilotTime || '08:00');
+    }
+  };
+
+  const removeAutoPilotMapping = (rank) => {
+    const rIdx = rank - 1;
+    if (rIdx < 0) return;
+    updateAutoPilotArray('autoPilotAccountIds', rIdx, '');
   };
 
   const createWechatAccount = () => ({
@@ -509,6 +588,20 @@ const clearErrorState = () => {
       config.value = res.data?.config || config.value;
       jobs.value = res.data?.jobs || jobs.value;
       appendLog(`✅ ${tag}保存成功`);
+      if (tag.includes('托管')) {
+        for (const item of autoPilotSummaryItems.value) {
+          appendLog(`托管任务 · ${item.label}：${item.value}`);
+        }
+        const trigger = res.data?.autoPilotTrigger || null;
+        if (trigger?.triggered) {
+          appendLog(`托管任务 · 已立即按${trigger.sourceMode === 'current_ranking' ? '当前榜单' : '最新榜单'}开始准备，数量 ${trigger.count || 0}`);
+          await refreshJobs(true);
+        } else if (trigger?.reason === 'scheduled_mode_waiting_for_fetch_time') {
+          appendLog('托管任务 · 当前为定时抓榜模式，等待设定时间自动启动');
+        } else if (trigger?.reason === 'trigger_failed') {
+          appendError(`托管任务即时准备失败: ${trigger.error || '未知错误'}`);
+        }
+      }
     } catch (err) {
       setErrorState(normalizeApiError(err, `保存${tag}失败`));
       appendLog(`❌ ${tag}保存失败`);
@@ -782,6 +875,8 @@ const clearErrorState = () => {
     platformDefs,
     platformCards,
     wechatAccounts,
+    activeAutoPilotMappings,
+    autoPilotSummaryItems,
     qrCodeData,
     testWechatLogin,
     closeQrCodeModal,
