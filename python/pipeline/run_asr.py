@@ -147,6 +147,7 @@ def build_default_speaker_scene(subtitles):
             "shot_type": "single",
             "vertical_mode": "follow_speaker",
             "crop_anchor": "center",
+            "crop_x_ratio": 0.5,
             "reason": "未识别到可靠多人关系信息，回退为默认单人主讲居中方案。"
         })
 
@@ -166,6 +167,7 @@ def build_default_speaker_scene(subtitles):
         "global_guidance": {
             "default_vertical_mode": "follow_speaker",
             "default_crop_anchor": "center",
+            "default_crop_x_ratio": 0.5,
             "notes": [
                 "若后续视觉轴提供多人位置信息，可升级为左右切换或多人中景。"
             ]
@@ -194,11 +196,19 @@ def analyze_speaker_scene(subtitles, visual_context):
 
 你的任务：
 1. 判断这段视频大约有几位主要参与者（participant_count）。
-2. 给出参与者关系摘要，例如“主播 + 嘉宾”“主持人 + 两位连线嘉宾”“单人解说”“多人圆桌讨论”。
+2. 给出参与者关系摘要，例如”主播 + 嘉宾””主持人 + 两位连线嘉宾””单人解说””多人圆桌讨论”。
 3. 为每个参与者生成稳定 ID，例如 speaker_1 / speaker_2。
 4. 结合字幕和视觉轴，给出时间线级别的主讲人与竖屏取景建议。
-5. 如果视觉轴明确提到人物位置或多人分屏，请据此决定 crop_anchor：
-   - left / center / right
+5. 如果视觉轴明确提到人物位置或多人分屏，请据此决定：
+   a. crop_anchor（粗粒度）：left / center / right
+   b. crop_x_ratio（精细位置，0.0~1.0 浮点数，**必填**）：
+      - 人物在画面左 1/3 → 0.2~0.3
+      - 人物在画面左半 → 0.3~0.45
+      - 居中或不确定 → 0.5
+      - 人物在画面右半 → 0.55~0.7
+      - 人物在画面右 1/3 → 0.7~0.8
+      - 多人/图表/PPT 需保留全局信息 → 0.5
+      - 请根据视觉轴的实际描述认真估算，不要全部填 0.5。
 6. vertical_mode 仅允许：
    - follow_speaker
    - center_safe
@@ -214,35 +224,37 @@ def analyze_speaker_scene(subtitles, visual_context):
 
 输出格式：
 {{
-  "participant_count": 2,
-  "relationship_summary": "主持人和嘉宾对谈",
-  "participants": [
+  “participant_count”: 2,
+  “relationship_summary”: “主持人和嘉宾对谈”,
+  “participants”: [
     {{
-      "speaker_id": "speaker_1",
-      "label": "主持人",
-      "role": "提问者/主持",
-      "visual_hint": "left",
-      "confidence": 0.82
+      “speaker_id”: “speaker_1”,
+      “label”: “主持人”,
+      “role”: “提问者/主持”,
+      “visual_hint”: “left”,
+      “confidence”: 0.82
     }}
   ],
-  "timeline": [
+  “timeline”: [
     {{
-      "start": 0.0,
-      "end": 5.2,
-      "active_speakers": ["speaker_1"],
-      "speaker_count": 1,
-      "relationship_hint": "主持人开场",
-      "focus_target": "speaker_1",
-      "shot_type": "single",
-      "vertical_mode": "follow_speaker",
-      "crop_anchor": "left",
-      "reason": "主持人发言，适合偏左单人取景。"
+      “start”: 0.0,
+      “end”: 5.2,
+      “active_speakers”: [“speaker_1”],
+      “speaker_count”: 1,
+      “relationship_hint”: “主持人开场”,
+      “focus_target”: “speaker_1”,
+      “shot_type”: “single”,
+      “vertical_mode”: “follow_speaker”,
+      “crop_anchor”: “left”,
+      “crop_x_ratio”: 0.28,
+      “reason”: “主持人发言，视觉轴描述其在画面左侧约 1/4 处，crop_x_ratio 取 0.28。”
     }}
   ],
-  "global_guidance": {{
-    "default_vertical_mode": "center_safe",
-    "default_crop_anchor": "center",
-    "notes": ["补充说明"]
+  “global_guidance”: {{
+    “default_vertical_mode”: “center_safe”,
+    “default_crop_anchor”: “center”,
+    “default_crop_x_ratio”: 0.5,
+    “notes”: [“补充说明”]
   }}
 }}
 """

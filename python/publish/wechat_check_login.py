@@ -102,18 +102,20 @@ def has_any_success_selector(scope) -> bool:
         except: pass
     return False
 
-def is_logged_in_dashboard(page, context=None):
+def is_logged_in_dashboard(page, context=None, allow_iframe_heuristic=False):
     """
     Final verification that we are truly on the creator dashboard.
+    allow_iframe_heuristic: only set True after confirmed scanned state,
+    otherwise the iframe-missing check causes false positives during page load.
     """
     url = page.url
     # 1. URL check: should be on platform/ or the base domain after redirect
     is_on_platform = "channels.weixin.qq.com/platform" in url
     is_still_login_url = "platform/login" in url or "login.html" in url
-    
+
     # 2. Indicators check: search for dashboard-only elements
     has_indicators = has_any_success_selector(page)
-    
+
     # Optional debug logging (reduced)
     if int(time.time()) % 10 == 0:
         ulog(f"Login Verify: on_platform={is_on_platform}, login_url={is_still_login_url}, indicators={has_indicators}, url={url}")
@@ -133,19 +135,19 @@ def is_logged_in_dashboard(page, context=None):
     if has_indicators:
         return True
 
-    # 5. Success if the login iframe is gone/removed (This often happens *before* the main URL redirects)
-    is_login_iframe_present = False
-    for frame in page.frames:
-        try:
-            if "login-for-iframe" in (frame.url or ""):
-                is_login_iframe_present = True
-                break
-        except: pass
-    
-    # If the login iframe is gone, and we were previously in the 'scanned' state, that's a huge sign
-    if not is_login_iframe_present:
-        ulog("Login iframe disappeared - treating as potential success.")
-        return True
+    # 5. iframe disappearance heuristic: only use this AFTER user has scanned the QR code,
+    # because during normal page load the iframe may not yet be present, causing false positives.
+    if allow_iframe_heuristic:
+        is_login_iframe_present = False
+        for frame in page.frames:
+            try:
+                if "login-for-iframe" in (frame.url or ""):
+                    is_login_iframe_present = True
+                    break
+            except: pass
+        if not is_login_iframe_present:
+            ulog("Login iframe disappeared (post-scan heuristic) - treating as success.")
+            return True
 
     return False
 
@@ -224,11 +226,11 @@ def main():
 
             ulog("Navigating to channels...")
             try:
-                page.goto("https://channels.weixin.qq.com/platform/login", wait_until="load", timeout=45000)
+                page.goto("https://channels.weixin.qq.com/platform/login", wait_until="domcontentloaded", timeout=45000)
             except Exception as e:
                 ulog(f"Navigation warning: {e}")
             
-            time.sleep(2)
+            time.sleep(0.3)
 
             ulog("Waiting for login state or QR code...")
             img_loc = None
@@ -275,7 +277,6 @@ def main():
                         return
                 
                 if img_loc: break
-                time.sleep(1)
 
             if img_loc is None:
                 raise RuntimeError(f"二维码节点未找到，当前 URL: {page.url}")
@@ -297,7 +298,7 @@ def main():
                 return None
 
             # Initial capture
-            time.sleep(1)
+            time.sleep(0.2)
             last_qr_b64 = get_qr_b64(img_loc)
             if not last_qr_b64:
                 # One last try: re-find the locator in case it went stale
@@ -357,7 +358,7 @@ def main():
                 # 2. Redirect check
                 try:
                     current_url = page.url
-                    if is_logged_in_dashboard(page, browser):
+                    if is_logged_in_dashboard(page, browser, allow_iframe_heuristic=False):
                         ulog(f"Login success confirmed! URL: {current_url}")
                         print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                         time.sleep(3)
@@ -451,8 +452,8 @@ def main():
                                 except Exception as e:
                                     ulog(f"Force navigate error: {e}")
 
-                        # Check if successful now
-                        if is_logged_in_dashboard(page, browser):
+                        # Check if successful now (allow iframe heuristic since we are in confirmed scanned state)
+                        if is_logged_in_dashboard(page, browser, allow_iframe_heuristic=True):
                             ulog("Login success confirmed after scan.")
                             print(json.dumps({"success": True, "status": "logged_in"}), flush=True)
                             time.sleep(3)

@@ -71,6 +71,15 @@ def load_vertical_plan(path: Path | None):
     else:
         return []
 
+    def anchor_to_ratio(anchor: str, mode: str) -> float:
+        if mode == "preserve_context":
+            return 0.5
+        if anchor == "left":
+            return 0.0
+        if anchor == "right":
+            return 1.0
+        return 0.5
+
     plan = []
     for item in raw_segments:
         try:
@@ -84,10 +93,22 @@ def load_vertical_plan(path: Path | None):
         if anchor not in {"left", "center", "right"}:
             anchor = "center"
         vertical_mode = str(item.get("vertical_mode", "center_safe")).strip().lower()
+
+        # crop_x_ratio: 精细裁剪位置 0.0(最左)~1.0(最右)，优先使用，缺省时从 crop_anchor 推导
+        raw_ratio = item.get("crop_x_ratio")
+        if raw_ratio is not None:
+            try:
+                ratio = max(0.0, min(1.0, float(raw_ratio)))
+            except (TypeError, ValueError):
+                ratio = anchor_to_ratio(anchor, vertical_mode)
+        else:
+            ratio = anchor_to_ratio(anchor, vertical_mode)
+
         plan.append({
             "start": start,
             "end": end,
             "crop_anchor": anchor,
+            "crop_x_ratio": ratio,
             "vertical_mode": vertical_mode,
             "focus_target": str(item.get("focus_target", "context")).strip() or "context",
             "shot_type": str(item.get("shot_type", "single")).strip() or "single",
@@ -95,23 +116,57 @@ def load_vertical_plan(path: Path | None):
     return plan
 
 
+# 片段切换时的线性缓动时长（秒）。若相邻片段位置差异 <= 0.01 则不插入过渡。
+_CROP_TWEEN_DURATION = 0.4
+
+
 def build_crop_x_expression(vertical_plan: list[dict]) -> str:
+    """
+    将竖屏方案转为 FFmpeg crop x 表达式。
+    - 使用 crop_x_ratio (0.0~1.0) 而非三档离散值，位置更精准。
+    - 相邻片段位置不同时，在新片段起始插入线性缓动区间，避免画面跳切。
+    """
     if not vertical_plan:
         return "(iw-ow)/2"
 
-    def anchor_expr(anchor: str, mode: str) -> str:
-        if mode == "preserve_context":
-            return "(iw-ow)/2"
-        if anchor == "left":
-            return "0"
-        if anchor == "right":
-            return "max(iw-ow,0)"
-        return "(iw-ow)/2"
+    # 构建区间列表 [(t_start, t_end, ffmpeg_expr), ...]
+    intervals: list[tuple[float, float, str]] = []
+    prev_ratio = vertical_plan[0]["crop_x_ratio"]
 
-    expr = "(iw-ow)/2"
-    for segment in reversed(vertical_plan):
-        anchor = anchor_expr(segment["crop_anchor"], segment["vertical_mode"])
-        expr = f"if(between(t,{segment['start']:.3f},{segment['end']:.3f}),{anchor},{expr})"
+    for i, seg in enumerate(vertical_plan):
+        cur_ratio = seg["crop_x_ratio"]
+        t_start = seg["start"]
+        t_end = seg["end"]
+        seg_dur = t_end - t_start
+
+        if i == 0:
+            # 第一个片段：直接稳定，无需过渡
+            intervals.append((t_start, t_end, f"{cur_ratio:.4f}*max(iw-ow,0)"))
+        else:
+            d_ratio = cur_ratio - prev_ratio
+            tween_dur = min(_CROP_TWEEN_DURATION, seg_dur * 0.5)
+            tween_end = t_start + tween_dur
+
+            if abs(d_ratio) > 0.01 and tween_dur > 0.05:
+                # 过渡区间：线性插值从 prev_ratio → cur_ratio
+                tween_expr = (
+                    f"({prev_ratio:.4f}+({d_ratio:+.4f})"
+                    f"*min(1,(t-{t_start:.3f})/{tween_dur:.3f}))*max(iw-ow,0)"
+                )
+                intervals.append((t_start, tween_end, tween_expr))
+                # 稳定区间
+                if tween_end < t_end:
+                    intervals.append((tween_end, t_end, f"{cur_ratio:.4f}*max(iw-ow,0)"))
+            else:
+                intervals.append((t_start, t_end, f"{cur_ratio:.4f}*max(iw-ow,0)"))
+
+        prev_ratio = cur_ratio
+
+    # 将区间列表组装为嵌套 if-else 表达式（从后往前构建）
+    last_ratio = vertical_plan[-1]["crop_x_ratio"]
+    expr = f"{last_ratio:.4f}*max(iw-ow,0)"
+    for t_start, t_end, seg_expr in reversed(intervals):
+        expr = f"if(between(t,{t_start:.3f},{t_end:.3f}),{seg_expr},{expr})"
     return expr
 
 def probe_media(input_video: Path) -> dict:

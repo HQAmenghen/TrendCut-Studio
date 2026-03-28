@@ -84,10 +84,16 @@ def main():
          - `focus_target`: 当前最该跟随的人物 ID，未知时可写 `"context"`
          - `shot_type`: 仅允许 `single` / `two_shot` / `group` / `graphic`
          - `vertical_mode`: 仅允许 `follow_speaker` / `center_safe` / `preserve_context`
-         - `crop_anchor`: 仅允许 `left` / `center` / `right`
+         - `crop_anchor`: 仅允许 `left` / `center` / `right`（粗粒度，用于向后兼容）
+         - `crop_x_ratio`: **必填**，0.0~1.0 的浮点数，表示精确裁剪位置（0.0=画面最左边缘，0.5=正中，1.0=画面最右边缘）。
+           - 单人讲话，人物在画面左 1/3：→ 0.2~0.3
+           - 单人讲话，人物在画面右 1/3：→ 0.7~0.8
+           - 单人居中或不确定：→ 0.5
+           - 双人/多人/图表/PPT，需保留全部信息：→ 0.5
+           - `crop_x_ratio` 比 `crop_anchor` 更精细，后续 FFmpeg 脚本会用它生成连续缓动运镜，请务必根据视觉轴描述认真填写，不要全部填 0.5。
        - 如果是单人讲话且人物明显偏左/偏右，可以用 `follow_speaker + left/right`。
        - 如果是多人同框、图表、PPT、品牌卡片、信息图，优先使用 `preserve_context` 或 `center_safe`，避免过度裁切丢信息。
-       - 这些字段是后续 FFmpeg 竖屏执行脚本的输入，不要省略。
+       - 这些字段是后续 FFmpeg 竖屏执行脚本的输入，不要省略任何一个。
 
     【输出要求】：
     输出一份严格连续的 JSON 数组（不要包含 ```json 标记）。时间线必须从 0.0 秒开始，无缝首尾相连，直到数字人视频结束：
@@ -102,6 +108,7 @@ def main():
         "shot_type": "single",
         "vertical_mode": "follow_speaker",
         "crop_anchor": "center",
+        "crop_x_ratio": 0.5,
         "cut_start": 0.0,
         "cut_end": 3.5
       }},
@@ -115,6 +122,7 @@ def main():
         "shot_type": "single",
         "vertical_mode": "follow_speaker",
         "crop_anchor": "right",
+        "crop_x_ratio": 0.75,
         "cut_start": 1.0,
         "cut_end": 3.5
       }},
@@ -128,6 +136,7 @@ def main():
         "shot_type": "group",
         "vertical_mode": "preserve_context",
         "crop_anchor": "center",
+        "crop_x_ratio": 0.5,
         "cut_start": 4.0,
         "cut_end": 6.0
       }}
