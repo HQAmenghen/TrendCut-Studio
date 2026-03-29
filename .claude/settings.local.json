@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git pull:*)",
+      "Bash(grep -r \"focus_target\\\\|crop_anchor\\\\|vertical_mode\\\\|shot_type\\\\|subject\\\\|detect\\\\|person\" /f/aivideo/python/pipeline/*.py)",
+      "Bash(xargs grep:*)",
+      "Bash(find /f/aivideo -maxdepth 2 -name README* -o -name *.md)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

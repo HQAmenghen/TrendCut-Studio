@@ -145,6 +145,9 @@ export function usePublishCenter() {
   };
 
   const applyWechatLoginResponse = (accountId, payload) => {
+    // Terminal state — don't allow any poll response to revert it
+    if (qrCodeData.value.status === 'logged_in') return;
+
     if (payload?.status === 'logged_in') {
       qrCodeData.value = {
         show: true,
@@ -152,7 +155,7 @@ export function usePublishCenter() {
         base64: '',
         status: 'logged_in',
         error: '',
-        message: '扫码成功，登录态已恢复'
+        message: '✅ 登录成功，浏览器即将关闭'
       };
       appendLog(`账号 ${accountId} 登录有效`);
       stopWechatLoginPolling();
@@ -160,28 +163,29 @@ export function usePublishCenter() {
         if (qrCodeData.value.accountId === accountId && qrCodeData.value.status === 'logged_in') {
           qrCodeData.value.show = false;
         }
-      }, 1200);
+      }, 2000);
       return;
     }
+
     if (payload?.status === 'need_scan') {
       qrCodeData.value = {
         show: true,
         accountId,
-        base64: payload.qrCodeBase64 || qrCodeData.value.base64 || '',
+        base64: payload.qrCodeBase64 || '',
         status: 'need_scan',
         error: '',
-        message: '请使用微信扫码并在手机上确认登录'
+        message: payload.message || '请在弹出的浏览器窗口中扫描二维码'
       };
       return;
     }
+
     if (payload?.status === 'idle') {
-      if (qrCodeData.value.accountId === accountId && qrCodeData.value.base64) {
-        qrCodeData.value.status = 'need_scan';
-        qrCodeData.value.message = '请使用微信扫码并在手机上确认登录';
+      // Session was cleaned up — keep current state if we're already in need_scan
+      if (qrCodeData.value.accountId === accountId && qrCodeData.value.status === 'need_scan') {
         return;
       }
       qrCodeData.value.status = 'loading';
-      qrCodeData.value.message = '正在等待二维码生成...';
+      qrCodeData.value.message = '正在打开浏览器...';
     }
   };
 

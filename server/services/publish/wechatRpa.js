@@ -406,25 +406,26 @@ function createWechatRpaService(deps) {
         return reject(new Error('当前账号正在执行发布任务，无法测试登录'));
       }
 
+      // If a session already exists, return its current status
       const existingSession = loginCheckSessions.get(accountId);
       if (existingSession) {
         existingSession.updatedAt = new Date().toISOString();
         if (existingSession.status === 'failed' || existingSession.status === 'expired') {
           finalizeLoginCheckSession(accountId);
-          return reject(new Error(existingSession.error || '扫码登录已失效，请重新获取二维码'));
+          return reject(new Error(existingSession.error || '扫码登录已失效，请重新点击扫码'));
         }
         if (existingSession.status === 'logged_in') {
-          finalizeLoginCheckSession(accountId);
           return resolve({ success: true, status: 'logged_in' });
         }
         return resolve(buildLoginCheckResponse(existingSession));
       }
 
+      // No session — if this is just a poll, return idle
       if (shouldPoll) {
         return resolve({ success: true, status: 'idle' });
       }
 
-
+      // Start a new login check (headed browser)
       const checkScript = path.join(publishCenterDir, 'wechat_check_login.py');
       const userDataDir = buildWechatProfileDir(accountId);
       if (!fs.existsSync(checkScript)) {
@@ -432,14 +433,6 @@ function createWechatRpaService(deps) {
       }
 
       const args = ['--user-data-dir', userDataDir, '--account-id', accountId];
-      
-      const feishuAppId = (process.env.FEISHU_APP_ID || '').trim();
-      const feishuAppSecret = (process.env.FEISHU_APP_SECRET || '').trim();
-      const feishuWebhook = (process.env.FEISHU_WEBHOOK || '').trim();
-
-      if (feishuAppId) args.push('--feishu-app-id', feishuAppId);
-      if (feishuAppSecret) args.push('--feishu-app-secret', feishuAppSecret);
-      if (feishuWebhook) args.push('--feishu-webhook', feishuWebhook);
 
       const proc = spawn('python', [checkScript, ...args], {
         cwd: publishCenterDir,
@@ -452,6 +445,7 @@ function createWechatRpaService(deps) {
         userDataDir,
         status: 'starting',
         qrCodeBase64: '',
+        message: '',
         error: '',
         updatedAt: new Date().toISOString(),
         cleanupTimer: null
@@ -483,54 +477,46 @@ function createWechatRpaService(deps) {
         }
         if (parsed.success === undefined) return false;
         session.updatedAt = new Date().toISOString();
+
         if (parsed.status === 'need_scan') {
           session.status = 'need_scan';
           session.qrCodeBase64 = String(parsed.qrCodeBase64 || '').trim();
+          session.message = String(parsed.message || '').trim();
           session.error = '';
           resolveOnce(buildLoginCheckResponse(session));
           return true;
         }
+
         if (parsed.status === 'logged_in') {
           session.status = 'logged_in';
           session.error = '';
           resolveOnce({ success: true, status: 'logged_in' });
-          // Ensure we give the python script enough time to flush its session (currently has a 5s sleep)
-          scheduleLoginCheckCleanup(accountId, 8000);
+          // Keep session alive long enough for frontend poll to catch it
+          scheduleLoginCheckCleanup(accountId, 15000);
           return true;
         }
-        if (parsed.status === 'scanned') {
-          session.status = 'scanned';
-          session.message = parsed.message || '已扫码，请在手机上确认';
-          session.error = '';
-          // Resolve for immediate frontend feedback if needed, 
-          // though usually the next poll will get this.
-          resolveOnce(buildLoginCheckResponse(session));
-          return true;
-        }
+
         if (parsed.success === false) {
           session.status = parsed.status === 'expired' ? 'expired' : 'failed';
           session.error = parsed.error || '脚本执行失败';
           if (!settled) {
             rejectOnce(new Error(session.error));
-            finalizeLoginCheckSession(accountId);
           }
+          finalizeLoginCheckSession(accountId);
           return true;
         }
         return false;
       };
-      
+
       proc.stdout.on('data', d => {
-          const text = d.toString();
-          outBuffer += text;
-          const lines = text.split(/\r?\n/);
-          for (const line of lines) {
-              if (handleJsonLine(line)) {
-                  continue;
-              }
-              if (line.includes('WECHAT_LOGIN_CHECK|')) {
-                  console.log(line.trim());
-              }
+        const text = d.toString();
+        outBuffer += text;
+        for (const line of text.split(/\r?\n/)) {
+          if (handleJsonLine(line)) continue;
+          if (line.includes('WECHAT_LOGIN_CHECK|')) {
+            console.log(line.trim());
           }
+        }
       });
       proc.stderr.on('data', d => errBuffer += d.toString());
 
@@ -541,40 +527,40 @@ function createWechatRpaService(deps) {
 
       proc.on('close', code => {
         session.updatedAt = new Date().toISOString();
+
         if (session.status === 'need_scan') {
+          // Process exited while still waiting for scan — QR expired
           session.status = 'expired';
-          session.error = '二维码已过期，请重新扫码';
-          scheduleLoginCheckCleanup(accountId, 1000);
+          session.error = '扫码超时，请重新点击扫码';
+          scheduleLoginCheckCleanup(accountId, 2000);
         } else if (session.status === 'logged_in') {
-          scheduleLoginCheckCleanup(accountId, 1000);
+          // Already handled by handleJsonLine — don't shorten the timer
+          if (!session.cleanupTimer) {
+            scheduleLoginCheckCleanup(accountId, 15000);
+          }
         } else {
+          // Fallback: try to parse last output
           finalizeLoginCheckSession(accountId);
         }
-        try {
-          const lines = outBuffer.split(/\r?\n/);
-          let resultJson = null;
-          for (const line of lines) {
-            if (line.includes('"success":')) {
-              try {
+
+        // Settle the HTTP response if not already done
+        if (!settled) {
+          try {
+            for (const line of outBuffer.split(/\r?\n/)) {
+              if (line.includes('"success":')) {
                 const parsed = JSON.parse(line.trim());
                 if (parsed.success !== undefined) {
-                  resultJson = parsed;
-                  break;
+                  if (parsed.success) {
+                    resolveOnce(parsed);
+                  } else {
+                    rejectOnce(new Error(parsed.error || '脚本执行失败'));
+                  }
+                  return;
                 }
-              } catch(e){}
+              }
             }
-          }
-          if (resultJson) {
-            if (resultJson.success) {
-                resolveOnce(resultJson);
-            } else if (!settled) {
-                rejectOnce(new Error(resultJson.error || '脚本执行失败'));
-            }
-          } else if (!settled) {
-            rejectOnce(new Error(`解析脚本输出失败 (Exit ${code}): \nstdout: ${outBuffer}\nstderr: ${errBuffer}`));
-          }
-        } catch (e) {
-          rejectOnce(e);
+          } catch (_e) {}
+          rejectOnce(new Error(`登录检测脚本异常退出 (code ${code})`));
         }
       });
     });

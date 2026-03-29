@@ -124,7 +124,6 @@ function createPublishHandlers(deps) {
     },
     getJobs: (_req, res) => {
       try {
-        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -279,7 +278,6 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 400, code: 'PUBLISH_TASKS_EMPTY', stage: 'publish.create_job', error: '没有可创建的发布任务，请检查平台启用状态', details: JSON.stringify(platformErrors) });
         }
 
-        try { cancelWechatRpa(jobId); } catch (_err) {}
         const payload = readPublishJobs();
         const job = {
           id: makeJobId(),

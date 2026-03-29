@@ -110,7 +110,9 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
   const warnedScheduledJobs = new Set();
 
   async function enqueueAutoPilotTopItems(config, result, nowParts, sourceMode) {
-    const count = config?.global?.autoPilotCount || 1;
+    const configCount = Math.max(1, Number(config?.global?.autoPilotCount) || 1);
+    const mappingLength = (config?.global?.autoPilotAccountIds || []).length;
+    const count = Math.max(configCount, mappingLength);
     const topItems = (result?.items || []).slice(0, count);
     if (topItems.length === 0) {
       logWarn('[AutoPilot] 当前榜单没有可用内容，结束本轮流水线', {

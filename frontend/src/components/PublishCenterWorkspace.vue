@@ -624,7 +624,7 @@
         <h4 class="qr-modal-title">微信视频号登录</h4>
         <div class="qr-state-box">
           <div v-if="center.qrCodeData.value.status === 'loading'">
-            {{ center.qrCodeData.value.message || '正在检测登录状态...' }}
+            ⏳ {{ center.qrCodeData.value.message || '正在打开浏览器...' }}
           </div>
           <template v-else-if="center.qrCodeData.value.status === 'need_scan'">
             <img
@@ -633,15 +633,15 @@
               alt="微信扫码二维码"
               class="qr-image"
             />
-            <div>{{ center.qrCodeData.value.message || '请使用微信扫码并在手机上确认登录' }}</div>
-            <div class="job-sub">扫码完成后会自动检测并关闭弹窗。</div>
+            <div>{{ center.qrCodeData.value.message || '请在弹出的浏览器窗口中扫描二维码' }}</div>
+            <div class="job-sub">扫码并在手机上确认后，系统会自动检测并关闭此弹窗。</div>
           </template>
           <template v-else-if="center.qrCodeData.value.status === 'logged_in'">
-            <strong>登录成功</strong>
-            <div>{{ center.qrCodeData.value.message || '检测到账号已恢复登录' }}</div>
+            <strong>✅ 登录成功</strong>
+            <div>{{ center.qrCodeData.value.message || '登录态已恢复，弹窗即将关闭' }}</div>
           </template>
           <template v-else-if="center.qrCodeData.value.status === 'error'">
-            <strong>检测失败</strong>
+            <strong>❌ 检测失败</strong>
             <div>{{ center.qrCodeData.value.error || '请稍后重试' }}</div>
           </template>
         </div>
