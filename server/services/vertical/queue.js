@@ -18,7 +18,10 @@ function createVerticalQueueService(deps) {
     buildFallbackTitleFromSubtitles,
     spawnScript,
     writeJsonFile,
-    runPythonScript
+    runPythonScript,
+    writeMediaMetadata,
+    readMediaMetadata,
+    triggerAutoReview
   } = deps;
 
   const verticalJobs = new Map();
@@ -291,6 +294,35 @@ function createVerticalQueueService(deps) {
     }
 
     fs.copyFileSync(outputPath, publicOutputPath);
+    const metadata = {
+      ...(typeof readMediaMetadata === 'function' ? (readMediaMetadata(publicOutputPath) || {}) : {}),
+      taskType: 'xai_queue',
+      taskDir: jobDir,
+      sourceType: job.sourceType || 'xai_top10',
+      author: job.author || '',
+      postId: job.postId || '',
+      postUrl: job.postUrl || '',
+      sourceUrl: job.postUrl || '',
+      videoUrl: job.videoUrl || '',
+      title: finalTitle,
+      subtitles: Array.isArray(subtitlesData) ? subtitlesData : [],
+      sourceSummary: String(job.summary || '').trim(),
+      updatedAt: new Date().toISOString()
+    };
+    if (typeof writeMediaMetadata === 'function') {
+      writeMediaMetadata(publicOutputPath, metadata);
+    }
+
+    if (typeof triggerAutoReview === 'function') {
+      updateJob({ status: 'reviewing', progress: 92, message: '正在执行 AI 审核...' }, '渲染完成，开始自动执行 AI 审核');
+      const reviewResult = await triggerAutoReview(publicOutputPath, job.id);
+      if (reviewResult) {
+        appendLog(job, `AI 审核完成：${reviewResult.status || 'unknown'}，得分 ${reviewResult.overall_score ?? '-'}`);
+      } else {
+        appendLog(job, 'AI 审核未返回结果，后续可在审核中心手动处理');
+      }
+    }
+
     const completedAt = new Date().toISOString();
     updateJob({
       status: 'completed',

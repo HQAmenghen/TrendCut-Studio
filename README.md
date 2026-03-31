@@ -1,28 +1,42 @@
 # Comfy Panel Demo
 
-一个用于数字人渲染、AI 自动混剪、竖屏后期合成的本地控制面板。
+一个面向本地生产环境的 AI 视频工作台，覆盖数字人口播、AI 混剪、竖屏包装、热点发现、AI 审核、发布任务和系统运维配置。
 
-## 功能概览
+## 当前功能
 
-- 数字人口播生成
-- AI 导演双轨混剪
-- 竖屏后期自动包装
-- ASR 自动打轴
-- 中英双语字幕卡
-- 自动热点标题生成
+- 数字人口播生成与主链路混剪
+- 单条竖屏后期合成
+- 热点视频发现与批量送入竖屏队列
+- AI 审核中心与修复建议
+- 发布中心与微信视频号自动化发布
+- 系统设置、飞书通知、登录检测、LLM 配置
 
-## 目录说明
+## 当前工程结构
 
-- `server.js`：Node.js 后端入口
-- `server/`：后端 `core / routes / services` 模块（目前底层使用 `better-sqlite3` 存储数据库）
-- `frontend/`：Vue 组件化前端源码
-- `frontend-dist/`：构建后的默认前端产物
-- `public/`：静态资源与最终成片输出
-- `python/pipeline/`：混剪、字幕、标题、竖屏包装相关 Python 脚本
-- `python/publish/`：发布中心脚本与微信视频号 RPA
-- `python/xai/`：热点榜单抓取、翻译和账号池配置
-- `config/workflow_api.json`：ComfyUI 工作流模板
-- `data/uploads/`：运行期任务目录、队列产物与临时上传文件
+- `server.js`：Node.js 服务装配入口
+- `server/`：后端模块，按 `core / routes / services` 分层
+- `frontend/`：Vue 3 前端源码
+- `frontend-dist/`：前端构建产物
+- `python/`：Python 执行层
+  - `python/pipeline/`：混剪、字幕、标题、竖屏包装脚本
+  - `python/publish/`：发布中心和微信视频号 RPA
+  - `python/review/`：AI 审核脚本
+  - `python/xai/`：热点榜单抓取、翻译和账号池配置
+- `config/`：工作流和系统配置
+- `data/`：运行时数据、日志、上传和任务目录
+- `docs/`：项目文档
+- `scripts/`：工具脚本
+
+## 代码与运行产物的边界
+
+这个仓库当前同时包含源码和运行期产物。
+
+- **源码/工程文件**：`server/`、`frontend/`、`python/*.py`、`docs/`、配置文件
+- **构建产物**：`frontend-dist/`
+- **运行产物**：`data/`、`public/xai_vertical_queue/`、`python/pipeline/*.mp4|*.json|subtitle_cards/`
+- **运行配置/状态**：`python/publish/*.db`、`python/publish/wechat_channels_tasks/`、`python/xai/result*.json`
+
+建议把“工程文件”和“运行产物”分开理解。详细说明见 [docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md](/Users/PC/Desktop/comfy_panel_demo/docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)。
 
 ## 本地运行
 
@@ -40,57 +54,41 @@
 npm install
 ```
 
-为了方便，项目根目录提供了 `requirements.txt`，可直接一键安装 Python 依赖：
+安装 Python 依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
+根目录 `requirements.txt` 当前会继续引用 `python/pipeline/requirements.txt`。
+
 ### 2. 配置环境变量
 
-先复制一份环境变量模板：
+先复制环境变量模板：
 
 ```bash
 cp .env.example .env
 ```
 
-Windows PowerShell 可直接这样创建：
+Windows PowerShell：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-然后至少填写这些项：
+至少需要关注这些配置：
 
+- `COMFYUI_BASE_URL`
 - `GEMINI_API_KEY` 或 `GOOGLE_API_KEY`
-- `XAI_API_KEY`（如果要跑热门榜单）
-- `COMFYUI_BASE_URL`（如果要跑数字人口播）
+- `XAI_API_KEY`
+- `AI_REVIEW_ENABLED`
+- `LLM_PROVIDER` 相关变量
 
-推荐使用环境变量或项目根目录 `.env`：
+详细变量说明见：
 
-Windows PowerShell:
-
-```powershell
-$env:GEMINI_API_KEY="你的Key"
-```
-
-也可以：
-
-```powershell
-$env:GOOGLE_API_KEY="你的Key"
-```
-
-常用可配置项见 [.env.example](/Users/PC/Desktop/comfy_panel_demo/.env.example)。
-
-如果 `python/xai/` 扫榜偏慢，可以在 `.env` 里适度提高并发：
-
-```env
-XAI_TOP10_CANDIDATE_WORKERS=6
-XAI_TOP10_ENRICH_WORKERS=3
-XAI_TOP10_FOLLOWER_WORKERS=6
-```
-
-建议一档一档往上加，避免外部接口限流后整体反而更慢。
+- [.env.example](/Users/PC/Desktop/comfy_panel_demo/.env.example)
+- [docs/LLM_PROVIDER_GUIDE.md](/Users/PC/Desktop/comfy_panel_demo/docs/LLM_PROVIDER_GUIDE.md)
+- [docs/SYSTEM_SETTINGS_AND_LOGIN_CHECK_GUIDE.md](/Users/PC/Desktop/comfy_panel_demo/docs/SYSTEM_SETTINGS_AND_LOGIN_CHECK_GUIDE.md)
 
 ### 3. 启动服务
 
@@ -98,86 +96,83 @@ XAI_TOP10_FOLLOWER_WORKERS=6
 npm start
 ```
 
-如果你需要先手动构建新版前端，可以执行：
+如果需要重建前端：
 
 ```bash
 npm run build:front
 ```
 
-日常使用桌面上的 `一键启动_AI视频中台.bat` 时，会自动先构建前端，再启动 `server.js`，不需要额外单独运行 `vite dev`。
+Windows 启动脚本：
 
-可选的快速验证：
+- `一键启动.bat`
+
+可选快速验证：
 
 ```bash
 npm run smoke:test
 ```
 
-服务启动后，也可以直接访问自检接口：
+服务默认监听：
+
+- 本机：`http://localhost:3001`
+- 局域网：`http://你的局域网IP:3001`
+
+启动后可访问自检接口：
 
 ```text
 http://localhost:3001/api/system/self-check
 ```
 
-服务默认监听：
-
-- 本机地址：`http://localhost:3001`
-- 局域网地址：`http://你的局域网IP:3001`
-
-现在服务监听的是 `0.0.0.0`，所以同一局域网下的其他电脑也可以访问，只要：
-
-- 你的电脑和对方在同一局域网
-- 系统防火墙放行 `3001` 端口
-
-### 4. 查看本机局域网 IP
-
-Windows PowerShell:
-
-```powershell
-ipconfig
-```
-
-常见地址类似：
-
-```text
-192.168.1.23
-```
-
-那么局域网其他电脑可访问：
-
-```text
-http://192.168.1.23:3001
-```
-
-## Docker 运行
-
-### 1. 构建并启动
-
-当前的 Docker 构建过程会自动拉取依赖、编译打包 Vue 前端代码，最后再启动服务。
+### 4. Docker 运行
 
 ```bash
 docker compose up --build
 ```
 
-### 2. 传入 Key
-
-可以先设置环境变量：
-
-```bash
-export GEMINI_API_KEY=你的Key
-docker compose up --build
-```
-
-Windows PowerShell:
+Windows PowerShell 传入变量示例：
 
 ```powershell
 $env:GEMINI_API_KEY="你的Key"
 docker compose up --build
 ```
 
-### 3. 访问地址
+## 主要业务模块
 
-- 本机：`http://localhost:3001`
-- 局域网：`http://你的局域网IP:3001`
+### 1. Pipeline
+
+- 前端：`PipelineWorkspace.vue` + `usePipeline.js`
+- 后端：`server/routes/pipeline.js`
+- Python：`python/pipeline/`
+
+### 2. Standalone Vertical
+
+- 前端：`StandaloneWorkspace.vue` + `useStandalone.js`
+- 后端：`server/routes/standalone.js`
+- Python：`python/pipeline/run_asr.py`、`make_vertical_video.py`
+
+### 3. XAI Discovery
+
+- 前端：`XaiDiscoveryWorkspace.vue` + `useXaiTop10.js`
+- 后端：`server/routes/xai.js`
+- Python：`python/xai/`
+
+### 4. Review Center
+
+- 前端：`ReviewCenterWorkspace.vue` + `useVideoReview.js`
+- 后端：`server/routes/review.js`
+- Python：`python/review/ai_video_review.py`
+
+### 5. Publish Center
+
+- 前端：`PublishCenterWorkspace.vue` + `usePublishCenter.js`
+- 后端：`server/routes/publish.js`
+- Python：`python/publish/`
+
+### 6. System Settings / Login Status
+
+- 前端：`SystemSettingsWorkspace.vue`
+- 后端：`server/routes/system.js`、`server/routes/loginStatus.js`
+- 服务：飞书通知、登录检测、LLM 配置、自检
 
 ## 常见问题
 
@@ -185,42 +180,44 @@ docker compose up --build
 
 检查：
 
-- 服务是否已经启动
+- 服务是否已启动
 - 本机防火墙是否允许 `3001`
-- 访问的 IP 是否是当前机器正确的局域网地址
+- 当前访问 IP 是否为本机局域网地址
 
 ### 2. 竖屏标题或字幕不显示
 
-重点检查这些文件是否生成：
+重点检查任务目录里的这些文件是否生成：
 
-- `python/pipeline/content.json`
-- `python/pipeline/subtitles.json`
+- `content.json`
+- `subtitles.json`
+- `vertical_output.mp4`
 
-### 3. 字幕识别错字
+### 3. AI 审核结果为空
 
-术语硬纠错词库在：
+重点检查：
 
-- `python/pipeline/glossary.json`
+- `AI_REVIEW_ENABLED`
+- Gemini / Qwen 相关 Key
+- `python/review/ai_video_review.py`
 
-你可以继续往里面追加：
+### 4. 微信视频号登录检测异常
 
-```json
-"错词": "正确词"
-```
+重点检查：
 
-### 4. Docker 能启动但字体不对
+- 登录检测配置
+- 飞书配置
+- `python/publish/wechat_check_login.py`
+- `python/publish/wechat_check_login_remote.py`
 
-当前镜像已内置 Linux 字体，并兼容 Windows / Linux 字体路径。
-如果你自定义了字体逻辑，检查：
+更多排障见：
 
-- `python/pipeline/make_vertical_video.py`
+- [docs/STARTUP_SELF_CHECK.md](/Users/PC/Desktop/comfy_panel_demo/docs/STARTUP_SELF_CHECK.md)
+- [docs/SMOKE_TEST_CHECKLIST.md](/Users/PC/Desktop/comfy_panel_demo/docs/SMOKE_TEST_CHECKLIST.md)
+- [docs/login-check/LOGIN_CHECK_DIAGNOSIS.md](/Users/PC/Desktop/comfy_panel_demo/docs/login-check/LOGIN_CHECK_DIAGNOSIS.md)
 
-## 运行产物
+## 推荐阅读顺序
 
-常见运行结果文件：
-
-- `python/pipeline/content.json`
-- `python/pipeline/subtitles.json`
-- `python/pipeline/audio.json`
-- `public/output_final.mp4`
-- `public/standalone_output_vertical.mp4`
+1. [docs/README.md](/Users/PC/Desktop/comfy_panel_demo/docs/README.md)
+2. [docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md](/Users/PC/Desktop/comfy_panel_demo/docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md)
+3. [docs/PROJECT_STRUCTURE.md](/Users/PC/Desktop/comfy_panel_demo/docs/PROJECT_STRUCTURE.md)
+4. [docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md](/Users/PC/Desktop/comfy_panel_demo/docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)

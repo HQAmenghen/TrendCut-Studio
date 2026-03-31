@@ -13,16 +13,26 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from gemini_client import create_gemini_client, generate_content
+from llm_client import create_llm_client, generate_content, get_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_MODEL = os.getenv(
-    "PUBLISH_DESCRIPTION_GEMINI_MODEL",
-    os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
-)
+DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+
+def get_publish_model():
+    """获取发布描述生成模型"""
+    provider = get_llm_provider()
+    if provider == "qwen":
+        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+    else:
+        return os.getenv(
+            "PUBLISH_DESCRIPTION_GEMINI_MODEL",
+            os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        )
+
+GEMINI_MODEL = get_publish_model()
 def normalize_output(text: str, strip_tags: bool = True) -> str:
     cleaned = str(text or "").strip()
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
@@ -49,7 +59,7 @@ def main() -> None:
         print("")
         return
 
-    client = create_gemini_client()
+    client = create_llm_client()
     tag_instruction = """
 10. 不要输出任何 #话题标签，标签由系统单独追加。
 11. 只输出最终文案，不要解释，不要换行。

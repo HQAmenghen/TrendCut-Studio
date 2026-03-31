@@ -13,8 +13,12 @@ function createSystemHandlers(deps) {
     extractWorkflowConfig,
     applyWorkflowConfig,
     writeWorkflow,
-    runPythonScript
+    runPythonScript,
+    readProjectEnv,
+    updateProjectEnv
   } = deps;
+
+  const getEnvValue = (values, key, fallback = '') => values[key] ?? process.env[key] ?? fallback;
 
   return {
     getPresets: (_req, res) => {
@@ -164,6 +168,130 @@ function createSystemHandlers(deps) {
         res.json({ videoUrl: `/${outputName}?t=${Date.now()}` });
       } catch (err) {
         sendError(res, { status: 500, code: err.code || 'CONVERT_VIDEO_FAILED', stage: err.stage || 'system.convert_video', error: '视频转比例失败', details: err.details || err.message, hint: err.hint || '' });
+      }
+    },
+    getFeishuConfig: (_req, res) => {
+      try {
+        const { values } = readProjectEnv(baseDir);
+        const config = {
+          webhookUrl: values.FEISHU_WEBHOOK_URL || process.env.FEISHU_WEBHOOK_URL || '',
+          notifyLoginStatus: (values.FEISHU_NOTIFY_LOGIN_STATUS ?? process.env.FEISHU_NOTIFY_LOGIN_STATUS) !== 'false',
+          notifyAutoPilot: (values.FEISHU_NOTIFY_AUTOPILOT ?? process.env.FEISHU_NOTIFY_AUTOPILOT) === 'true',
+          notifyReview: (values.FEISHU_NOTIFY_REVIEW ?? process.env.FEISHU_NOTIFY_REVIEW) === 'true'
+        };
+        res.json({ success: true, config });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'FEISHU_CONFIG_READ_FAILED', stage: 'system.feishu_config', error: '读取飞书配置失败', details: err.message });
+      }
+    },
+    postFeishuConfig: (req, res) => {
+      try {
+        const { webhookUrl, notifyLoginStatus, notifyAutoPilot, notifyReview } = req.body;
+        updateProjectEnv(baseDir, {
+          FEISHU_WEBHOOK_URL: webhookUrl || '',
+          FEISHU_NOTIFY_LOGIN_STATUS: notifyLoginStatus ? 'true' : 'false',
+          FEISHU_NOTIFY_AUTOPILOT: notifyAutoPilot ? 'true' : 'false',
+          FEISHU_NOTIFY_REVIEW: notifyReview ? 'true' : 'false'
+        });
+
+        res.json({ success: true, message: '配置已保存' });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'FEISHU_CONFIG_WRITE_FAILED', stage: 'system.feishu_config', error: '保存飞书配置失败', details: err.message });
+      }
+    },
+    getLoginCheckConfig: (_req, res) => {
+      try {
+        const { values } = readProjectEnv(baseDir);
+        const config = {
+          enabled: (values.LOGIN_CHECK_ENABLED ?? process.env.LOGIN_CHECK_ENABLED) !== 'false',
+          intervalMinutes: parseInt(values.LOGIN_CHECK_INTERVAL_MINUTES ?? process.env.LOGIN_CHECK_INTERVAL_MINUTES, 10) || 30,
+          retryTimes: parseInt(values.LOGIN_CHECK_RETRY_TIMES ?? process.env.LOGIN_CHECK_RETRY_TIMES, 10) || 3
+        };
+        res.json({ success: true, config });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'LOGIN_CHECK_CONFIG_READ_FAILED', stage: 'system.login_check_config', error: '读取登录检测配置失败', details: err.message });
+      }
+    },
+    postLoginCheckConfig: (req, res) => {
+      try {
+        const { enabled, intervalMinutes, retryTimes } = req.body;
+        updateProjectEnv(baseDir, {
+          LOGIN_CHECK_ENABLED: enabled ? 'true' : 'false',
+          LOGIN_CHECK_INTERVAL_MINUTES: String(intervalMinutes || 30),
+          LOGIN_CHECK_RETRY_TIMES: String(retryTimes || 3)
+        });
+
+        res.json({ success: true, message: '配置已保存，定时任务将在下次执行时生效' });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'LOGIN_CHECK_CONFIG_WRITE_FAILED', stage: 'system.login_check_config', error: '保存登录检测配置失败', details: err.message });
+      }
+    },
+    getLlmConfig: (_req, res) => {
+      try {
+        const { values } = readProjectEnv(baseDir);
+        const provider = String(getEnvValue(values, 'LLM_PROVIDER', 'gemini')).toLowerCase();
+        const config = {
+          provider: provider === 'qwen' ? 'qwen' : 'gemini',
+          gemini: {
+            apiKey: getEnvValue(values, 'GEMINI_API_KEY', ''),
+            googleApiKey: getEnvValue(values, 'GOOGLE_API_KEY', ''),
+            baseUrl: getEnvValue(values, 'GEMINI_API_BASE_URL', ''),
+            model: getEnvValue(values, 'GEMINI_MODEL', 'gemini-2.5-flash'),
+            reviewModel: getEnvValue(values, 'AI_REVIEW_GEMINI_MODEL', getEnvValue(values, 'GEMINI_MODEL', 'gemini-2.5-flash')),
+            publishDescriptionModel: getEnvValue(values, 'PUBLISH_DESCRIPTION_GEMINI_MODEL', getEnvValue(values, 'GEMINI_MODEL', 'gemini-2.5-flash'))
+          },
+          qwen: {
+            apiKey: getEnvValue(values, 'QWEN_API_KEY', getEnvValue(values, 'DASHSCOPE_API_KEY', '')),
+            baseUrl: getEnvValue(values, 'QWEN_API_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
+            vlModel: getEnvValue(values, 'QWEN_VL_MODEL', 'qwen3-vl-flash'),
+            asrModel: getEnvValue(values, 'QWEN_ASR_MODEL', 'qwen3-asr-flash'),
+            textModel: getEnvValue(values, 'QWEN_TEXT_MODEL', 'qwen3.5-plus')
+          }
+        };
+        res.json({ success: true, config });
+      } catch (err) {
+        sendError(res, {
+          status: 500,
+          code: 'LLM_CONFIG_READ_FAILED',
+          stage: 'system.llm_config',
+          error: '读取模型配置失败',
+          details: err.message
+        });
+      }
+    },
+    postLlmConfig: (req, res) => {
+      try {
+        const provider = String(req.body?.provider || 'gemini').toLowerCase();
+        const gemini = req.body?.gemini || {};
+        const qwen = req.body?.qwen || {};
+        updateProjectEnv(baseDir, {
+          LLM_PROVIDER: provider === 'qwen' ? 'qwen' : 'gemini',
+          GEMINI_API_KEY: gemini.apiKey || '',
+          GOOGLE_API_KEY: gemini.googleApiKey || gemini.apiKey || '',
+          GEMINI_API_BASE_URL: gemini.baseUrl || '',
+          GEMINI_MODEL: gemini.model || 'gemini-2.5-flash',
+          AI_REVIEW_GEMINI_MODEL: gemini.reviewModel || gemini.model || 'gemini-2.5-flash',
+          PUBLISH_DESCRIPTION_GEMINI_MODEL: gemini.publishDescriptionModel || gemini.model || 'gemini-2.5-flash',
+          QWEN_API_KEY: qwen.apiKey || '',
+          DASHSCOPE_API_KEY: qwen.apiKey || '',
+          QWEN_API_BASE_URL: qwen.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          QWEN_VL_MODEL: qwen.vlModel || 'qwen3-vl-flash',
+          QWEN_ASR_MODEL: qwen.asrModel || 'qwen3-asr-flash',
+          QWEN_TEXT_MODEL: qwen.textModel || 'qwen3.5-plus'
+        });
+
+        res.json({
+          success: true,
+          message: '模型配置已保存，重启服务后将完全生效'
+        });
+      } catch (err) {
+        sendError(res, {
+          status: 500,
+          code: 'LLM_CONFIG_WRITE_FAILED',
+          stage: 'system.llm_config',
+          error: '保存模型配置失败',
+          details: err.message
+        });
       }
     }
   };

@@ -11,15 +11,25 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from gemini_client import create_gemini_client, generate_content
+from llm_client import create_llm_client, generate_content, get_llm_provider
 from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
+DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+
+def get_text_model():
+    """获取文本生成模型"""
+    provider = get_llm_provider()
+    if provider == "qwen":
+        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+    else:
+        return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
 def main():
     emit_stage("director", "正在生成导演混剪方案")
-    client = create_gemini_client()
+    client = create_llm_client()
     print("1. 正在读取听觉轴 (audio.json) 和视觉轴 (result.json)...")
     
     try:
@@ -146,7 +156,7 @@ def main():
 
     response = generate_content(
         client,
-        model=os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        model=get_text_model(),
         contents=prompt,
         response_mime_type="application/json",
     )

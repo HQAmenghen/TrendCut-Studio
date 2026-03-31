@@ -11,15 +11,25 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from gemini_client import create_gemini_client, generate_content
+from llm_client import create_llm_client, generate_content, get_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
+DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+
+def get_text_model():
+    """获取文本生成模型"""
+    provider = get_llm_provider()
+    if provider == "qwen":
+        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+    else:
+        return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
 def optimize_text(text):
     emit_stage("optimize_text", "正在优化口播文案")
-    client = create_gemini_client()
+    client = create_llm_client()
     prompt = f"""
     你是一个爆款短视频文案大师。请优化以下口播文案，使其更具网感、悬念和吸引力（例如开头制造悬念，吸引注意力，结尾引导评论等），但必须保持原意。
     原始文案：
@@ -32,7 +42,7 @@ def optimize_text(text):
     """
     response = generate_content(
         client,
-        model=os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        model=get_text_model(),
         contents=prompt,
     )
     optimized = response.text.strip()

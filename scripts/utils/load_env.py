@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 
@@ -27,6 +28,8 @@ def load_project_env(start_file: str | None = None) -> Path:
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
-        os.environ.setdefault(key, value)
+        else:
+            value = re.sub(r"\s+#.*$", "", value).strip()
+        os.environ[key] = value
 
     return env_path.parent

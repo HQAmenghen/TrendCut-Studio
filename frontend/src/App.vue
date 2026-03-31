@@ -94,6 +94,14 @@
       @send-to-pipeline="handoffXaiToPipeline"
     />
 
+    <SystemSettingsWorkspace
+      v-else-if="activeModule === 'systemSettings'"
+    />
+
+    <ReviewCenterWorkspace
+      v-else-if="activeModule === 'reviewCenter'"
+    />
+
     <PublishCenterWorkspace
       v-else
       :center="publishCenter"
@@ -109,6 +117,8 @@ import PublishCenterWorkspace from './components/PublishCenterWorkspace.vue';
 import PipelineWorkspace from './components/PipelineWorkspace.vue';
 import StandaloneWorkspace from './components/StandaloneWorkspace.vue';
 import XaiDiscoveryWorkspace from './components/XaiDiscoveryWorkspace.vue';
+import SystemSettingsWorkspace from './components/SystemSettingsWorkspace.vue';
+import ReviewCenterWorkspace from './components/ReviewCenterWorkspace.vue';
 import { usePipeline } from './composables/usePipeline';
 import { usePublishCenter } from './composables/usePublishCenter';
 import { useVerticalQueue } from './composables/useVerticalQueue';
@@ -130,7 +140,7 @@ function getInitialThemeMode() {
 function getInitialActiveModule() {
   try {
     const savedModule = window.localStorage.getItem('comfy-panel-active-module');
-    if (['pipeline', 'standalone', 'xaiTop10', 'publishCenter'].includes(savedModule)) {
+    if (['pipeline', 'standalone', 'xaiTop10', 'publishCenter', 'systemSettings', 'reviewCenter'].includes(savedModule)) {
       return savedModule;
     }
   } catch (_err) {
@@ -143,7 +153,9 @@ const navItems = [
   { key: 'pipeline', kicker: 'Stage A-D', title: '🎬 AI 全链路混剪', desc: '内容指令、数字人渲染、导流混剪与成片交付。' },
   { key: 'standalone', kicker: 'Vertical Edit', title: '📱 竖屏后期合成', desc: '单条竖屏精修与批量竖屏队列的统一编排入口。' },
   { key: 'xaiTop10', kicker: 'Discovery', title: '📈 热门视频榜单', desc: '抓取、排序、筛选热点视频，并直送后续生产链路。' },
-  { key: 'publishCenter', kicker: 'Distribution', title: '🚀 一键发布', desc: '平台接入、素材选择、任务创建与发布执行统一管理。' }
+  { key: 'reviewCenter', kicker: 'Quality', title: '🎯 AI 审核中心', desc: '视频质量审核、评分管理与修复建议。' },
+  { key: 'publishCenter', kicker: 'Distribution', title: '🚀 一键发布', desc: '平台接入、素材选择、任务创建与发布执行统一管理。' },
+  { key: 'systemSettings', kicker: 'Ops', title: '⚙️ 系统设置', desc: '飞书通知、登录检测与系统级配置管理。' }
 ];
 
 const activeModule = ref(getInitialActiveModule());
@@ -200,6 +212,28 @@ const handoffXaiToPipeline = (item) => {
   }
 };
 
+const handleReviewToPublish = async (event) => {
+  const detail = event?.detail || {};
+  activeModule.value = 'publishCenter';
+  try {
+    if (typeof publishCenter.fetchAssets === 'function') {
+      await publishCenter.fetchAssets(true);
+    } else {
+      await publishCenter.refresh();
+    }
+    const targetAsset = publishCenter.assets?.value?.find((asset) =>
+      (detail.assetId && asset.id === detail.assetId) ||
+      (detail.path && asset.path === detail.path) ||
+      (detail.url && asset.url?.includes(detail.url))
+    );
+    if (targetAsset && typeof publishCenter.selectAsset === 'function') {
+      await publishCenter.selectAsset(targetAsset.id);
+    }
+  } catch (err) {
+    console.warn('Failed to route reviewed asset to publish center', err);
+  }
+};
+
 onMounted(() => {
   pipeline.loadPresets();
   publishCenter.refresh();
@@ -207,6 +241,7 @@ onMounted(() => {
   xaiTop10.refresh();
   xaiTop10.loadConfig();
   standalone.loadQueue();
+  window.addEventListener('review-center:to-publish', handleReviewToPublish);
 });
 
 watch(activeModule, (value) => {
@@ -231,6 +266,7 @@ onBeforeUnmount(() => {
   publishCenter.stopAutoRefresh();
   xaiTop10.stopAutoRefresh();
   standalone.stopAutoRefresh();
+  window.removeEventListener('review-center:to-publish', handleReviewToPublish);
 });
 
 watch(themeMode, (value) => {

@@ -1,3 +1,6 @@
+// 日志记录（必须在最开始引入）
+require('./server/core/logger');
+
 const express = require('express');
 const axios = require('axios');
 const multer = require('multer');
@@ -5,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
-const { loadProjectEnv } = require('./env');
+const { loadProjectEnv, readProjectEnv, updateProjectEnv } = require('./scripts/utils/env');
 const { sendError } = require('./server/core/http');
 const { runPythonScript, runPythonScriptSync } = require('./server/core/python');
 const {
@@ -54,6 +57,12 @@ const { createSelfCheckService } = require('./server/services/system/selfCheck')
 const { registerPublishRoutes } = require('./server/routes/publish');
 const { registerSystemRoutes } = require('./server/routes/system');
 const { startScheduler } = require('./server/services/system/scheduler');
+const { createReviewHandlers } = require('./server/services/review');
+const { registerReviewRoutes } = require('./server/routes/review');
+const { readReviewConfig } = require('./server/services/review/store');
+const { createFeishuService } = require('./server/services/notification/feishu');
+const { createLoginStatusService } = require('./server/services/notification/loginStatus');
+const { registerLoginStatusRoutes } = require('./server/routes/loginStatus');
 
 loadProjectEnv(__dirname);
 
@@ -471,7 +480,9 @@ const {
         extractWorkflowConfig,
         applyWorkflowConfig,
         writeWorkflow,
-        runPythonScript
+        runPythonScript,
+        readProjectEnv,
+        updateProjectEnv
     });
 
     function spawnScript(scriptPath, args, options = {}) {
@@ -496,6 +507,53 @@ const {
     }
 
     attachProgressRoute(app);
+
+    // 创建自动审核触发函数
+    async function triggerAutoReview(videoPath, assetId) {
+        try {
+            const { readReviewConfig } = require('./server/services/review/store');
+            const { executeReviewScript } = require('./server/services/review/executor');
+
+            const config = readReviewConfig();
+            if (!config.enabled) {
+                return null; // 审核未启用
+            }
+
+            const metadataPath = `${videoPath}.meta.json`;
+            if (!fs.existsSync(metadataPath)) {
+                console.warn('元数据文件不存在，跳过自动审核');
+                return null;
+            }
+
+            console.log(`[Auto Review] 开始审核视频: ${videoPath}`);
+            const result = await executeReviewScript(videoPath, metadataPath, config);
+
+            // 更新元数据
+            const metadata = readMediaMetadata(videoPath);
+            metadata.aiReview = {
+                reviewId: `auto_${Date.now()}`,
+                status: result.status,
+                overallScore: result.overall_score,
+                scores: {
+                    contentQuality: result.scores.content,
+                    subtitleAccuracy: result.scores.subtitle,
+                    titleAppeal: result.scores.title,
+                    editingQuality: result.scores.editing
+                },
+                reviewedAt: new Date().toISOString(),
+                fixSuggestions: result.fix_suggestions,
+                manuallySkipped: false
+            };
+            writeMediaMetadata(videoPath, metadata);
+
+            console.log(`[Auto Review] 审核完成，得分: ${result.overall_score}, 状态: ${result.status}`);
+            return result;
+        } catch (err) {
+            console.error('[Auto Review] 自动审核失败:', err);
+            return null;
+        }
+    }
+
     const pipelineHandlers = createPipelineHandlers({
         baseDir: __dirname,
         pipelineDir: PIPELINE_DIR,
@@ -514,7 +572,8 @@ const {
         buildFallbackTitleFromSubtitles,
         generateHotTitle,
         writeJsonFile,
-        runPythonScript
+        runPythonScript,
+        triggerAutoReview
     });
 
     registerPipelineRoutes(app, upload, pipelineHandlers);
@@ -590,7 +649,10 @@ const {
         buildFallbackTitleFromSubtitles,
         spawnScript,
         writeJsonFile,
-        runPythonScript
+        runPythonScript,
+        writeMediaMetadata,
+        readMediaMetadata,
+        triggerAutoReview
     });
 
     registerVerticalRoutes(app, {
@@ -698,10 +760,54 @@ const {
         retryWechatRpa,
         cancelWechatRpa,
         checkWechatLogin,
-        triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args)
+        triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
+        readReviewConfig,
+        readMediaMetadata
     });
 
     registerPublishRoutes(app, publishHandlers);
+
+    // 注册审核路由
+    const reviewHandlers = createReviewHandlers({
+        sendError,
+        readMediaMetadata,
+        writeMediaMetadata,
+        verticalQueueService
+    });
+    registerReviewRoutes(app, reviewHandlers);
+
+    // 初始化飞书通知服务
+    const feishuWebhookUrl = process.env.FEISHU_WEBHOOK_URL || '';
+    const feishuAppId = process.env.FEISHU_APP_ID || '';
+    const feishuAppSecret = process.env.FEISHU_APP_SECRET || '';
+
+    const feishuService = createFeishuService({
+        webhookUrl: feishuWebhookUrl,
+        appId: feishuAppId,
+        appSecret: feishuAppSecret
+    });
+
+    if (feishuAppId && feishuAppSecret) {
+        console.log('[Feishu] 飞书通知服务已启用（应用模式，支持发送图片）');
+    } else if (feishuWebhookUrl) {
+        console.log('[Feishu] 飞书通知服务已启用（Webhook模式，不支持发送图片）');
+    } else {
+        console.log('[Feishu] 飞书通知服务未配置');
+    }
+
+    // 初始化登录状态检测服务
+    const loginStatusService = createLoginStatusService({
+        checkWechatLogin,
+        feishuService,
+        readPublishConfig,
+        feishuReceiveIdType: process.env.FEISHU_RECEIVE_ID_TYPE || 'chat_id',
+        feishuReceiveId: process.env.FEISHU_RECEIVE_ID || ''
+    });
+
+    console.log('[LoginStatus] 登录状态检测服务已初始化');
+
+    // 注册登录状态检测路由
+    registerLoginStatusRoutes(app, loginStatusService, feishuService);
 
     schedulerService = startScheduler({
         publishStore,
@@ -709,7 +815,10 @@ const {
         xaiService,
         verticalQueueService,
         generatePublishDescription,
-        publishAssetsService
+        publishAssetsService,
+        loginStatusService,
+        feishuService,
+        writeMediaMetadata
     });
 
     const PORT = Number(process.env.PORT || 3001);

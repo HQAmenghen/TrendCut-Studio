@@ -1,4 +1,5 @@
 faster-whisper
+dashscope
 google-genai
 Pillow
 httpx

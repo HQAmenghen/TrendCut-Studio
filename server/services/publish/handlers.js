@@ -24,7 +24,9 @@ function createPublishHandlers(deps) {
     retryWechatRpa,
     cancelWechatRpa,
     checkWechatLogin,
-    triggerAutoPilotNow
+    triggerAutoPilotNow,
+    readReviewConfig,
+    readMediaMetadata
   } = deps;
 
   return {
@@ -211,6 +213,44 @@ function createPublishHandlers(deps) {
 
         const asset = assets.find((item) => item.id === assetId);
         if (!asset) return sendError(res, { status: 404, code: 'PUBLISH_ASSET_NOT_FOUND', stage: 'publish.create_job', error: '所选视频素材不存在' });
+
+        // 检查AI审核状态
+        if (readReviewConfig && readMediaMetadata) {
+          try {
+            const reviewConfig = readReviewConfig();
+            if (reviewConfig.enabled && reviewConfig.require_manual_confirm) {
+              const metadata = readMediaMetadata(asset.path);
+              const aiReview = metadata?.aiReview;
+
+              if (!aiReview || aiReview.status === 'pending' || aiReview.status === 'reviewing') {
+                return sendError(res, {
+                  status: 400,
+                  code: 'REVIEW_REQUIRED',
+                  stage: 'publish.create_job',
+                  error: '该视频尚未通过AI审核，请先完成审核',
+                  hint: '可以在素材列表中点击"审核"按钮，或手动跳过审核'
+                });
+              }
+
+              if (aiReview.status === 'failed' && !aiReview.manuallySkipped) {
+                return sendError(res, {
+                  status: 400,
+                  code: 'REVIEW_FAILED',
+                  stage: 'publish.create_job',
+                  error: `该视频AI审核未通过（得分：${aiReview.overallScore || 0}/${reviewConfig.min_pass_score}）`,
+                  hint: '请查看修复建议后重新生成，或手动跳过审核',
+                  reviewResult: {
+                    overallScore: aiReview.overallScore,
+                    scores: aiReview.scores,
+                    fixSuggestions: aiReview.fixSuggestions
+                  }
+                });
+              }
+            }
+          } catch (err) {
+            console.warn('审核状态检查失败，继续创建任务:', err.message);
+          }
+        }
 
         const shortTitle = buildShortTitle(title, '热点速递');
         let finalDescription = description;

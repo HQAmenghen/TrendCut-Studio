@@ -231,18 +231,57 @@
                   <div class="account-manager">
                     <div class="account-manager-head">
                       <div class="platform-tip">为每个视频号账号分配独立浏览器登录环境，避免账号互串。</div>
-                      <button type="button" class="ghost-btn compact-btn" @click="center.addWechatAccount">新增账号</button>
+                      <div style="display: flex; gap: 8px; align-items: center;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                          <input v-model="batchNotifyFeishu" type="checkbox" style="width: 16px; height: 16px; cursor: pointer;" />
+                          <span>发送飞书</span>
+                        </label>
+                        <button
+                          v-if="selectedWechatAccounts.length > 0"
+                          type="button"
+                          class="ghost-btn compact-btn"
+                          :disabled="checkingBatchLogin"
+                          @click="checkSelectedAccountsLogin"
+                        >
+                          {{ checkingBatchLogin ? '检测中...' : `检测选中 (${selectedWechatAccounts.length})` }}
+                        </button>
+                        <button type="button" class="ghost-btn compact-btn" @click="center.addWechatAccount">新增账号</button>
+                      </div>
                     </div>
                     <div v-if="!center.wechatAccounts.value.length" class="issue-box">还没有配置任何视频号账号。</div>
                     <div v-for="account in center.wechatAccounts.value" :key="account.id" class="account-card">
-                      <div class="account-card-head">
-                        <strong>{{ account.displayName || account.helperAccount || account.finderUserName || account.id }}</strong>
-                        <div style="display: flex; gap: 8px;">
-                          <button type="button" class="ghost-btn compact-btn" @click="center.testWechatLogin(account.id)">测登录 / 扫码</button>
+                      <div class="account-card-head" @click="toggleAccountExpand(account.id)" style="cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                          <input
+                            type="checkbox"
+                            :checked="selectedWechatAccounts.includes(account.id)"
+                            @change.stop="toggleWechatAccountSelection(account.id)"
+                            style="width: 18px; height: 18px; cursor: pointer;"
+                          />
+                          <span class="expand-icon" :class="{ expanded: expandedAccounts.has(account.id) }">▶</span>
+                          <strong>{{ account.displayName || account.helperAccount || account.finderUserName || account.id }}</strong>
+                          <span
+                            v-if="accountLoginStatus[account.id]"
+                            class="login-status-badge"
+                            :class="`status-${accountLoginStatus[account.id].status}`"
+                          >
+                            {{ getLoginStatusText(accountLoginStatus[account.id].status) }}
+                          </span>
+                        </div>
+                        <div style="display: flex; gap: 8px;" @click.stop>
+                          <button
+                            type="button"
+                            class="ghost-btn compact-btn"
+                            :disabled="checkingLoginAccounts.has(account.id)"
+                            @click="checkSingleAccountLogin(account.id)"
+                          >
+                            {{ checkingLoginAccounts.has(account.id) ? '检测中...' : '检测登录' }}
+                          </button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.testWechatLogin(account.id)">扫码登录</button>
                           <button type="button" class="ghost-btn compact-btn" @click="center.removeWechatAccount(account.id)">删除</button>
                         </div>
                       </div>
-                      <div class="platform-fields">
+                      <div v-show="expandedAccounts.has(account.id)" class="platform-fields">
                         <input
                           class="input-dark text-sm"
                           :value="account.displayName || ''"
@@ -509,10 +548,44 @@
                         <div v-for="asset in center.assets.value" :key="`drawer_${asset.id}`" class="asset-drawer-card">
                           <div class="asset-title">{{ asset.displayLabel || asset.label }}</div>
                           <div class="asset-meta">{{ asset.sourceMetaLine || asset.sourceType }} · {{ formatDateTime(asset.updatedAt) }}</div>
+
+                          <!-- AI审核状态 -->
+                          <div v-if="asset.metadata?.aiReview" class="asset-review-status">
+                            <span
+                              class="review-badge"
+                              :class="`badge-${asset.metadata.aiReview.status}`"
+                            >
+                              {{ getReviewStatusLabel(asset.metadata.aiReview.status) }}
+                              <span v-if="asset.metadata.aiReview.overallScore !== undefined">
+                                {{ asset.metadata.aiReview.overallScore }}分
+                              </span>
+                            </span>
+                          </div>
+
                           <div class="asset-links">
                             <a :href="asset.url" target="_blank" rel="noreferrer">打开视频</a>
                             <button type="button" @click="useAsset(asset)">用于发布</button>
+                            <button
+                              v-if="review.isEnabled"
+                              type="button"
+                              class="review-btn"
+                              @click="reviewAsset(asset)"
+                              :disabled="review.reviewing.value"
+                            >
+                              {{ review.reviewing.value ? '审核中...' : '审核' }}
+                            </button>
                           </div>
+
+                          <!-- 审核结果展示 -->
+                          <ReviewResultCard
+                            v-if="asset.metadata?.aiReview && asset.metadata.aiReview.status !== 'skipped'"
+                            :review="asset.metadata.aiReview"
+                            :show-details="false"
+                            :show-skip="true"
+                            :show-regenerate="false"
+                            @skip="skipAssetReview(asset)"
+                            style="margin-top: 12px;"
+                          />
                         </div>
                       </div>
                     </details>
@@ -661,12 +734,173 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, onMounted, ref, reactive } from 'vue';
 import RunLogPanel from './RunLogPanel.vue';
+import ReviewResultCard from './ReviewResultCard.vue';
+import { useVideoReview } from '../composables/useVideoReview';
 
 const props = defineProps({
   center: { type: Object, required: true }
 });
+
+// 审核功能
+const review = useVideoReview();
+
+// 登录状态检测
+const selectedWechatAccounts = ref([]);
+const checkingLoginAccounts = reactive(new Set());
+const checkingBatchLogin = ref(false);
+const accountLoginStatus = reactive({});
+const expandedAccounts = reactive(new Set());
+const batchNotifyFeishu = ref(false);  // 批量检测时是否发送飞书通知
+
+onMounted(() => {
+  review.loadConfig();
+  loadAllLoginStatus();
+  // 默认展开第一个账号
+  if (props.center.wechatAccounts.value.length > 0) {
+    expandedAccounts.add(props.center.wechatAccounts.value[0].id);
+  }
+});
+
+// 加载所有账号的登录状态
+async function loadAllLoginStatus() {
+  try {
+    const res = await fetch('/api/login-status/all');
+    const data = await res.json();
+    if (data.success) {
+      data.statuses.forEach(status => {
+        accountLoginStatus[status.accountId] = status;
+      });
+    }
+  } catch (err) {
+    console.error('加载登录状态失败:', err);
+  }
+}
+
+// 切换账号选择
+function toggleWechatAccountSelection(accountId) {
+  const index = selectedWechatAccounts.value.indexOf(accountId);
+  if (index > -1) {
+    selectedWechatAccounts.value.splice(index, 1);
+  } else {
+    selectedWechatAccounts.value.push(accountId);
+  }
+}
+
+// 切换账号展开/折叠
+function toggleAccountExpand(accountId) {
+  if (expandedAccounts.has(accountId)) {
+    expandedAccounts.delete(accountId);
+  } else {
+    expandedAccounts.add(accountId);
+  }
+}
+
+// 检测单个账号登录状态
+async function checkSingleAccountLogin(accountId) {
+  checkingLoginAccounts.add(accountId);
+  try {
+    const res = await fetch(`/api/login-status/check/${accountId}`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (data.success) {
+      accountLoginStatus[accountId] = data.result;
+    }
+  } catch (err) {
+    console.error('检测登录状态失败:', err);
+  } finally {
+    checkingLoginAccounts.delete(accountId);
+  }
+}
+
+// 批量检测选中账号
+async function checkSelectedAccountsLogin() {
+  if (selectedWechatAccounts.value.length === 0) return;
+
+  checkingBatchLogin.value = true;
+  try {
+    const res = await fetch('/api/login-status/check-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountIds: selectedWechatAccounts.value,
+        notifyFeishu: batchNotifyFeishu.value,
+        parallel: false
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      data.summary.results.forEach(result => {
+        accountLoginStatus[result.accountId] = result;
+      });
+      const msg = `检测完成: ${data.summary.logged_in} 已登录, ${data.summary.need_login} 需登录, ${data.summary.error} 异常`;
+      if (batchNotifyFeishu.value && data.summary.need_login > 0) {
+        alert(msg + '\n\n已发送飞书通知');
+      } else {
+        alert(msg);
+      }
+    }
+  } catch (err) {
+    alert('检测失败: ' + err.message);
+  } finally {
+    checkingBatchLogin.value = false;
+  }
+}
+
+// 获取登录状态文本
+function getLoginStatusText(status) {
+  const map = {
+    logged_in: '✓ 已登录',
+    need_login: '⚠ 需登录',
+    error: '✗ 异常',
+    checking: '检测中'
+  };
+  return map[status] || status;
+}
+
+// 审核素材
+async function reviewAsset(asset) {
+  const result = await review.reviewVideo(asset.path, asset.id);
+  if (result.success) {
+    if (result.skipped) {
+      alert(`审核已跳过: ${result.reason}`);
+    } else {
+      alert(`审核完成！得分: ${result.result.overall_score}/100`);
+      // 刷新素材列表以显示审核结果
+      props.center.refreshAssets();
+    }
+  } else {
+    alert(`审核失败: ${result.error}`);
+  }
+}
+
+// 跳过素材审核
+async function skipAssetReview(asset) {
+  if (!confirm('确定要跳过AI审核吗？跳过后可以直接创建发布任务。')) {
+    return;
+  }
+  const result = await review.skipReview(asset.path, asset.id, 'manual_skip');
+  if (result.success) {
+    alert('已跳过审核');
+    props.center.refreshAssets();
+  } else {
+    alert(`跳过失败: ${result.error}`);
+  }
+}
+
+// 获取审核状态标签
+function getReviewStatusLabel(status) {
+  const labels = {
+    passed: '✓ 已通过',
+    failed: '✗ 未通过',
+    reviewing: '审核中',
+    skipped: '已跳过',
+    pending: '待审核'
+  };
+  return labels[status] || status;
+}
 
 const enabledPlatforms = computed(() => props.center.platformDefs.filter((platform) => props.center.config.value?.[platform.key]?.enabled));
 
@@ -1408,6 +1642,105 @@ function selfCheckStatusLabel(status) {
   border-radius: 14px;
   background: var(--card-bg);
   padding: 12px;
+}
+
+.asset-review-status {
+  margin: 8px 0;
+}
+
+.review-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.review-badge.badge-passed {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.review-badge.badge-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.review-badge.badge-skipped {
+  background: #e5e7eb;
+  color: #6b7280;
+}
+
+.review-badge.badge-reviewing {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.review-badge.badge-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.review-btn {
+  color: #a78bfa !important;
+  font-weight: 600;
+}
+
+.review-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.login-status-badge.status-logged_in {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.login-status-badge.status-need_login {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+.login-status-badge.status-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.login-status-badge.status-checking {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+}
+
+.expand-icon {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+  user-select: none;
+}
+
+.expand-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.account-card-head {
+  transition: background-color 0.15s ease;
+}
+
+.account-card-head:hover {
+  background-color: rgba(139, 92, 246, 0.05);
 }
 
 .compact-select {

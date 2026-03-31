@@ -46,7 +46,9 @@ def emit_error(code: str, message: str, stage: str = "python", details: str = ""
 
 def run_guarded(main_fn, *, error_code: str, error_message: str, error_stage: str, hint: str = "") -> int:
     try:
-        main_fn()
+        result = main_fn()
+        if isinstance(result, int):
+            return result
         return 0
     except Exception as exc:
         emit_error(

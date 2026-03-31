@@ -14,12 +14,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from gemini_client import create_gemini_client, generate_content
+from llm_client import create_llm_client, generate_content, get_llm_provider
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+
+def get_text_model():
+    """获取文本生成模型"""
+    provider = get_llm_provider()
+    if provider == "qwen":
+        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+    else:
+        return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
+GEMINI_MODEL = get_text_model()
 
 def extract_json(text: str):
     cleaned = text.strip()
@@ -78,7 +88,7 @@ def main():
         print("no-op")
         return
 
-    client = create_gemini_client()
+    client = create_llm_client()
 
     translations = {}
     batch_size = 8

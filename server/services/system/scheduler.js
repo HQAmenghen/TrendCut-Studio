@@ -1,6 +1,8 @@
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
+const { readProjectEnv } = require('../../../scripts/utils/env');
+const { enqueueRegenerationFromReview } = require('../review/regenerate');
 
 const SCHEDULER_TIME_ZONE = 'Asia/Shanghai';
 const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.log');
@@ -98,7 +100,7 @@ function normalizeRankingItem(item = {}) {
   };
 }
 
-function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, generatePublishDescription, publishAssetsService }) {
+function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, generatePublishDescription, publishAssetsService, loginStatusService, feishuService, writeMediaMetadata }) {
   logInfo('[Scheduler] 初始化定时调度引擎 - node-cron', {
     timeZone: SCHEDULER_TIME_ZONE,
     logPath: SCHEDULER_LOG_PATH
@@ -310,6 +312,85 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             continue;
           }
 
+          // 检查 AI 审核状态
+          try {
+            const { readReviewConfig } = require('../../services/review/store');
+            const reviewConfig = readReviewConfig();
+
+            if (reviewConfig.enabled && reviewConfig.require_manual_confirm) {
+              const aiReview = asset.metadata?.aiReview;
+
+              // 如果未审核或正在审核中，跳过
+              if (!aiReview || aiReview.status === 'pending' || aiReview.status === 'reviewing') {
+                logWarn('[AutoPilot] 视频尚未完成 AI 审核，跳过创建发布任务', {
+                  queueJobId: vjobId,
+                  rank: rank + 1,
+                  reviewStatus: aiReview?.status || 'not_reviewed',
+                  hint: '视频将保留在素材库中，可手动审核后发布'
+                });
+                continue;
+              }
+
+              // 如果审核未通过且未手动跳过，跳过
+              if (aiReview.status === 'failed' && !aiReview.manuallySkipped) {
+                const regenerationMeta = asset.metadata?.regeneration || {};
+                const alreadyRetried = Number(regenerationMeta.attemptCount || 0) >= 1
+                  && String(regenerationMeta.previousReviewId || '') === String(aiReview.reviewId || '');
+
+                if (!alreadyRetried && Array.isArray(aiReview.fixSuggestions) && aiReview.fixSuggestions.length > 0) {
+                  try {
+                    const { job: regeneratedJob, adjustments } = enqueueRegenerationFromReview({
+                      videoPath: asset.path,
+                      metadata: asset.metadata || {},
+                      verticalQueueService,
+                      writeMediaMetadata,
+                      trigger: 'autopilot',
+                      sourceReview: aiReview
+                    });
+                    autoPilotJobs.set(regeneratedJob.id, { rank, activeKey });
+                    logInfo('[AutoPilot] 视频审核未达标，已按修改建议自动重新生成', {
+                      previousQueueJobId: vjobId,
+                      regeneratedQueueJobId: regeneratedJob.id,
+                      rank: rank + 1,
+                      overallScore: aiReview.overallScore || 0,
+                      appliedSuggestionsCount: adjustments.highPrioritySuggestions.length
+                    });
+                    continue;
+                  } catch (regenErr) {
+                    logWarn('[AutoPilot] 自动按建议重做失败，回退为跳过创建发布任务', {
+                      queueJobId: vjobId,
+                      rank: rank + 1,
+                      error: regenErr.message
+                    });
+                  }
+                }
+
+                logWarn('[AutoPilot] 视频 AI 审核未通过，跳过创建发布任务', {
+                  queueJobId: vjobId,
+                  rank: rank + 1,
+                  overallScore: aiReview.overallScore || 0,
+                  minPassScore: reviewConfig.min_pass_score || 70,
+                  hint: alreadyRetried
+                    ? '该视频已自动重做过一次，仍未达标，请在审核中心人工处理'
+                    : '可在审核中心查看修复建议或手动跳过审核'
+                });
+                continue;
+              }
+
+              logInfo('[AutoPilot] 视频已通过 AI 审核，继续创建发布任务', {
+                queueJobId: vjobId,
+                rank: rank + 1,
+                reviewStatus: aiReview.status,
+                overallScore: aiReview.overallScore || 0
+              });
+            }
+          } catch (reviewCheckErr) {
+            logWarn('[AutoPilot] 审核状态检查失败，继续创建发布任务', {
+              queueJobId: vjobId,
+              error: reviewCheckErr.message
+            });
+          }
+
           const desc = generatePublishDescription(
             asset.metadata?.sourceSummary || asset.metadata?.suggestedDescription || '',
             { title: asset.compactLabel || asset.label, includeTags: false }
@@ -506,6 +587,51 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
       }
     }
   });
+
+  // 登录状态定时检测
+  if (loginStatusService) {
+    const { values } = readProjectEnv(path.join(__dirname, '../../..'));
+    const checkInterval = parseInt(values.LOGIN_CHECK_INTERVAL_MINUTES ?? process.env.LOGIN_CHECK_INTERVAL_MINUTES, 10) || 30;
+    const loginCheckEnabled = (values.LOGIN_CHECK_ENABLED ?? process.env.LOGIN_CHECK_ENABLED) !== 'false';
+    const cronExpression = `*/${checkInterval} * * * *`; // 每N分钟执行一次
+
+    logInfo('[Scheduler] 启动登录状态定时检测', {
+      interval: `${checkInterval} 分钟`,
+      cronExpression,
+      enabled: loginCheckEnabled
+    });
+
+    cron.schedule(cronExpression, async () => {
+      try {
+        logInfo('[Scheduler -> 登录检测] 开始定时检测登录状态');
+        const summary = await loginStatusService.checkAllAccounts();
+
+        logInfo('[Scheduler -> 登录检测] 检测完成', {
+          checked: summary.checked,
+          logged_in: summary.logged_in,
+          need_login: summary.need_login,
+          error: summary.error
+        });
+
+        // 如果有账号需要登录，发送汇总通知
+        if (summary.need_login > 0 && feishuService && process.env.FEISHU_NOTIFY_LOGIN_STATUS !== 'false') {
+          const needLoginAccounts = summary.results.filter(r => r.status === 'need_login');
+          const accountNames = needLoginAccounts.map(r => r.accountLabel).join('、');
+
+          await feishuService.sendText(
+            `⚠️ 登录状态检测：${summary.need_login} 个账号需要重新登录\n` +
+            `账号：${accountNames}\n` +
+            `请及时处理以确保自动发布功能正常运行`
+          );
+        }
+      } catch (err) {
+        logError('[Scheduler -> 登录检测] 定时检测失败', err);
+      }
+    }, {
+      timezone: SCHEDULER_TIME_ZONE,
+      scheduled: loginCheckEnabled
+    });
+  }
 
   return {
     triggerAutoPilotNow

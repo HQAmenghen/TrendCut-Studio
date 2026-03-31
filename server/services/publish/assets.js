@@ -14,6 +14,35 @@ function createPublishAssetsService(deps) {
 
   let publishAssetsCache = { expiresAt: 0, assets: [] };
 
+  function findPreferredVideoFile(dirPath, preferredBaseName) {
+    if (!fs.existsSync(dirPath)) return null;
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.mp4'))
+      .map((entry) => {
+        const fullPath = path.join(dirPath, entry.name);
+        const stat = fs.statSync(fullPath);
+        return {
+          name: entry.name,
+          fullPath,
+          stat
+        };
+      });
+
+    if (!entries.length) return null;
+
+    const exact = entries.find((entry) => entry.name === preferredBaseName);
+    if (exact) return exact.fullPath;
+
+    const prefix = preferredBaseName.replace(/\.mp4$/i, '');
+    const related = entries
+      .filter((entry) => entry.name.startsWith(prefix))
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+    if (related.length) return related[0].fullPath;
+
+    entries.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+    return entries[0].fullPath;
+  }
+
   function getPublishAssetTypeLabel(sourceType) {
     const map = {
       pipeline: '全链路混剪',
@@ -152,9 +181,22 @@ function createPublishAssetsService(deps) {
     const addAsset = (label, fullPath, publicUrl, sourceType, metadata = {}) => {
       if (!fs.existsSync(fullPath)) return;
       const stat = fs.statSync(fullPath);
+      const savedMetadata = readMediaMetadata(fullPath) || {};
+      const mergedMetadata = {
+        ...metadata,
+        ...savedMetadata,
+        aiReview: savedMetadata.aiReview || metadata.aiReview || null,
+        sourceSummary: savedMetadata.sourceSummary || metadata.sourceSummary || '',
+        suggestedTitle: savedMetadata.suggestedTitle || metadata.suggestedTitle || '',
+        suggestedShortTitle: savedMetadata.suggestedShortTitle || metadata.suggestedShortTitle || '',
+        suggestedDescription: savedMetadata.suggestedDescription || metadata.suggestedDescription || '',
+        suggestedTags: Array.isArray(savedMetadata.suggestedTags) && savedMetadata.suggestedTags.length
+          ? savedMetadata.suggestedTags
+          : (metadata.suggestedTags || [])
+      };
       const typeLabel = getPublishAssetTypeLabel(sourceType);
-      const titleText = truncateDisplayText(metadata?.suggestedTitle || metadata?.suggestedShortTitle || label, 34);
-      const authorText = metadata?.author ? `@${metadata.author}` : '';
+      const titleText = truncateDisplayText(mergedMetadata?.suggestedTitle || mergedMetadata?.suggestedShortTitle || label, 34);
+      const authorText = mergedMetadata?.author ? `@${mergedMetadata.author}` : '';
       assets.push({
         id: crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12),
         label,
@@ -167,7 +209,7 @@ function createPublishAssetsService(deps) {
         url: publicUrl ? `${publicUrl}?t=${stat.mtimeMs}` : '',
         sizeBytes: stat.size,
         updatedAt: stat.mtime.toISOString(),
-        metadata
+        metadata: mergedMetadata
       });
     };
 
@@ -237,7 +279,9 @@ function createPublishAssetsService(deps) {
     if (fs.existsSync(verticalPublicDir)) {
       const dirs = fs.readdirSync(verticalPublicDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
       for (const dir of dirs) {
-        const filePath = path.join(verticalPublicDir, dir.name, 'vertical_output.mp4');
+        const filePath = findPreferredVideoFile(path.join(verticalPublicDir, dir.name), 'vertical_output.mp4');
+        if (!filePath) continue;
+        const publicFileName = path.basename(filePath);
         const jobDir = path.join(verticalQueueRoot, dir.name);
         const content = readJsonIfExists(path.join(jobDir, 'content.json'), {});
         const subtitles = readJsonIfExists(path.join(jobDir, 'subtitles.json'), []);
@@ -245,7 +289,7 @@ function createPublishAssetsService(deps) {
         addAsset(
           `XAI 批量竖屏 ${dir.name}`,
           filePath,
-          `/xai_vertical_queue/${dir.name}/vertical_output.mp4`,
+          `/xai_vertical_queue/${dir.name}/${publicFileName}`,
           'xai_queue',
           buildPublishMetadata({
             title: content?.title || runtimeJob?.title,

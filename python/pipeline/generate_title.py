@@ -14,13 +14,23 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from gemini_client import create_gemini_client, generate_content
+from llm_client import create_llm_client, generate_content, get_llm_provider
 from script_protocol import emit_error, emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+
+def get_text_model():
+    """获取文本生成模型"""
+    provider = get_llm_provider()
+    if provider == "qwen":
+        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+    else:
+        return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
+GEMINI_MODEL = get_text_model()
 
 def visible_len(text: str) -> int:
     return len(re.sub(r"\s+", "", text))
@@ -104,7 +114,7 @@ def main():
         print("这条消息可能正在改变支付格局")
         return
 
-    client = create_gemini_client()
+    client = create_llm_client()
     prompt = f"""
 你是一名顶级短视频封面标题编辑，专门写财经/科技类爆点标题。
 请根据下面的口播内容，生成一个真正有冲击力、适合竖屏封面大字的中文标题。

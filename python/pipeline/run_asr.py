@@ -16,13 +16,23 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from gemini_client import create_gemini_client, generate_content
+from llm_client import create_llm_client, generate_content, get_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+
+def get_text_model():
+    """获取文本生成模型"""
+    provider = get_llm_provider()
+    if provider == "qwen":
+        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+    else:
+        return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
+GEMINI_MODEL = get_text_model()
 GLOSSARY_PATH = os.path.join(os.path.dirname(__file__), "glossary.json")
 
 def visible_text(text: str) -> str:
@@ -33,6 +43,10 @@ def has_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
 
+def has_japanese(text: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff]", text or ""))
+
+
 def is_english_like(text: str) -> bool:
     sample = re.sub(r"\s+", " ", text or "").strip()
     if not sample:
@@ -40,6 +54,20 @@ def is_english_like(text: str) -> bool:
     letters = re.findall(r"[A-Za-z]", sample)
     cjk = re.findall(r"[\u4e00-\u9fff]", sample)
     return len(letters) >= 4 and len(letters) > len(cjk) * 2
+
+
+def is_chinese_language(language: str) -> bool:
+    return str(language or "").lower().startswith("zh")
+
+
+def is_english_language(language: str) -> bool:
+    return str(language or "").lower().startswith("en")
+
+
+def is_supported_bilingual_subtitle(subtitle: dict) -> bool:
+    zh_text = str(subtitle.get("zh", "")).strip()
+    en_text = str(subtitle.get("en", "")).strip()
+    return bool(zh_text and has_cjk(zh_text) and en_text and is_english_like(en_text))
 
 
 def load_domain_corrections():
@@ -75,7 +103,7 @@ def backfill_chinese_translations(raw_segments, normalized_subtitles):
     if not targets:
         return normalized_subtitles
 
-    client = create_gemini_client()
+    client = create_llm_client()
     payload = json.dumps(targets, ensure_ascii=False)
     prompt = f"""
 你是一名专业字幕翻译，请把下面英文口播字幕翻译成简洁、自然、适合视频字幕展示的中文。
@@ -116,6 +144,76 @@ def backfill_chinese_translations(raw_segments, normalized_subtitles):
         zh_text = apply_domain_corrections(str(item.get("zh", "")).strip())
         if 0 <= idx < len(normalized_subtitles) and zh_text and has_cjk(zh_text):
             normalized_subtitles[idx]["zh"] = zh_text
+
+    return normalized_subtitles
+
+
+def backfill_bilingual_translations(raw_segments, normalized_subtitles, source_language=""):
+    targets = []
+    for index, subtitle in enumerate(normalized_subtitles):
+        if is_supported_bilingual_subtitle(subtitle):
+            continue
+        original_text = str(raw_segments[index]["text"]).strip()
+        if not original_text:
+            continue
+        targets.append({
+            "index": index,
+            "text": original_text
+        })
+
+    if not targets:
+        return normalized_subtitles
+
+    client = create_llm_client()
+    payload = json.dumps(targets, ensure_ascii=False)
+    prompt = f"""
+你是一名专业字幕翻译，请把下面原始字幕统一补齐为中英双语字幕。
+
+源语言提示：{source_language or "unknown"}
+
+要求：
+1. 保留数组中的 index 不变。
+2. 无论原始语言是什么，zh 必须是自然、完整的简体中文字幕。
+3. 无论原始语言是什么，en 必须是自然、完整的英文字幕。
+4. 严禁把日文、韩文、阿拉伯文、俄文等原文直接写进 zh 字段。
+5. 严禁把除英文外的原文直接写进 en 字段。
+6. 严格输出 JSON 数组，不要输出 markdown。
+
+输入：
+{payload}
+
+输出格式：
+[
+  {{
+    "index": 0,
+    "zh": "对应的中文字幕",
+    "en": "Corresponding English subtitle"
+  }}
+]
+"""
+    response = generate_content(
+        client,
+        model=GEMINI_MODEL,
+        contents=prompt,
+        response_mime_type="application/json",
+    )
+    result = json.loads(response.text)
+    if not isinstance(result, list):
+        return normalized_subtitles
+
+    for item in result:
+        try:
+            idx = int(item.get("index"))
+        except Exception:
+            continue
+        if not (0 <= idx < len(normalized_subtitles)):
+            continue
+        zh_text = apply_domain_corrections(str(item.get("zh", "")).strip())
+        en_text = str(item.get("en", "")).strip()
+        if zh_text and has_cjk(zh_text):
+            normalized_subtitles[idx]["zh"] = zh_text
+        if en_text and is_english_like(en_text):
+            normalized_subtitles[idx]["en"] = en_text
 
     return normalized_subtitles
 
@@ -180,7 +278,7 @@ def analyze_speaker_scene(subtitles, visual_context):
     if not subtitles:
         return fallback
 
-    client = create_gemini_client()
+    client = create_llm_client()
     subtitle_payload = json.dumps(subtitles, ensure_ascii=False)
     visual_payload = json.dumps(visual_context or {}, ensure_ascii=False)
     prompt = f"""
@@ -284,27 +382,33 @@ def analyze_speaker_scene(subtitles, visual_context):
         return fallback
 
 
-def refine_and_translate(raw_segments):
-    client = create_gemini_client()
+def refine_and_translate(raw_segments, source_language=""):
+    client = create_llm_client()
     payload = json.dumps(raw_segments, ensure_ascii=False)
     prompt = f"""
-你是一名顶级字幕校对师和双语译者。下面是一段中文短视频口播经过 Whisper 打轴后的初稿，
+你是一名顶级字幕校对师和双语译者。下面是一段短视频口播经过 Whisper 打轴后的初稿，
 时间轴基本可信，但文本里可能有同音错字、术语错误、断句不顺、标点缺失。
+
+源语言提示：{source_language or "unknown"}
 
 你的任务：
 1. 保留数组条数不变。
 2. 保留每一条的 start 和 end 原值，不要改时间。
-3. 修正中文识别错误，让中文更通顺、更符合财经/科技短视频语境。
-4. 中文修正时必须尽量与原始 ASR 的字数、语气、节奏高度贴合，只纠正错字、术语和明显断句问题。
-5. 严禁擅自缩写、省字、改写或概括。比如“已经”不能改成“已”，“万事达卡”不能改成“万事达”，“不再”不能改成“不”。
-6. 中文输出必须覆盖原始 ASR 中的完整语义，宁可保留原句，也绝不允许漏词、吞词、省略助词、缩短短语。
-7. 如果原文已经完整通顺，就尽量保持原样，不要为了文风好看而重写。
-8. 如果原始 ASR 是英文句子，那么 zh 字段必须翻译成中文，en 字段保留润色后的英文。
-9. 生成自然、简洁、适合字幕卡展示的英文翻译，但英文可以意译，中文不可以缩水。
-10. 不要扩写，不要总结，不要改变原意，不要加入旁白说明。
-11. 如果某条太短，只做必要纠错即可。
-12. 严格输出 JSON 数组，不要输出 markdown。
-13. 对品牌名、机构名、专有名词要优先纠正，尤其注意：
+3. 最终必须统一输出中英双语字幕：
+   - zh：简体中文字幕
+   - en：自然英文字幕
+4. 如果原始语言是中文，zh 要尽量贴近原句，只纠正错字、术语和明显断句问题。
+5. 如果原始语言是英文，zh 要翻译成中文，en 保留润色后的英文。
+6. 如果原始语言既不是中文也不是英文，例如日文、韩文、阿拉伯文、俄文等：
+   - zh 必须翻译成中文
+   - en 必须翻译成英文
+   - 严禁把原始语言直接放进 zh 或 en 字段
+7. 中文输出必须覆盖原始 ASR 中的完整语义，宁可保留原句，也绝不允许漏词、吞词、省略助词、缩短短语。
+8. 生成自然、简洁、适合字幕卡展示的英文翻译。
+9. 不要扩写，不要总结，不要改变原意，不要加入旁白说明。
+10. 如果某条太短，只做必要纠错即可。
+11. 严格输出 JSON 数组，不要输出 markdown。
+12. 对品牌名、机构名、专有名词要优先纠正，尤其注意：
     - “万事打卡” 应为 “万事达卡”
     - “维萨/威萨” 应为 “Visa”
     - “彭国社” 应为 “彭博社”
@@ -343,19 +447,25 @@ def refine_and_translate(raw_segments):
         original_visible = visible_text(original_text)
         zh_visible = visible_text(zh_text)
 
-        # 保真优先：只要 Gemini 明显省字、缩写或漏掉词，就回退到原始 ASR 文本
-        if zh_visible:
+        # 仅中文原语种需要执行中文保真回退；其他语种必须保持 zh 为中文翻译
+        if is_chinese_language(source_language) and zh_visible:
             too_short = len(zh_visible) < len(original_visible)
             ratio_bad = len(original_visible) > 0 and (len(zh_visible) / len(original_visible)) < 0.95
             if too_short or ratio_bad:
                 zh_text = original_text
+
+        if is_english_language(source_language) and not en_text and original_text:
+            en_text = original_text
 
         normalized.append({
             "time": [original["start"], original["end"]],
             "zh": zh_text,
             "en": en_text
         })
-    normalized = backfill_chinese_translations(raw_segments, normalized)
+    if is_english_language(source_language):
+        normalized = backfill_chinese_translations(raw_segments, normalized)
+    else:
+        normalized = backfill_bilingual_translations(raw_segments, normalized, source_language)
     return normalized
 
 
@@ -365,7 +475,8 @@ def build_raw_segments(audio_file):
     model = WhisperModel("small", device="cpu", compute_type="int8")
 
     print("2. Whisper 模型加载完毕！开始识别语音...")
-    segments, _info = model.transcribe(audio_file, beam_size=5, word_timestamps=True, vad_filter=True)
+    segments, info = model.transcribe(audio_file, beam_size=5, word_timestamps=True, vad_filter=True)
+    detected_language = str(getattr(info, "language", "") or "").strip().lower()
 
     raw_segments = []
     for segment in segments:
@@ -377,7 +488,7 @@ def build_raw_segments(audio_file):
                 "text": segment_text
             })
             print(f"   [ASR 初稿]: {segment_text}")
-    return raw_segments
+    return raw_segments, detected_language
 
 
 def video_has_audio_stream(input_video: str) -> bool:
@@ -443,7 +554,9 @@ def main():
         sys.exit(1)
 
     start_time = time.time()
-    raw_segments = build_raw_segments(audio_file)
+    raw_segments, detected_language = build_raw_segments(audio_file)
+    if detected_language:
+        print(f"   -> Whisper 检测到源语言: {detected_language}")
 
     if not raw_segments:
         print("Whisper 未能识别出任何有效文本。")
@@ -451,17 +564,30 @@ def main():
     else:
         try:
             print("   -> 正在调用 Gemini 对 ASR 结果进行纠错、润色并生成英文翻译...")
-            final_subtitles = refine_and_translate(raw_segments)
+            final_subtitles = refine_and_translate(raw_segments, detected_language)
             print("   ✅ 双语字幕精修完成！")
         except Exception as err:
             print(f"   ⚠️ Gemini 精修失败，回退为原始 ASR 文本: {err}")
-            final_subtitles = [{"time": [s["start"], s["end"]], "zh": s["text"], "en": ""} for s in raw_segments]
+            final_subtitles = []
+            for s in raw_segments:
+                original_text = str(s["text"]).strip()
+                fallback_zh = original_text if is_chinese_language(detected_language) else ""
+                fallback_en = original_text if is_english_language(detected_language) else ""
+                final_subtitles.append({
+                    "time": [s["start"], s["end"]],
+                    "zh": fallback_zh,
+                    "en": fallback_en
+                })
             try:
-                print("   -> 正在尝试仅补齐中文字幕翻译...")
-                final_subtitles = backfill_chinese_translations(raw_segments, final_subtitles)
-                print("   ✅ 已补齐可恢复的中文字幕翻译。")
+                print("   -> 正在尝试补齐中英双语字幕...")
+                if is_english_language(detected_language):
+                    final_subtitles = backfill_chinese_translations(raw_segments, final_subtitles)
+                    final_subtitles = backfill_bilingual_translations(raw_segments, final_subtitles, detected_language)
+                else:
+                    final_subtitles = backfill_bilingual_translations(raw_segments, final_subtitles, detected_language)
+                print("   ✅ 已补齐可恢复的中英双语字幕。")
             except Exception as translation_err:
-                print(f"   ⚠️ 中文字幕补翻失败，保留原始 ASR 文本: {translation_err}")
+                print(f"   ⚠️ 中英字幕补翻失败，保留当前可用文本: {translation_err}")
 
     director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["zh"]} for seg in final_subtitles]
     with open("audio.json", "w", encoding="utf-8") as f:

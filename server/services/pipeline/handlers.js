@@ -75,7 +75,8 @@ function createPipelineHandlers(deps) {
     buildFallbackTitleFromSubtitles,
     generateHotTitle,
     writeJsonFile,
-    runPythonScript
+    runPythonScript,
+    triggerAutoReview
   } = deps;
 
   async function handleGenerate(req, res) {
@@ -269,6 +270,35 @@ function createPipelineHandlers(deps) {
       }
 
       if (sse) sendProgressEvent(sse, { type: 'progress', percent: 100, msg: '🎉 视频生成完毕！' });
+
+      // 自动触发AI审核（如果启用）
+      if (typeof triggerAutoReview === 'function') {
+        try {
+          const autoReview = req.body.autoReview !== 'false'; // 默认启用
+          if (autoReview) {
+            if (sse) sendProgressEvent(sse, { type: 'progress', percent: 100, msg: '🔍 正在进行AI审核...' });
+            const reviewResult = await triggerAutoReview(publicOutputPath, path.basename(publicOutputPath));
+            if (reviewResult && !reviewResult.passed) {
+              if (sse) sendProgressEvent(sse, {
+                type: 'warning',
+                msg: `⚠️ AI审核未通过（得分：${reviewResult.overall_score}），请查看修复建议`
+              });
+            } else if (reviewResult && reviewResult.passed) {
+              if (sse) sendProgressEvent(sse, {
+                type: 'success',
+                msg: `✓ AI审核通过（得分：${reviewResult.overall_score}）`
+              });
+            }
+          }
+        } catch (err) {
+          console.warn('自动审核失败，不影响视频生成:', err.message);
+          if (sse) sendProgressEvent(sse, {
+            type: 'warning',
+            msg: '⚠️ AI审核失败，但视频已生成'
+          });
+        }
+      }
+
       res.json({ success: true, videoUrl: `${finalUrl}?t=${Date.now()}` });
     } catch (error) {
       console.error('Pipeline failed:', error);

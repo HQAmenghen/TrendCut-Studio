@@ -8,6 +8,12 @@ function registerSystemRoutes(app, handlers) {
   app.post('/api/json-files/:fileName', handlers.postJsonFile);
   app.post('/api/optimize-text', handlers.optimizeText);
   app.post('/api/convert-video', handlers.convertVideo);
+  app.get('/api/system/feishu-config', handlers.getFeishuConfig);
+  app.post('/api/system/feishu-config', handlers.postFeishuConfig);
+  app.get('/api/system/login-check-config', handlers.getLoginCheckConfig);
+  app.post('/api/system/login-check-config', handlers.postLoginCheckConfig);
+  app.get('/api/system/llm-config', handlers.getLlmConfig);
+  app.post('/api/system/llm-config', handlers.postLlmConfig);
 }
 
 module.exports = {

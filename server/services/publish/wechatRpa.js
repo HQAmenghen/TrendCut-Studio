@@ -27,6 +27,7 @@ function createWechatRpaService(deps) {
       success: session.status === 'logged_in' || session.status === 'need_scan' || session.status === 'scanned' || session.status === 'starting',
       status: session.status,
       qrCodeBase64: session.qrCodeBase64 || '',
+      qrCodePath: session.qrCodePath || '',
       message: session.message || '',
       error: session.error || ''
     };
@@ -445,6 +446,7 @@ function createWechatRpaService(deps) {
         userDataDir,
         status: 'starting',
         qrCodeBase64: '',
+        qrCodePath: '',
         message: '',
         error: '',
         updatedAt: new Date().toISOString(),
@@ -481,6 +483,7 @@ function createWechatRpaService(deps) {
         if (parsed.status === 'need_scan') {
           session.status = 'need_scan';
           session.qrCodeBase64 = String(parsed.qrCodeBase64 || '').trim();
+          session.qrCodePath = String(parsed.qrCodePath || '').trim();
           session.message = String(parsed.message || '').trim();
           session.error = '';
           resolveOnce(buildLoginCheckResponse(session));
