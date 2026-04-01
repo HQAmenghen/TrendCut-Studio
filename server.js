@@ -10,7 +10,10 @@ const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const { loadProjectEnv, readProjectEnv, updateProjectEnv } = require('./scripts/utils/env');
 const { sendError } = require('./server/core/http');
-const { runPythonScript, runPythonScriptSync } = require('./server/core/python');
+const { createError } = require('./server/core/errorCodes');
+const { TaskStore } = require('./server/core/taskStore');
+const { createRecoveryService } = require('./server/core/recovery');
+const { runPythonScript, runPythonScriptSync, runPythonScriptCancellable, summarizePythonError, stopProcessTree: stopPythonProcessTree } = require('./server/core/python');
 const {
     ensureDir,
     formatElapsedSeconds,
@@ -63,196 +66,71 @@ const { readReviewConfig } = require('./server/services/review/store');
 const { createFeishuService } = require('./server/services/notification/feishu');
 const { createLoginStatusService } = require('./server/services/notification/loginStatus');
 const { registerLoginStatusRoutes } = require('./server/routes/loginStatus');
+const paths = require('./server/config/paths');
+const runtime = require('./server/config/runtime');
+const utils = require('./server/config/utils');
 
 loadProjectEnv(__dirname);
 
 const app = express();
-const DEFAULT_COMFYUI_BASE_URL = process.env.COMFYUI_BASE_URL || 'https://u920820-82c4-2ba7d3b1.westc.seetacloud.com:8443';
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const FRONTEND_DIST_DIR = path.join(__dirname, 'frontend-dist');
-const FRONTEND_INDEX_PATH = path.join(FRONTEND_DIST_DIR, 'index.html');
-// LEGACY_INDEX_PATH removed
-// HAS_BUILT_FRONTEND removed
-const CONFIG_DIR = path.join(__dirname, 'config');
-const PYTHON_DIR = path.join(__dirname, 'python');
-const DATA_DIR = path.join(__dirname, 'data');
-const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
-app.use(express.static(FRONTEND_DIST_DIR));
-app.use(express.static(PUBLIC_DIR)); // 提供静态产物和旧版兜底页面
+// 初始化统一任务存储
+const taskStore = new TaskStore(paths.TASK_STORE_DB_PATH);
+
+app.use(express.static(paths.FRONTEND_DIST_DIR));
+app.use(express.static(paths.PUBLIC_DIR));
 app.use(express.json());
 
 app.get("/", (_req, res) => {
-    res.sendFile(FRONTEND_INDEX_PATH);
+    res.sendFile(paths.FRONTEND_INDEX_PATH);
 });
 
-const upload = multer({ dest: UPLOADS_DIR });
+const upload = multer({ dest: paths.UPLOADS_DIR });
 
-const WORKFLOW_PATH = path.join(CONFIG_DIR, 'workflow_api.json');
-const PIPELINE_DIR = path.join(PYTHON_DIR, 'pipeline');
-const XAI_TOP10_DIR = path.join(PYTHON_DIR, 'xai');
-const XAI_TOP10_SCRIPT = path.join(XAI_TOP10_DIR, 'run_xai_top10.py');
-const XAI_TOP10_TRANSLATE_SCRIPT = path.join(XAI_TOP10_DIR, 'translate_result_summaries.py');
-const XAI_TOP10_RESULT = path.join(XAI_TOP10_DIR, 'result.json');
-const XAI_TOP10_PARTIAL = path.join(XAI_TOP10_DIR, 'result.partial.json');
-const XAI_TOP10_LOG = path.join(XAI_TOP10_DIR, 'run_log.txt');
-const XAI_TOP10_ERROR_LOG = path.join(XAI_TOP10_DIR, 'run_error.log');
-const XAI_TOP10_ACCOUNTS = path.join(XAI_TOP10_DIR, 'xai_accounts.json');
-const XAI_TOP10_FIXED_ACCOUNTS = [
-    'BitcoinMagazine',
-    'AltcoinDaily',
-    'TrendingBitcoin',
-    'Vivek4real_',
-    'BinanceUS',
-    'ABTC',
-    'coinspace_',
-    'WatcherGuru',
-    'CoinDesk',
-    'BitcoinNews21M',
-    'DocumentingBTC',
-    'BitcoinArchive',
-    'cz_binance',
-    'TomLeeTracker',
-    'BMNRBullz',
-    'web3bannie',
-    'fiatarchive',
-    'SimplyBitcoin',
-    'WOLF_Bitcoin_',
-    'KevinWSHPod',
-    'elonmusk'
-];
-const VERTICAL_QUEUE_ROOT = path.join(UPLOADS_DIR, 'xai_vertical_queue');
-const VERTICAL_PUBLIC_DIR = path.join(__dirname, 'public', 'xai_vertical_queue');
-const RUNTIME_ROOT = path.join(UPLOADS_DIR, 'runtime_jobs');
-const RUNTIME_RETENTION_MS = 48 * 60 * 60 * 1000;
-const PUBLISH_CENTER_DIR = path.join(PYTHON_DIR, 'publish');
-const PUBLISH_CONFIG_PATH = path.join(PUBLISH_CENTER_DIR, 'platform_config.json');
-const PUBLISH_JOBS_PATH = path.join(PUBLISH_CENTER_DIR, 'publish_jobs.json');
-const PUBLISH_DESCRIPTION_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'generate_publish_description.py');
-const WECHAT_RPA_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_rpa.py');
-const WECHAT_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles', 'wechatChannels');
-const WECHAT_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_tasks');
-const EDITABLE_JSON_FILES = new Set(['workflow_api.json', 'audio.json', 'result.json', 'director.json']);
 const publishDescriptionCache = new Map();
-const WECHAT_ACCOUNT_FIELDS = ['displayName', 'finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'];
-
-function resolveEditableJsonPath(fileName) {
-    if (!EDITABLE_JSON_FILES.has(fileName)) {
-        return null;
-    }
-    if (fileName === 'workflow_api.json') {
-        return WORKFLOW_PATH;
-    }
-    return path.join(PIPELINE_DIR, fileName);
-}
-
-function buildFallbackTitleFromSubtitles(subtitlesPath) {
-    try {
-        if (!fs.existsSync(subtitlesPath)) return "这条消息可能正在改变支付格局";
-        const subtitles = JSON.parse(fs.readFileSync(subtitlesPath, "utf-8"));
-        const joined = (Array.isArray(subtitles) ? subtitles : [])
-            .map((item) => String(item?.zh || item?.text || "").trim())
-            .filter(Boolean)
-            .join("");
-        if (!joined) return "这条消息可能正在改变支付格局";
-        return joined.slice(0, 18) + (joined.length > 18 ? "..." : "");
-    } catch (_err) {
-        return "这条消息可能正在改变支付格局";
-    }
-}
-
-function createRuntimeJobDir(prefix) {
-    const dirPath = path.join(RUNTIME_ROOT, `${prefix}_${makeJobId()}`);
-    ensureDir(dirPath);
-    cleanupRuntimeJobDirs({ currentDir: dirPath });
-    return dirPath;
-}
-
-function writeMediaMetadata(videoPath, payload) {
-    writeJsonFile(`${videoPath}.meta.json`, payload || {});
-}
-
-function readMediaMetadata(videoPath) {
-    return readJsonIfExists(`${videoPath}.meta.json`, null);
-}
-
-function listProtectedRuntimeDirs() {
-    const protectedDirs = new Set();
-    for (const videoPath of [
-        path.join(__dirname, 'public', 'output_final.mp4'),
-        path.join(__dirname, 'public', 'standalone_output_vertical.mp4')
-    ]) {
-        const meta = readMediaMetadata(videoPath);
-        const taskDir = String(meta?.taskDir || '').trim();
-        if (taskDir) {
-            protectedDirs.add(path.resolve(taskDir));
-        }
-    }
-    return protectedDirs;
-}
-
-function cleanupRuntimeJobDirs(options = {}) {
-    if (!fs.existsSync(RUNTIME_ROOT)) return;
-    const now = Date.now();
-    const maxAgeMs = Number.isFinite(Number(options.maxAgeMs)) ? Number(options.maxAgeMs) : RUNTIME_RETENTION_MS;
-    const protectedDirs = options.protectedDirs instanceof Set ? options.protectedDirs : listProtectedRuntimeDirs();
-    const currentDir = options.currentDir ? path.resolve(options.currentDir) : '';
-    if (currentDir) {
-        protectedDirs.add(currentDir);
-    }
-
-    const entries = fs.readdirSync(RUNTIME_ROOT, { withFileTypes: true }).filter((entry) => entry.isDirectory());
-    for (const entry of entries) {
-        const dirPath = path.join(RUNTIME_ROOT, entry.name);
-        const resolvedPath = path.resolve(dirPath);
-        if (protectedDirs.has(resolvedPath)) continue;
-
-        let stat = null;
-        try {
-            stat = fs.statSync(dirPath);
-        } catch (_err) {
-            continue;
-        }
-        if (!stat) continue;
-        const ageMs = now - stat.mtimeMs;
-        if (ageMs < maxAgeMs) continue;
-        removeDirIfExists(dirPath);
-    }
-}
-
-function deepClone(value) {
-    return JSON.parse(JSON.stringify(value));
-}
-
-function sanitizePublishDescriptionText(text, options = {}) {
-    const preserveTags = options?.preserveTags === true;
-    return String(text || '')
-        .replace(preserveTags ? /$^/g : /\s*#[^\s#]+/g, '')
-        .replace(/\n*\s*更多内容发布与分发由 AI 中台自动整理。\s*$/g, '')
-        .trim();
-}
 
 function buildFallbackPublishDescription(sourceText, title = '') {
     const normalizedTitle = String(title || '').replace(/\s+/g, ' ').trim();
     const normalizedSource = String(sourceText || '').replace(/\s+/g, ' ').trim();
     if (normalizedTitle) {
-        return sanitizePublishDescriptionText(`${normalizedTitle}，更多内容请看视频。`);
+        return utils.sanitizePublishDescriptionText(`${normalizedTitle}，更多内容请看视频。`);
     }
     if (normalizedSource) {
         const compact = normalizedSource.slice(0, 72).trim();
-        return sanitizePublishDescriptionText(`热点内容整理如下：${compact}`);
+        return utils.sanitizePublishDescriptionText(`热点内容整理如下：${compact}`);
     }
     return '';
 }
 
-function generatePublishDescription(sourceText, options = {}) {
+function compactPublishDescriptionSourceText(sourceText, maxChars = 220) {
     const normalized = String(sourceText || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    if (normalized.length <= maxChars) return normalized;
+    const sentences = normalized
+        .split(/(?<=[。！？!?；;])/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+    if (sentences.length === 0) {
+        return normalized.slice(0, maxChars).trim();
+    }
+    let result = '';
+    for (const sentence of sentences) {
+        if ((result + sentence).length > maxChars) break;
+        result += sentence;
+    }
+    return (result || normalized.slice(0, maxChars)).trim();
+}
+
+async function generatePublishDescription(sourceText, options = {}) {
+    const normalized = compactPublishDescriptionSourceText(sourceText);
     const normalizedTitle = String(options?.title || '').replace(/\s+/g, ' ').trim();
     if (!normalized && !normalizedTitle) {
         return '';
     }
 
     const includeTags = options?.includeTags === true;
+    const allowFallback = options?.allowFallback !== false;
+    const timeoutMs = Number(options?.timeoutMs) > 0 ? Number(options.timeoutMs) : 180000;
     const cacheKey = crypto.createHash('md5').update(`${includeTags ? 'with-tags' : 'plain'}:${normalizedTitle}:${normalized}`).digest('hex');
     if (publishDescriptionCache.has(cacheKey)) {
         return publishDescriptionCache.get(cacheKey);
@@ -260,7 +138,7 @@ function generatePublishDescription(sourceText, options = {}) {
 
     let result = '';
     try {
-        if (normalized && fs.existsSync(PUBLISH_DESCRIPTION_SCRIPT)) {
+        if (normalized && fs.existsSync(paths.PUBLISH_DESCRIPTION_SCRIPT)) {
             const args = ['--source-text', normalized];
             if (normalizedTitle) {
                 args.push('--title', normalizedTitle);
@@ -268,13 +146,11 @@ function generatePublishDescription(sourceText, options = {}) {
             if (includeTags) {
                 args.push('--include-tags');
             }
-            const proc = runPythonScriptSync(PUBLISH_DESCRIPTION_SCRIPT, args, {
-                cwd: PUBLISH_CENTER_DIR,
-                timeout: 60000
+            const proc = await runPythonScript(paths.PUBLISH_DESCRIPTION_SCRIPT, args, {
+                cwd: paths.PUBLISH_CENTER_DIR,
+                timeout: timeoutMs
             });
-            if (proc.status === 0) {
-                result = sanitizePublishDescriptionText(proc.stdout || '', { preserveTags: includeTags });
-            }
+            result = utils.sanitizePublishDescriptionText(proc.stdout || '', { preserveTags: includeTags });
         }
     } catch (err) {
         if (String(err?.details || err?.message || '').includes('timed out')) {
@@ -284,7 +160,7 @@ function generatePublishDescription(sourceText, options = {}) {
         }
     }
 
-    if (!result) {
+    if (!result && allowFallback) {
         result = buildFallbackPublishDescription(normalized, normalizedTitle);
     }
 
@@ -362,13 +238,13 @@ const publishAssetsService = createPublishAssetsService({
     fs,
     path,
     crypto,
-    projectRoot: __dirname,
-    verticalPublicDir: VERTICAL_PUBLIC_DIR,
-    verticalQueueRoot: VERTICAL_QUEUE_ROOT,
+    projectRoot: paths.PROJECT_ROOT,
+    verticalPublicDir: paths.VERTICAL_PUBLIC_DIR,
+    verticalQueueRoot: paths.VERTICAL_QUEUE_ROOT,
     getVerticalJobById: (jobId) => verticalQueueService?.getJob(jobId) || null,
     readJsonIfExists,
-    readMediaMetadata,
-    sanitizePublishDescriptionText
+    readMediaMetadata: utils.readMediaMetadata,
+    sanitizePublishDescriptionText: utils.sanitizePublishDescriptionText
 });
 
 const {
@@ -379,12 +255,12 @@ const {
 } = publishAssetsService;
 
 const publishStore = createPublishStore({
-    publishConfigPath: PUBLISH_CONFIG_PATH,
-    publishJobsPath: PUBLISH_JOBS_PATH,
-    wechatAccountFields: WECHAT_ACCOUNT_FIELDS,
+    publishConfigPath: paths.PUBLISH_CONFIG_PATH,
+    publishJobsPath: paths.PUBLISH_JOBS_PATH,
+    wechatAccountFields: runtime.WECHAT_ACCOUNT_FIELDS,
     readJsonIfExists,
     writeJsonFile,
-    deepClone,
+    deepClone: utils.deepClone,
     makeJobId,
     buildPublishTask
 });
@@ -410,12 +286,12 @@ const wechatRpaService = createWechatRpaService({
     fs,
     path,
     spawn,
-    stopProcessTree,
+    runPythonScriptCancellable,
     slugifyText,
-    publishCenterDir: PUBLISH_CENTER_DIR,
-    wechatRpaScript: WECHAT_RPA_SCRIPT,
-    wechatRpaTaskDir: WECHAT_RPA_TASK_DIR,
-    wechatRpaProfileRoot: WECHAT_RPA_PROFILE_ROOT,
+    publishCenterDir: paths.PUBLISH_CENTER_DIR,
+    wechatRpaScript: paths.WECHAT_RPA_SCRIPT,
+    wechatRpaTaskDir: paths.WECHAT_RPA_TASK_DIR,
+    wechatRpaProfileRoot: paths.WECHAT_RPA_PROFILE_ROOT,
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
@@ -435,8 +311,8 @@ const {
         path,
         spawn,
         sendError,
-        baseDir: __dirname,
-        pipelineDir: PIPELINE_DIR,
+        baseDir: paths.PROJECT_ROOT,
+        pipelineDir: paths.PIPELINE_DIR,
         selfCheckService: createSelfCheckService({
             fs,
             spawnSync,
@@ -447,18 +323,18 @@ const {
                 { key: 'XAI_API_KEY', label: 'xAI API Key', level: 'warn', hint: '未配置时 xai 榜单链路不可用' }
             ],
             directoryChecks: [
-                { key: 'public', label: 'public 目录', path: PUBLIC_DIR },
-                { key: 'uploads', label: 'uploads 目录', path: UPLOADS_DIR },
-                { key: 'runtime', label: 'runtime_jobs 目录', path: RUNTIME_ROOT, level: 'warn' },
-                { key: 'publish', label: 'publish 目录', path: PUBLISH_CENTER_DIR }
+                { key: 'public', label: 'public 目录', path: paths.PUBLIC_DIR },
+                { key: 'uploads', label: 'uploads 目录', path: paths.UPLOADS_DIR },
+                { key: 'runtime', label: 'runtime_jobs 目录', path: paths.RUNTIME_ROOT, level: 'warn' },
+                { key: 'publish', label: 'publish 目录', path: paths.PUBLISH_CENTER_DIR }
             ],
             fileChecks: [
-                { key: 'workflow', label: '工作流配置', path: WORKFLOW_PATH },
-                { key: 'run_asr', label: 'ASR 脚本', path: path.join(PIPELINE_DIR, 'run_asr.py') },
-                { key: 'generate_title', label: '标题生成脚本', path: path.join(PIPELINE_DIR, 'generate_title.py') },
-                { key: 'publish_description', label: '发布描述脚本', path: PUBLISH_DESCRIPTION_SCRIPT },
-                { key: 'wechat_rpa', label: '微信发布脚本', path: WECHAT_RPA_SCRIPT },
-                { key: 'xai_runner', label: 'xAI 榜单脚本', path: XAI_TOP10_SCRIPT }
+                { key: 'workflow', label: '工作流配置', path: paths.WORKFLOW_PATH },
+                { key: 'run_asr', label: 'ASR 脚本', path: path.join(paths.PIPELINE_DIR, 'run_asr.py') },
+                { key: 'generate_title', label: '标题生成脚本', path: path.join(paths.PIPELINE_DIR, 'generate_title.py') },
+                { key: 'publish_description', label: '发布描述脚本', path: paths.PUBLISH_DESCRIPTION_SCRIPT },
+                { key: 'wechat_rpa', label: '微信发布脚本', path: paths.WECHAT_RPA_SCRIPT },
+                { key: 'xai_runner', label: 'xAI 榜单脚本', path: paths.XAI_TOP10_SCRIPT }
             ],
             commandChecks: [
                 { key: 'python', label: 'Python', command: 'python', args: ['--version'], hint: '请确认 python 已加入 PATH' },
@@ -473,9 +349,9 @@ const {
                 }
             ]
         }),
-        editableJsonFiles: EDITABLE_JSON_FILES,
-        resolveEditableJsonPath,
-        workflowPath: WORKFLOW_PATH,
+        editableJsonFiles: runtime.EDITABLE_JSON_FILES,
+        resolveEditableJsonPath: utils.resolveEditableJsonPath,
+        workflowPath: paths.WORKFLOW_PATH,
         readWorkflow,
         extractWorkflowConfig,
         applyWorkflowConfig,
@@ -489,11 +365,15 @@ const {
         return runPythonScript(scriptPath, args, options);
     }
 
+    function spawnScriptCancellable(scriptPath, args, options = {}) {
+        return runPythonScriptCancellable(scriptPath, args, options);
+    }
+
     async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json") {
         const subtitlesPath = path.join(pipelineDir, subtitlesFileName);
-        const scriptPath = path.join(PIPELINE_DIR, 'generate_title.py');
+        const scriptPath = path.join(paths.PIPELINE_DIR, 'generate_title.py');
         try {
-            const result = await runPythonScript(scriptPath, ['--subtitles', subtitlesPath], { cwd: PIPELINE_DIR });
+            const result = await runPythonScript(scriptPath, ['--subtitles', subtitlesPath], { cwd: paths.PIPELINE_DIR });
             const title = String(result.protocol?.result?.title || result.stdout || '').trim();
             if (title) {
                 return title;
@@ -510,6 +390,8 @@ const {
 
     // 创建自动审核触发函数
     async function triggerAutoReview(videoPath, assetId) {
+        const maxAttempts = 2;
+        const retryDelayMs = 3000;
         try {
             const { readReviewConfig } = require('./server/services/review/store');
             const { executeReviewScript } = require('./server/services/review/executor');
@@ -525,11 +407,30 @@ const {
                 return null;
             }
 
-            console.log(`[Auto Review] 开始审核视频: ${videoPath}`);
-            const result = await executeReviewScript(videoPath, metadataPath, config);
+            let result = null;
+            let lastError = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+                try {
+                    console.log(`[Auto Review] 开始审核视频: ${videoPath}（第 ${attempt}/${maxAttempts} 次）`);
+                    result = await executeReviewScript(videoPath, metadataPath, config);
+                    break;
+                } catch (err) {
+                    lastError = err;
+                    const summary = err?.details || err?.message || 'unknown error';
+                    if (attempt < maxAttempts) {
+                        console.warn(`[Auto Review] 第 ${attempt} 次审核失败，${Math.round(retryDelayMs / 1000)} 秒后重试: ${summary}`);
+                        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                        continue;
+                    }
+                }
+            }
+
+            if (!result) {
+                throw lastError || new Error('自动审核未返回结果');
+            }
 
             // 更新元数据
-            const metadata = readMediaMetadata(videoPath);
+            const metadata = utils.readMediaMetadata(videoPath);
             metadata.aiReview = {
                 reviewId: `auto_${Date.now()}`,
                 status: result.status,
@@ -544,7 +445,7 @@ const {
                 fixSuggestions: result.fix_suggestions,
                 manuallySkipped: false
             };
-            writeMediaMetadata(videoPath, metadata);
+            utils.writeMediaMetadata(videoPath, metadata);
 
             console.log(`[Auto Review] 审核完成，得分: ${result.overall_score}, 状态: ${result.status}`);
             return result;
@@ -555,9 +456,9 @@ const {
     }
 
     const pipelineHandlers = createPipelineHandlers({
-        baseDir: __dirname,
-        pipelineDir: PIPELINE_DIR,
-        defaultComfyBaseUrl: DEFAULT_COMFYUI_BASE_URL,
+        baseDir: paths.PROJECT_ROOT,
+        pipelineDir: paths.PIPELINE_DIR,
+        defaultComfyBaseUrl: runtime.DEFAULT_COMFYUI_BASE_URL,
         getProgressClient,
         sendProgressEvent,
         uploadToComfyUI,
@@ -565,11 +466,11 @@ const {
         waitForCompletion,
         applyWorkflowConfig,
         readWorkflow,
-        workflowPath: WORKFLOW_PATH,
-        createRuntimeJobDir,
+        workflowPath: paths.WORKFLOW_PATH,
+        createRuntimeJobDir: utils.createRuntimeJobDir,
         readJsonIfExists,
-        writeMediaMetadata,
-        buildFallbackTitleFromSubtitles,
+        writeMediaMetadata: utils.writeMediaMetadata,
+        buildFallbackTitleFromSubtitles: utils.buildFallbackTitleFromSubtitles,
         generateHotTitle,
         writeJsonFile,
         runPythonScript,
@@ -579,15 +480,15 @@ const {
     registerPipelineRoutes(app, upload, pipelineHandlers);
     const xaiService = createXaiService({
         sendError,
-        resultPath: XAI_TOP10_RESULT,
-        partialPath: XAI_TOP10_PARTIAL,
-        logPath: XAI_TOP10_LOG,
-        errorLogPath: XAI_TOP10_ERROR_LOG,
-        accountsPath: XAI_TOP10_ACCOUNTS,
-        scriptPath: XAI_TOP10_SCRIPT,
-        translateScriptPath: XAI_TOP10_TRANSLATE_SCRIPT,
-        scriptCwd: XAI_TOP10_DIR,
-        fixedAccounts: XAI_TOP10_FIXED_ACCOUNTS,
+        resultPath: paths.XAI_TOP10_RESULT,
+        partialPath: paths.XAI_TOP10_PARTIAL,
+        logPath: paths.XAI_TOP10_LOG,
+        errorLogPath: paths.XAI_TOP10_ERROR_LOG,
+        accountsPath: paths.XAI_TOP10_ACCOUNTS,
+        scriptPath: paths.XAI_TOP10_SCRIPT,
+        translateScriptPath: paths.XAI_TOP10_TRANSLATE_SCRIPT,
+        scriptCwd: paths.XAI_TOP10_DIR,
+        fixedAccounts: runtime.XAI_TOP10_FIXED_ACCOUNTS,
         readJsonIfExists,
         readTextIfExists,
         tailLines,
@@ -600,7 +501,7 @@ const {
     registerXaiRoutes(app, {
         getResult: (req, res) => {
             try {
-                if (!fs.existsSync(XAI_TOP10_RESULT)) {
+                if (!fs.existsSync(paths.XAI_TOP10_RESULT)) {
                     return sendError(res, { status: 404, code: 'XAI_RESULT_NOT_FOUND', stage: 'xai.result', error: '结果文件不存在，请先运行一次榜单任务' });
                 }
                 const result = xaiService.ensureTranslatedResult();
@@ -635,10 +536,11 @@ const {
         run: (req, res) => xaiService.run(req.body?.clientId, res)
     });
     verticalQueueService = createVerticalQueueService({
-        baseDir: __dirname,
-        pipelineDir: PIPELINE_DIR,
-        verticalQueueRoot: VERTICAL_QUEUE_ROOT,
-        verticalPublicDir: VERTICAL_PUBLIC_DIR,
+        baseDir: paths.PROJECT_ROOT,
+        pipelineDir: paths.PIPELINE_DIR,
+        verticalQueueRoot: paths.VERTICAL_QUEUE_ROOT,
+        verticalPublicDir: paths.VERTICAL_PUBLIC_DIR,
+        taskStore,
         ensureDir,
         makeJobId,
         slugifyText,
@@ -646,12 +548,14 @@ const {
         formatElapsedSeconds,
         stopProcessTree,
         removeDirIfExists,
-        buildFallbackTitleFromSubtitles,
+        buildFallbackTitleFromSubtitles: utils.buildFallbackTitleFromSubtitles,
         spawnScript,
+        spawnScriptCancellable,
         writeJsonFile,
         runPythonScript,
-        writeMediaMetadata,
-        readMediaMetadata,
+        summarizePythonError,
+        writeMediaMetadata: utils.writeMediaMetadata,
+        readMediaMetadata: utils.readMediaMetadata,
         triggerAutoReview
     });
 
@@ -660,7 +564,7 @@ const {
             try {
                 res.json({ success: true, status: verticalQueueService.getStatus() });
             } catch (err) {
-                sendError(res, { status: 500, code: 'VERTICAL_STATUS_FAILED', stage: 'vertical.queue', error: '读取竖屏队列状态失败', details: err.message });
+                sendError(res, err.status ? err : createError('VERTICAL_QUEUE_STATUS_READ_FAILED', err.message));
             }
         },
         enqueue: (req, res) => {
@@ -681,7 +585,7 @@ const {
                     .filter((item) => item.videoUrl);
 
                 if (validItems.length === 0) {
-                    return sendError(res, { status: 400, code: 'VERTICAL_VIDEO_URLS_EMPTY', stage: 'vertical.queue', error: '没有可入队的视频链接' });
+                    return sendError(res, createError('VERTICAL_QUEUE_VIDEO_URLS_EMPTY'));
                 }
 
                 const jobs = validItems.map((item) => verticalQueueService.enqueue(item));
@@ -693,7 +597,7 @@ const {
                     status: verticalQueueService.getStatus()
                 });
             } catch (err) {
-                sendError(res, { status: 500, code: 'VERTICAL_ENQUEUE_FAILED', stage: 'vertical.queue', error: '创建竖屏队列任务失败', details: err.message });
+                sendError(res, err.status ? err : createError('VERTICAL_QUEUE_ENQUEUE_FAILED', err.message));
             }
         },
         cancel: (req, res) => {
@@ -717,15 +621,15 @@ const {
 
     const standaloneHandler = createStandaloneHandler({
         sendError,
-        baseDir: __dirname,
-        pipelineDir: PIPELINE_DIR,
+        baseDir: paths.PROJECT_ROOT,
+        pipelineDir: paths.PIPELINE_DIR,
         upload,
         getProgressClient,
         sendProgressEvent,
-        createRuntimeJobDir,
+        createRuntimeJobDir: utils.createRuntimeJobDir,
         generateHotTitle,
         writeJsonFile,
-        writeMediaMetadata,
+        writeMediaMetadata: utils.writeMediaMetadata,
         readJsonIfExists,
         runPythonScript
     });
@@ -762,7 +666,7 @@ const {
         checkWechatLogin,
         triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
         readReviewConfig,
-        readMediaMetadata
+        readMediaMetadata: utils.readMediaMetadata
     });
 
     registerPublishRoutes(app, publishHandlers);
@@ -770,8 +674,8 @@ const {
     // 注册审核路由
     const reviewHandlers = createReviewHandlers({
         sendError,
-        readMediaMetadata,
-        writeMediaMetadata,
+        readMediaMetadata: utils.readMediaMetadata,
+        writeMediaMetadata: utils.writeMediaMetadata,
         verticalQueueService
     });
     registerReviewRoutes(app, reviewHandlers);
@@ -818,23 +722,70 @@ const {
         publishAssetsService,
         loginStatusService,
         feishuService,
-        writeMediaMetadata
+        writeMediaMetadata: utils.writeMediaMetadata
+    });
+
+    // 初始化恢复服务
+    const recoveryService = createRecoveryService({
+        taskStore,
+        verticalQueueService,
+        publishStore
+    });
+
+    // 恢复 API 端点
+    app.get('/api/system/recovery/status', (_req, res) => {
+        try {
+            const status = recoveryService.getRecoveryStatus();
+            res.json({ success: true, ...status });
+        } catch (err) {
+            sendError(res, { status: 500, code: 'RECOVERY_STATUS_FAILED', stage: 'recovery', error: '获取恢复状态失败', details: err.message });
+        }
+    });
+
+    app.post('/api/system/recovery/retry/:taskId', (req, res) => {
+        try {
+            const result = recoveryService.manualRetry(req.params.taskId);
+            res.json({ success: true, ...result });
+        } catch (err) {
+            sendError(res, { status: 400, code: 'RECOVERY_RETRY_FAILED', stage: 'recovery', error: err.message, details: err.message });
+        }
+    });
+
+    app.post('/api/system/recovery/cancel/:taskId', (req, res) => {
+        try {
+            const result = recoveryService.cancelInterrupted(req.params.taskId);
+            res.json({ success: true, ...result });
+        } catch (err) {
+            sendError(res, { status: 400, code: 'RECOVERY_CANCEL_FAILED', stage: 'recovery', error: err.message, details: err.message });
+        }
     });
 
     const PORT = Number(process.env.PORT || 3001);
     const HOST = process.env.HOST || "0.0.0.0";
 
-    ensureDir(VERTICAL_QUEUE_ROOT);
-    ensureDir(VERTICAL_PUBLIC_DIR);
-    ensureDir(RUNTIME_ROOT);
-    ensureDir(PUBLISH_CENTER_DIR);
-    ensureDir(WECHAT_RPA_PROFILE_ROOT);
-    ensureDir(WECHAT_RPA_TASK_DIR);
-    cleanupRuntimeJobDirs();
-    if (!fs.existsSync(PUBLISH_JOBS_PATH)) {
+    ensureDir(paths.VERTICAL_QUEUE_ROOT);
+    ensureDir(paths.VERTICAL_PUBLIC_DIR);
+    ensureDir(paths.RUNTIME_ROOT);
+    ensureDir(paths.PUBLISH_CENTER_DIR);
+    ensureDir(paths.WECHAT_RPA_PROFILE_ROOT);
+    ensureDir(paths.WECHAT_RPA_TASK_DIR);
+    utils.cleanupRuntimeJobDirs({ projectRoot: paths.PROJECT_ROOT });
+    if (!fs.existsSync(paths.PUBLISH_JOBS_PATH)) {
         writePublishJobs({ jobs: [] });
     }
 
     app.listen(PORT, HOST, () => {
         console.log(`🚀 AI面板服务端启动成功: http://${HOST}:${PORT}`);
+
+        // 启动后执行恢复
+        recoveryService.recoverOnStartup().then(results => {
+            if (results.length > 0) {
+                console.log(`[Recovery] 恢复了 ${results.length} 个中断的任务`);
+                for (const result of results) {
+                    console.log(`[Recovery] 任务 ${result.taskId} (${result.type}): ${result.action}`);
+                }
+            }
+        }).catch(err => {
+            console.error('[Recovery] 启动恢复失败:', err);
+        });
     });
