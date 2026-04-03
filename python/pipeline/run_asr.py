@@ -386,34 +386,51 @@ def refine_and_translate(raw_segments, source_language=""):
     client = create_llm_client()
     payload = json.dumps(raw_segments, ensure_ascii=False)
     prompt = f"""
-你是一名顶级字幕校对师和双语译者。下面是一段短视频口播经过 Whisper 打轴后的初稿，
-时间轴基本可信，但文本里可能有同音错字、术语错误、断句不顺、标点缺失。
+你是一名顶级加密货币与金融科技领域字幕校对师和专业双语译者。下面是一段短视频口播经过 Whisper 打轴后的初稿，
+时间轴基本可信，但文本中可能存在同音错字、专有名词错误、断句不当、标点缺失、口语冗余等问题。
 
 源语言提示：{source_language or "unknown"}
 
 你的任务：
-1. 保留数组条数不变。
-2. 保留每一条的 start 和 end 原值，不要改时间。
-3. 最终必须统一输出中英双语字幕：
-   - zh：简体中文字幕
-   - en：自然英文字幕
-4. 如果原始语言是中文，zh 要尽量贴近原句，只纠正错字、术语和明显断句问题。
-5. 如果原始语言是英文，zh 要翻译成中文，en 保留润色后的英文。
-6. 如果原始语言既不是中文也不是英文，例如日文、韩文、阿拉伯文、俄文等：
-   - zh 必须翻译成中文
-   - en 必须翻译成英文
-   - 严禁把原始语言直接放进 zh 或 en 字段
-7. 中文输出必须覆盖原始 ASR 中的完整语义，宁可保留原句，也绝不允许漏词、吞词、省略助词、缩短短语。
-8. 生成自然、简洁、适合字幕卡展示的英文翻译。
-9. 不要扩写，不要总结，不要改变原意，不要加入旁白说明。
-10. 如果某条太短，只做必要纠错即可。
-11. 严格输出 JSON 数组，不要输出 markdown。
-12. 对品牌名、机构名、专有名词要优先纠正，尤其注意：
-    - “万事打卡” 应为 “万事达卡”
-    - “维萨/威萨” 应为 “Visa”
-    - “彭国社” 应为 “彭博社”
-    - “稳定必/稳定比” 应为 “稳定币”
-    - “加密权” 结合语境通常应为 “加密圈”
+1. 严格保留数组条数不变，绝对不得合并、拆分、删除或新增条目。
+2. 严格保留每一条的 start 和 end 原值，绝对不要改时间轴。
+3. 最终必须输出标准 JSON 数组，每条字幕包含：
+   - time: 保持原有时间数组语义不变
+   - zh: 简体中文字幕
+   - en: 自然流畅的英文字幕
+4. zh 与 en 必须逐条一一对应，断句边界尽量一致，不得跨条错位。
+5. 输出必须是纯 JSON 数组，不要包含 markdown、代码块或任何额外说明。
+
+中文处理原则（zh）：
+1. 中文必须流畅、自然、适合短视频字幕展示。
+2. 优先保证语义完整，不得漏词、吞词、随意省略助词。
+3. 允许轻微口语化润色，让表达更顺、更有节奏感。
+4. 可以有轻微网感或轻微幽默感，但仅限措辞层面，严禁改变原意、添加新信息、加入评论腔或过度玩梗。
+5. 如果原句本身严肃，就保持专业，不要强行幽默。
+6. 加密/金融科技专有名词必须准确：
+   - “万事打卡”“万事达卡” -> 万事达卡
+   - “维萨/威萨” -> Visa
+   - “彭国社/彭博社” -> 彭博社
+   - “稳定必/稳定比/稳定币” -> 稳定币
+   - “加密权/加密圈” -> 加密圈（根据语境判断）
+   - “比特比” -> 比特币
+   - “以太防” -> 以太坊
+   - “SEC” 保持英文
+   - “Clarity Act”“Genius Act” 等法案名保持原英文，必要时可补充极简中文说明
+
+英文处理原则（en）：
+1. 提供自然、简洁、专业、适合国际观众的英文字幕。
+2. 修正语法，去掉无意义口头禅和冗余，但保留原意和语气。
+3. 专有名词必须准确，例如 Bitcoin、Ethereum、Mastercard、Visa、SEC、stablecoin。
+4. 不要写得像书面论文，要像真实视频字幕。
+
+其他要求：
+1. 不要扩写，不要总结，不要添加解释或旁白。
+2. 字幕要适合短视频展示：简洁、有力、节奏清楚。
+3. 如果某条很短，只做必要纠错和润色。
+4. 如果原始语言是中文，zh 以校对润色为主，en 负责准确翻译。
+5. 如果原始语言是英文，en 以校对润色为主，zh 负责自然中文翻译。
+6. 如果原始语言既不是中文也不是英文，zh 和 en 都必须分别翻译，严禁把原文直接塞进 zh 或 en。
 
 输入 JSON：
 {payload}
@@ -518,21 +535,27 @@ def main():
     parser = argparse.ArgumentParser(description="ASR and Translation script.")
     parser.add_argument("--input", default="aiman.mp4", help="Input video file.")
     parser.add_argument("--allow-no-audio", action="store_true", help="Allow silent videos and generate empty subtitle files instead of failing.")
+    parser.add_argument("--audio-json", default="audio.json", help="Output audio timeline JSON file.")
+    parser.add_argument("--subtitles-json", default="subtitles.json", help="Output subtitles JSON file.")
+    parser.add_argument("--speaker-scene-json", default="speaker_scene.json", help="Output speaker/scene JSON file.")
     args = parser.parse_args()
     input_video = args.input
+    audio_json_path = args.audio_json
+    subtitles_json_path = args.subtitles_json
+    speaker_scene_json_path = args.speaker_scene_json
 
     emit_stage("audio_probe", f"正在检测视频音轨: {input_video}")
     if not video_has_audio_stream(input_video):
         if args.allow_no_audio:
             print("0. 检测到输入视频无音轨，已切换为空字幕降级模式。")
-            with open("audio.json", "w", encoding="utf-8") as f:
+            with open(audio_json_path, "w", encoding="utf-8") as f:
                 json.dump([], f, ensure_ascii=False, indent=2)
-            with open("subtitles.json", "w", encoding="utf-8") as f:
+            with open(subtitles_json_path, "w", encoding="utf-8") as f:
                 json.dump([], f, ensure_ascii=False, indent=2)
             emit_result(
                 "输入视频无音轨，已生成空字幕文件",
-                audio_json="audio.json",
-                subtitles_json="subtitles.json",
+                audio_json=audio_json_path,
+                subtitles_json=subtitles_json_path,
                 segment_count=0,
                 no_audio_stream=True,
             )
@@ -590,18 +613,18 @@ def main():
                 print(f"   ⚠️ 中英字幕补翻失败，保留当前可用文本: {translation_err}")
 
     director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["zh"]} for seg in final_subtitles]
-    with open("audio.json", "w", encoding="utf-8") as f:
+    with open(audio_json_path, "w", encoding="utf-8") as f:
         json.dump(director_data, f, ensure_ascii=False, indent=2)
 
-    with open("subtitles.json", "w", encoding="utf-8") as f:
+    with open(subtitles_json_path, "w", encoding="utf-8") as f:
         json.dump(final_subtitles, f, ensure_ascii=False, indent=2)
 
     visual_context = load_optional_visual_context()
     speaker_scene = analyze_speaker_scene(final_subtitles, visual_context)
-    with open("speaker_scene.json", "w", encoding="utf-8") as f:
+    with open(speaker_scene_json_path, "w", encoding="utf-8") as f:
         json.dump(speaker_scene, f, ensure_ascii=False, indent=2)
 
-    print("   ✅ audio.json、subtitles.json 与 speaker_scene.json 已生成！")
+    print(f"   ✅ {audio_json_path}、{subtitles_json_path} 与 {speaker_scene_json_path} 已生成！")
     if os.path.exists(audio_file):
         os.remove(audio_file)
 
@@ -610,9 +633,9 @@ def main():
     print(f"\n3. 大功告成！总耗时: {elapsed} 秒。")
     emit_result(
         "ASR 与字幕生成完成",
-        audio_json="audio.json",
-        subtitles_json="subtitles.json",
-        speaker_scene_json="speaker_scene.json",
+        audio_json=audio_json_path,
+        subtitles_json=subtitles_json_path,
+        speaker_scene_json=speaker_scene_json_path,
         segment_count=len(final_subtitles),
         elapsed_seconds=elapsed,
     )
