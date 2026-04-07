@@ -32,8 +32,8 @@ async function waitForCompletion(promptId, baseUrl) {
         clearInterval(interval);
 
         const outputs = history.outputs;
-        if (outputs && outputs["151"]) {
-          const mediaList = outputs["151"].videos || outputs["151"].gifs;
+        if (outputs && outputs['151']) {
+          const mediaList = outputs['151'].videos || outputs['151'].gifs;
           if (mediaList && mediaList.length > 0) {
             const videoInfo = mediaList[0];
             const videoUrl = `${baseUrl}/view?filename=${encodeURIComponent(videoInfo.filename)}&type=${videoInfo.type}&subfolder=${videoInfo.subfolder}`;
@@ -41,7 +41,7 @@ async function waitForCompletion(promptId, baseUrl) {
             return;
           }
         }
-        reject(new Error("任务完成，但未找到视频输出"));
+        reject(new Error('任务完成，但未找到视频输出'));
       } catch (_err) {
         // 忽略网络波动
       }
@@ -71,7 +71,7 @@ function listenComfyUIProgress({ clientId, baseUrl, onProgress, onStatus }) {
 
     return ws;
   } catch (err) {
-    console.error("WS 连接失败:", err);
+    console.error('WS 连接失败:', err);
     return null;
   }
 }

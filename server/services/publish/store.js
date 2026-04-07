@@ -37,6 +37,32 @@ function createPublishStore(deps) {
 
   // ========== 任务管理函数（待拆分到 publishStore.jobs.js） ==========
 
+  function getAutoArchiveDelayMinutes(config = null) {
+    // 优先使用配置中的设置
+    if (config?.global?.autoArchiveDelayMinutes !== undefined) {
+      return Math.max(0, parseInt(config.global.autoArchiveDelayMinutes, 10));
+    }
+    // 回退到环境变量
+    const envValue = process.env.AUTO_ARCHIVE_DELAY_MINUTES;
+    const minutes = parseInt(envValue, 10);
+    return isNaN(minutes) || minutes < 0 ? 30 : minutes;
+  }
+
+  function isAutoArchiveEnabled(config = null) {
+    // 优先使用配置中的设置
+    if (config?.global?.autoArchiveEnabled !== undefined) {
+      return Boolean(config.global.autoArchiveEnabled);
+    }
+    // 回退到环境变量
+    return process.env.AUTO_ARCHIVE_PUBLISHED !== 'false';
+  }
+
+  function calculateArchiveDueAt(delayMinutes = null, config = null) {
+    const delay = delayMinutes !== null ? delayMinutes : getAutoArchiveDelayMinutes(config);
+    const dueTime = new Date(Date.now() + delay * 60 * 1000);
+    return dueTime.toISOString();
+  }
+
   function sanitizePublishDescriptionText(text, options = {}) {
     const preserveTags = options?.preserveTags === true;
     return String(text || '')
@@ -103,11 +129,16 @@ function createPublishStore(deps) {
 
   function writePublishJobs(payload) {
     try {
-      const stmt = db.prepare('INSERT OR REPLACE INTO publish_jobs_v1 (id, data, updatedAt) VALUES (?, ?, ?)');
+      const stmt = db.prepare('INSERT OR REPLACE INTO publish_jobs_v1 (id, data, updatedAt, archiveDueAt) VALUES (?, ?, ?, ?)');
       const replaceAll = db.transaction((jobs) => {
         db.prepare('DELETE FROM publish_jobs_v1').run();
         for (const job of jobs) {
-          stmt.run(job.id, JSON.stringify(job), job.updatedAt || new Date().toISOString());
+          stmt.run(
+            job.id,
+            JSON.stringify(job),
+            job.updatedAt || new Date().toISOString(),
+            job.archiveDueAt || null
+          );
         }
       });
       replaceAll(payload.jobs || []);
@@ -181,7 +212,19 @@ function createPublishStore(deps) {
       const nextTask = { ...currentTask, ...patch, updatedAt: new Date().toISOString() };
       tasks[taskIndex] = nextTask;
       job.platformTasks = tasks;
+      const previousStatus = job.status;
       job.status = getJobTerminalStatus(job);
+
+      // 如果任务状态变为 published 且启用了自动归档，设置归档到期时间
+      if (job.status === 'published' && previousStatus !== 'published') {
+        const config = configService.readPublishConfig();
+        if (isAutoArchiveEnabled(config)) {
+          if (!job.archiveDueAt) {
+            job.archiveDueAt = calculateArchiveDueAt(null, config);
+          }
+        }
+      }
+
       return job;
     });
   }
@@ -189,6 +232,10 @@ function createPublishStore(deps) {
   function archivePublishJob(jobId, archived = true) {
     return updatePublishJob(jobId, (job) => {
       job.archived = Boolean(archived);
+      // 取消归档时清空 archiveDueAt，避免下一轮调度重新归档
+      if (!archived) {
+        job.archiveDueAt = null;
+      }
       return job;
     });
   }
@@ -206,7 +253,12 @@ function createPublishStore(deps) {
         } catch (_err) {}
       }
     }
-    return archivedCount;
+    // 返回更新后的任务列表和归档数量
+    const updatedPayload = readPublishJobs();
+    return {
+      jobs: updatedPayload.jobs || [],
+      archivedCount
+    };
   }
 
   function reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig, selection = {}) {
@@ -275,6 +327,18 @@ function createPublishStore(deps) {
     });
   }
 
+  function getDueArchiveJobs(timestamp) {
+    const payload = readPublishJobs();
+    const now = timestamp || Date.now();
+    return (payload.jobs || []).filter((job) => {
+      if (job.archived) return false;
+      if (!job.archiveDueAt) return false;
+      if (job.status !== 'published') return false;
+      const dueTime = new Date(job.archiveDueAt).getTime();
+      return dueTime <= now;
+    });
+  }
+
   // 导出统一接口
   return {
     // 配置服务
@@ -290,6 +354,7 @@ function createPublishStore(deps) {
     reconcilePublishJob,
     reconcileAndPersistPublishJobs,
     getDueScheduledJobs,
+    getDueArchiveJobs,
     sanitizePublishJobPayload,
     getJobTerminalStatus
   };

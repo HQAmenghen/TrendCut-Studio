@@ -3,7 +3,11 @@ const path = require('path');
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs', 'server.log');
 
-// 确保日志目录存在
+const logBuffer = [];
+let flushTimer = null;
+const FLUSH_INTERVAL_MS = 500;
+const MAX_BUFFER_SIZE = 50;
+
 function ensureLogDir() {
   const logDir = path.dirname(LOG_FILE);
   if (!fs.existsSync(logDir)) {
@@ -11,16 +15,63 @@ function ensureLogDir() {
   }
 }
 
-// 写入日志到文件
+function flushLogBuffer() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (logBuffer.length === 0) return;
+
+  const content = logBuffer.join('');
+  logBuffer.length = 0;
+
+  ensureLogDir();
+  fs.appendFile(LOG_FILE, content, 'utf8', (err) => {
+    if (err) {
+      // 静默失败
+    }
+  });
+}
+
 function writeLog(message) {
-  try {
-    ensureLogDir();
-    const timestamp = new Date().toISOString();
-    fs.appendFileSync(LOG_FILE, `[${timestamp}] ${message}\n`, 'utf8');
-  } catch (err) {
-    // 静默失败
+  const timestamp = new Date().toISOString();
+  logBuffer.push(`[${timestamp}] ${message}\n`);
+
+  if (logBuffer.length >= MAX_BUFFER_SIZE) {
+    flushLogBuffer();
+  } else if (!flushTimer) {
+    flushTimer = setTimeout(flushLogBuffer, FLUSH_INTERVAL_MS);
   }
 }
+
+process.on('exit', () => {
+  if (logBuffer.length > 0) {
+    try {
+      ensureLogDir();
+      fs.appendFileSync(LOG_FILE, logBuffer.join(''), 'utf8');
+    } catch (_err) {}
+  }
+});
+
+process.on('SIGINT', () => {
+  if (logBuffer.length > 0) {
+    try {
+      ensureLogDir();
+      fs.appendFileSync(LOG_FILE, logBuffer.join(''), 'utf8');
+    } catch (_err) {}
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  if (logBuffer.length > 0) {
+    try {
+      ensureLogDir();
+      fs.appendFileSync(LOG_FILE, logBuffer.join(''), 'utf8');
+    } catch (_err) {}
+  }
+  process.exit(0);
+});
 
 // 重写 console.log
 const originalLog = console.log;

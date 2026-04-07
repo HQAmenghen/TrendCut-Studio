@@ -291,6 +291,45 @@ class FeishuNotificationService {
   }
 
   /**
+   * 仅发送最新二维码到飞书
+   */
+  async sendLatestQrCode(accountInfo, details = {}) {
+    const accountLabel = accountInfo.displayName || accountInfo.helperAccount || accountInfo.finderUserName || accountInfo.id;
+    const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+
+    if (details.qrCodePath && this.mode === 'app' && details.receiveId) {
+      try {
+        console.log('[Feishu] 准备发送最新二维码图片...', {
+          accountId: accountInfo.id,
+          qrCodePath: details.qrCodePath
+        });
+        const uploadResult = await this.uploadImage(details.qrCodePath);
+        if (uploadResult.success) {
+          await this.sendImage(
+            details.receiveIdType || 'chat_id',
+            details.receiveId,
+            uploadResult.imageKey
+          );
+          console.log('[Feishu] 最新二维码图片发送成功');
+          return { success: true, mode: 'image' };
+        }
+        return { success: false, error: uploadResult.error || '二维码上传失败' };
+      } catch (err) {
+        console.error('[Feishu] 发送最新二维码图片失败:', err.message);
+        return { success: false, error: err.message };
+      }
+    }
+
+    const text =
+      `🔔 最新登录二维码已刷新\n` +
+      `账号: ${accountLabel}\n` +
+      `时间: ${timestamp}\n` +
+      (details.loginUrl ? `登录地址: ${details.loginUrl}` : '');
+
+    return this.sendText(text);
+  }
+
+  /**
    * 发送登录状态告警（支持二维码图片）
    */
   async sendLoginAlert(accountInfo, status, details = {}) {
@@ -437,20 +476,37 @@ class FeishuNotificationService {
 
     // 添加操作按钮
     if (status === 'logged_out' || status === 'need_login') {
-      card.elements.push({
-        tag: 'action',
-        actions: [
-          {
-            tag: 'button',
-            text: {
-              tag: 'plain_text',
-              content: '前往登录'
-            },
-            type: 'primary',
-            url: details.loginUrl || 'http://localhost:3001'
-          }
-        ]
+      const actions = [];
+
+      if (details.refreshQrUrl) {
+        actions.push({
+          tag: 'button',
+          text: {
+            tag: 'plain_text',
+            content: '获取最新二维码'
+          },
+          type: 'primary',
+          url: details.refreshQrUrl
+        });
+      }
+
+      actions.push({
+        tag: 'button',
+        text: {
+          tag: 'plain_text',
+          content: '前往登录'
+        },
+        type: details.refreshQrUrl ? 'default' : 'primary',
+        url: details.loginUrl
       });
+
+      const validActions = actions.filter(action => action && action.url);
+      if (validActions.length > 0) {
+        card.elements.push({
+          tag: 'action',
+          actions: validActions
+        });
+      }
     }
 
     console.log('[Feishu] 准备发送卡片消息...');

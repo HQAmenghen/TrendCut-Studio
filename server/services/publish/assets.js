@@ -182,17 +182,35 @@ function createPublishAssetsService(deps) {
       if (!fs.existsSync(fullPath)) return;
       const stat = fs.statSync(fullPath);
       const savedMetadata = readMediaMetadata(fullPath) || {};
+      const mergedSubtitles = Array.isArray(savedMetadata.subtitles) && savedMetadata.subtitles.length
+        ? savedMetadata.subtitles
+        : (Array.isArray(metadata.subtitles) ? metadata.subtitles : []);
+      const computedMetadata = buildPublishMetadata({
+        title: savedMetadata.title || metadata.title || savedMetadata.suggestedTitle || metadata.suggestedTitle || '',
+        subtitles: mergedSubtitles,
+        summary: savedMetadata.sourceSummary || metadata.sourceSummary || '',
+        sourceType,
+        sourceUrl: savedMetadata.sourceUrl || metadata.sourceUrl || '',
+        author: savedMetadata.author || metadata.author || ''
+      });
+      const shouldPreferSubtitleSummary = computedMetadata.descriptionSource === 'subtitles';
       const mergedMetadata = {
         ...metadata,
         ...savedMetadata,
+        subtitles: mergedSubtitles,
         aiReview: savedMetadata.aiReview || metadata.aiReview || null,
-        sourceSummary: savedMetadata.sourceSummary || metadata.sourceSummary || '',
-        suggestedTitle: savedMetadata.suggestedTitle || metadata.suggestedTitle || '',
-        suggestedShortTitle: savedMetadata.suggestedShortTitle || metadata.suggestedShortTitle || '',
-        suggestedDescription: savedMetadata.suggestedDescription || metadata.suggestedDescription || '',
+        sourceSummary: shouldPreferSubtitleSummary
+          ? computedMetadata.sourceSummary
+          : (savedMetadata.sourceSummary || metadata.sourceSummary || computedMetadata.sourceSummary || ''),
+        descriptionSource: shouldPreferSubtitleSummary
+          ? computedMetadata.descriptionSource
+          : (savedMetadata.descriptionSource || metadata.descriptionSource || computedMetadata.descriptionSource || 'none'),
+        suggestedTitle: savedMetadata.suggestedTitle || metadata.suggestedTitle || computedMetadata.suggestedTitle || '',
+        suggestedShortTitle: savedMetadata.suggestedShortTitle || metadata.suggestedShortTitle || computedMetadata.suggestedShortTitle || '',
+        suggestedDescription: savedMetadata.suggestedDescription || metadata.suggestedDescription || computedMetadata.suggestedDescription || '',
         suggestedTags: Array.isArray(savedMetadata.suggestedTags) && savedMetadata.suggestedTags.length
           ? savedMetadata.suggestedTags
-          : (metadata.suggestedTags || [])
+          : (metadata.suggestedTags || computedMetadata.suggestedTags || [])
       };
       const typeLabel = getPublishAssetTypeLabel(sourceType);
       const titleText = truncateDisplayText(mergedMetadata?.suggestedTitle || mergedMetadata?.suggestedShortTitle || label, 34);

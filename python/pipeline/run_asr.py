@@ -89,6 +89,122 @@ def apply_domain_corrections(text: str) -> str:
     return normalized
 
 
+def time_overlap_ratio(start_a, end_a, start_b, end_b):
+    left = max(float(start_a), float(start_b))
+    right = min(float(end_a), float(end_b))
+    overlap = max(0.0, right - left)
+    if overlap <= 0:
+        return 0.0
+    duration_a = max(0.01, float(end_a) - float(start_a))
+    duration_b = max(0.01, float(end_b) - float(start_b))
+    return overlap / min(duration_a, duration_b)
+
+
+def contains_sentence_break(text: str) -> bool:
+    return any(char in str(text or "") for char in "。！？!?；;，,、")
+
+
+def detect_token_language(token: str) -> str:
+    sample = str(token or "").strip()
+    if not sample:
+        return "other"
+    if has_cjk(sample) or has_japanese(sample):
+        return "zh"
+    if re.search(r"[A-Za-z]", sample):
+        return "en"
+    return "other"
+
+
+def flush_word_chunk(chunks, words, start_time, end_time):
+    if not words:
+        return
+    text = apply_domain_corrections("".join(words).strip())
+    if not text:
+        return
+    chunks.append({
+        "start": round(float(start_time), 2),
+        "end": round(float(end_time), 2),
+        "text": text
+    })
+
+
+def split_segment_words(segment):
+    words = list(getattr(segment, "words", None) or [])
+    if not words:
+        text = apply_domain_corrections(str(getattr(segment, "text", "")).strip())
+        return [{
+            "start": round(float(getattr(segment, "start", 0.0)), 2),
+            "end": round(float(getattr(segment, "end", 0.0)), 2),
+            "text": text
+        }] if text else []
+
+    chunks = []
+    current_words = []
+    chunk_start = None
+    chunk_end = None
+    current_lang = "other"
+
+    for index, word in enumerate(words):
+        token = str(getattr(word, "word", "") or "")
+        if not token.strip():
+            continue
+
+        token_start = float(getattr(word, "start", getattr(segment, "start", 0.0)) or 0.0)
+        token_end = float(getattr(word, "end", token_start) or token_start)
+        next_word = words[index + 1] if index + 1 < len(words) else None
+        next_start = float(getattr(next_word, "start", token_end) or token_end) if next_word else None
+        token_lang = detect_token_language(token)
+
+        if chunk_start is None:
+            chunk_start = token_start
+            current_lang = token_lang
+
+        lang_switched = (
+            current_words
+            and token_lang in {"zh", "en"}
+            and current_lang in {"zh", "en"}
+            and token_lang != current_lang
+        )
+        if lang_switched:
+            flush_word_chunk(chunks, current_words, chunk_start, chunk_end or token_start)
+            current_words = []
+            chunk_start = token_start
+            chunk_end = None
+            current_lang = token_lang
+
+        current_words.append(token)
+        chunk_end = token_end
+        if token_lang in {"zh", "en"}:
+            current_lang = token_lang
+
+        joined_text = "".join(current_words).strip()
+        duration = max(0.0, chunk_end - chunk_start)
+        visible_len = len(visible_text(joined_text))
+        sentence_break = contains_sentence_break(token)
+        long_enough = duration >= 2.8
+        too_long = duration >= 4.2 or visible_len >= 26
+        enough_words = len(current_words) >= 10
+        next_gap = (next_start - token_end) if next_start is not None else 0.0
+        natural_pause = next_gap >= 0.42
+
+        should_flush = False
+        if sentence_break and duration >= 1.0:
+          should_flush = True
+        elif too_long:
+          should_flush = True
+        elif long_enough and (enough_words or natural_pause):
+          should_flush = True
+
+        if should_flush:
+            flush_word_chunk(chunks, current_words, chunk_start, chunk_end)
+            current_words = []
+            chunk_start = None
+            chunk_end = None
+
+    flush_word_chunk(chunks, current_words, chunk_start, chunk_end)
+    return chunks
+
+
 def backfill_chinese_translations(raw_segments, normalized_subtitles):
     targets = []
     for index, subtitle in enumerate(normalized_subtitles):
@@ -486,25 +602,71 @@ def refine_and_translate(raw_segments, source_language=""):
     return normalized
 
 
+def transcribe_raw_segments(model, audio_file, language=None, stage_label="auto"):
+    language_kwargs = {"language": language} if language else {}
+    print(f"   -> Whisper 转写模式: {stage_label}")
+    segments, info = model.transcribe(
+        audio_file,
+        beam_size=5,
+        word_timestamps=True,
+        vad_filter=True,
+        **language_kwargs
+    )
+
+    detected_language = str(getattr(info, "language", "") or "").strip().lower()
+    raw_segments = []
+    for segment in segments:
+        sub_segments = split_segment_words(segment)
+        for item in sub_segments:
+            raw_segments.append(item)
+            print(f"   [ASR {stage_label}]: {item['text']}")
+    return raw_segments, detected_language
+
+
+def merge_rescue_segments(primary_segments, rescue_segments):
+    merged = list(primary_segments or [])
+    for rescue in rescue_segments or []:
+        rescue_text = str(rescue.get("text", "")).strip()
+        if not rescue_text or not is_english_like(rescue_text):
+            continue
+
+        overlapped = False
+        for current in merged:
+            ratio = time_overlap_ratio(
+                current.get("start", 0.0),
+                current.get("end", 0.0),
+                rescue.get("start", 0.0),
+                rescue.get("end", 0.0)
+            )
+            if ratio >= 0.45:
+                overlapped = True
+                break
+        if not overlapped:
+            merged.append(rescue)
+
+    merged.sort(key=lambda item: (float(item.get("start", 0.0)), float(item.get("end", 0.0))))
+    return merged
+
+
 def build_raw_segments(audio_file):
     emit_stage("asr", "正在进行 Whisper ASR 识别")
     print("1. 正在加载 Whisper 模型进行 ASR 识别...")
     model = WhisperModel("small", device="cpu", compute_type="int8")
 
     print("2. Whisper 模型加载完毕！开始识别语音...")
-    segments, info = model.transcribe(audio_file, beam_size=5, word_timestamps=True, vad_filter=True)
-    detected_language = str(getattr(info, "language", "") or "").strip().lower()
+    raw_segments, detected_language = transcribe_raw_segments(model, audio_file, language=None, stage_label="auto")
 
-    raw_segments = []
-    for segment in segments:
-        segment_text = apply_domain_corrections(segment.text.strip())
-        if segment_text:
-            raw_segments.append({
-                "start": round(segment.start, 2),
-                "end": round(segment.end, 2),
-                "text": segment_text
-            })
-            print(f"   [ASR 初稿]: {segment_text}")
+    # 对“中文主语种但夹杂英文口播”的视频，补做一次英文转写，把主识别漏掉的英语时间段补回来。
+    if is_chinese_language(detected_language):
+        try:
+            english_segments, _ = transcribe_raw_segments(model, audio_file, language="en", stage_label="en-rescue")
+            before_count = len(raw_segments)
+            raw_segments = merge_rescue_segments(raw_segments, english_segments)
+            rescued_count = len(raw_segments) - before_count
+            if rescued_count > 0:
+                print(f"   ✅ 英文补救转写已补回 {rescued_count} 条英语片段")
+        except Exception as err:
+            print(f"   ⚠️ 英文补救转写失败，继续使用主识别结果: {err}")
     return raw_segments, detected_language
 
 

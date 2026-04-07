@@ -24,44 +24,8 @@
 
     <TopNavigation :items="navItems" :active-key="activeModule" @change="activeModule = $event" />
 
-    <PipelineWorkspace
-      v-if="activeModule === 'pipeline'"
-      :audio-mode="pipeline.audioMode.value"
-      :image-mode="pipeline.imageMode.value"
-      :presets="pipeline.presets.value"
-      :optimizing="pipeline.optimizing.value"
-      :generating="pipeline.generating.value"
-      :editing="pipeline.editing.value"
-      :converting="pipeline.converting.value"
-      :progress="pipeline.progress.value"
-      :status-text="pipeline.statusText.value"
-      :active-duration-label="pipeline.activeDurationLabel.value"
-      :last-duration-label="pipeline.lastDurationLabel.value"
-      :recent-logs="pipeline.recentLogs"
-      :error-logs="pipeline.errorLogs"
-      :error="pipeline.error.value"
-      :generated-video-url="pipeline.generatedVideoUrl.value"
-      :final-video-url="pipeline.finalVideoUrl.value"
-      :gen="pipeline.gen.value"
-      :gen-file-name="pipeline.genFileName.value"
-      :edit="pipeline.edit.value"
-      :edit-file-name="pipeline.editFileName.value"
-      @update:audio-mode="pipeline.audioMode.value = $event"
-      @update:image-mode="pipeline.imageMode.value = $event"
-      @update:gen-field="(key, value) => pipeline.gen.value[key] = value"
-      @update:edit-field="(key, value) => pipeline.edit.value[key] = value"
-      @gen-file="pipeline.handleGenFile"
-      @edit-file="pipeline.handleEditFile"
-      @optimize-text="pipeline.optimizeText"
-      @submit-generate="pipeline.submitGenerate"
-      @submit-edit="pipeline.submitEdit"
-      @to-publish="handleToPublish"
-      @to-vertical="handleToVertical"
-      @use-generated-video="pipeline.useGeneratedVideoAsAiman"
-    />
-
     <StandaloneWorkspace
-      v-else-if="activeModule === 'standalone'"
+      v-if="activeModule === 'standalone'"
       :loading="standalone.loading.value"
       :error="standalone.error.value"
       :error-state="standalone.errorState.value"
@@ -91,7 +55,7 @@
     <XaiDiscoveryWorkspace
       v-else-if="activeModule === 'xaiTop10'"
       :xai="xaiTop10"
-      @send-to-pipeline="handoffXaiToPipeline"
+      @send-to-pipeline="handleSendToMaterialDriven"
     />
 
     <SystemSettingsWorkspace
@@ -100,6 +64,51 @@
 
     <ReviewCenterWorkspace
       v-else-if="activeModule === 'reviewCenter'"
+    />
+
+    <AccountDashboardWorkspace
+      v-else-if="activeModule === 'accountDashboard'"
+    />
+
+    <MaterialDrivenWorkspace
+      v-else-if="activeModule === 'materialDriven'"
+      :job-id="materialDriven.jobId.value"
+      :current-step="materialDriven.currentStep.value"
+      :progress="materialDriven.progress.value"
+      :status-text="materialDriven.statusText.value"
+      :plan-summary="materialDriven.planSummary.value"
+      :narration-summary="materialDriven.narrationSummary.value"
+      :narration-full-text="materialDriven.narrationFullText.value"
+      :director-plan="materialDriven.directorPlan.value"
+      :final-video-url="materialDriven.finalVideoUrl.value"
+      :error="materialDriven.error.value"
+      :recent-logs="materialDriven.recentLogs.value"
+      :uploading="materialDriven.uploading.value"
+      :output-path="materialDriven.outputPath.value"
+      
+      :material-url="materialDriven.materialUrl.value"
+      :material-source-label="materialDriven.materialSourceLabel.value"
+      
+      :audio-mode="materialDriven.audioMode.value"
+      :image-mode="materialDriven.imageMode.value"
+      :presets="materialDriven.presets.value"
+      :gen="materialDriven.gen.value"
+      :with-subtitles="materialDriven.withSubtitles.value"
+      :active-duration-label="materialDriven.activeDurationLabel.value"
+      :last-duration-label="materialDriven.lastDurationLabel.value"
+      
+      @update:audio-mode="materialDriven.audioMode.value = $event"
+      @update:image-mode="materialDriven.imageMode.value = $event"
+      @update:gen-field="(key, value) => materialDriven.gen.value[key] = value"
+      @update:with-subtitles="materialDriven.withSubtitles.value = $event"
+      
+      @start-workflow="materialDriven.startWorkflow"
+      @continue-workflow="materialDriven.continueWorkflow"
+      @retry-step="materialDriven.retryStep"
+      @reset-workflow="materialDriven.resetWorkflow"
+      
+      @to-publish="handleToPublish"
+      @to-vertical="handleToVertical"
     />
 
     <PublishCenterWorkspace
@@ -114,16 +123,17 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import TopNavigation from './components/TopNavigation.vue';
 import PublishCenterWorkspace from './components/PublishCenterWorkspace.vue';
-import PipelineWorkspace from './components/PipelineWorkspace.vue';
 import StandaloneWorkspace from './components/StandaloneWorkspace.vue';
 import XaiDiscoveryWorkspace from './components/XaiDiscoveryWorkspace.vue';
 import SystemSettingsWorkspace from './components/SystemSettingsWorkspace.vue';
 import ReviewCenterWorkspace from './components/ReviewCenterWorkspace.vue';
-import { usePipeline } from './composables/usePipeline';
+import AccountDashboardWorkspace from './components/AccountDashboardWorkspace.vue';
+import MaterialDrivenWorkspace from './components/MaterialDrivenWorkspace.vue';
 import { usePublishCenter } from './composables/usePublishCenter';
 import { useVerticalQueue } from './composables/useVerticalQueue';
 import { useXaiTop10 } from './composables/useXaiTop10';
 import { useStandalone } from './composables/useStandalone';
+import { useMaterialDriven } from './composables/useMaterialDriven';
 
 function getInitialThemeMode() {
   try {
@@ -140,31 +150,32 @@ function getInitialThemeMode() {
 function getInitialActiveModule() {
   try {
     const savedModule = window.localStorage.getItem('comfy-panel-active-module');
-    if (['pipeline', 'standalone', 'xaiTop10', 'publishCenter', 'systemSettings', 'reviewCenter'].includes(savedModule)) {
+    if (['standalone', 'xaiTop10', 'publishCenter', 'systemSettings', 'reviewCenter', 'accountDashboard', 'materialDriven'].includes(savedModule)) {
       return savedModule;
     }
   } catch (_err) {
     // ignore storage read errors
   }
-  return 'publishCenter';
+  return 'materialDriven';
 }
 
 const navItems = [
-  { key: 'pipeline', kicker: 'Stage A-D', title: '🎬 AI 全链路混剪', desc: '内容指令、数字人渲染、导流混剪与成片交付。' },
+  { key: 'materialDriven', kicker: 'Material First', title: '🎬 AI 素材驱动混剪', desc: '从素材视频到数字人成片的完整自动化流程（OST智能剪辑）。' },
   { key: 'standalone', kicker: 'Vertical Edit', title: '📱 竖屏后期合成', desc: '单条竖屏精修与批量竖屏队列的统一编排入口。' },
   { key: 'xaiTop10', kicker: 'Discovery', title: '📈 热门视频榜单', desc: '抓取、排序、筛选热点视频，并直送后续生产链路。' },
   { key: 'reviewCenter', kicker: 'Quality', title: '🎯 AI 审核中心', desc: '视频质量审核、评分管理与修复建议。' },
   { key: 'publishCenter', kicker: 'Distribution', title: '🚀 一键发布', desc: '平台接入、素材选择、任务创建与发布执行统一管理。' },
+  { key: 'accountDashboard', kicker: 'Monitoring', title: '📊 账号看板', desc: '监控账号登录状态、任务统计和最近失败情况。' },
   { key: 'systemSettings', kicker: 'Ops', title: '⚙️ 系统设置', desc: '飞书通知、登录检测与系统级配置管理。' }
 ];
 
 const activeModule = ref(getInitialActiveModule());
 const themeMode = ref(getInitialThemeMode());
-const pipeline = usePipeline();
 const publishCenter = usePublishCenter();
 const verticalQueue = useVerticalQueue();
 const xaiTop10 = useXaiTop10();
 const standalone = useStandalone();
+const materialDriven = useMaterialDriven();
 
 const shellDescription = computed(() => '');
 
@@ -182,7 +193,7 @@ const handleToPublish = async () => {
     } else {
       await publishCenter.refresh();
     }
-    const targetAsset = publishCenter.assets?.value?.find((a) => a.url === pipeline.finalVideoUrl.value);
+    const targetAsset = publishCenter.assets?.value?.find((a) => a.url === materialDriven.finalVideoUrl.value);
     if (targetAsset && typeof publishCenter.selectAsset === "function") {
       publishCenter.selectAsset(targetAsset.id);
     }
@@ -193,9 +204,9 @@ const handleToPublish = async () => {
 
 const handleToVertical = async () => {
   activeModule.value = "standalone";
-  if (!pipeline.finalVideoUrl.value) return;
+  if (!materialDriven.finalVideoUrl.value) return;
   try {
-    const response = await fetch(pipeline.finalVideoUrl.value);
+    const response = await fetch(materialDriven.finalVideoUrl.value);
     const blob = await response.blob();
     const file = new File([blob], "output_final.mp4", { type: "video/mp4" });
     standalone.handleFile("video", file);
@@ -205,10 +216,10 @@ const handleToVertical = async () => {
   }
 };
 
-const handoffXaiToPipeline = (item) => {
-  const accepted = pipeline.applyXaiMaterial(item);
+const handleSendToMaterialDriven = (item) => {
+  const accepted = materialDriven.applyXaiMaterial(item);
   if (accepted) {
-    activeModule.value = 'pipeline';
+    activeModule.value = 'materialDriven';
   }
 };
 
@@ -235,12 +246,13 @@ const handleReviewToPublish = async (event) => {
 };
 
 onMounted(() => {
-  pipeline.loadPresets();
   publishCenter.refresh();
   verticalQueue.refresh();
   xaiTop10.refresh();
   xaiTop10.loadConfig();
   standalone.loadQueue();
+  materialDriven.loadPresets();
+  materialDriven.restoreActiveJob();
   window.addEventListener('review-center:to-publish', handleReviewToPublish);
 });
 

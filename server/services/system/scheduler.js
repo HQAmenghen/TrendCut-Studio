@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { readProjectEnv } = require('../../../scripts/utils/env');
 const { enqueueRegenerationFromReview } = require('../review/regenerate');
+const { runCleanup, getCleanupConfig } = require('../../core/cleanup');
 
 const SCHEDULER_TIME_ZONE = 'Asia/Shanghai';
 const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.log');
@@ -85,7 +86,7 @@ function formatJobBrief(job) {
     jobId: job?.id || '',
     title: job?.publishData?.title || job?.asset?.label || '',
     status: job?.status || '',
-    scheduledTime: job?.scheduledTime || null
+    scheduledAt: job?.scheduledAt || null
   };
 }
 
@@ -130,7 +131,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
       // 检查该排名是否在映射列表中被明确禁用了（比如填了空字符串）
       const targetAccountIds = config?.global?.autoPilotAccountIds || [];
       const assignedAccountId = String(targetAccountIds[i] || '').trim();
-      
+
       // 如果映射列表不为空，且当前排名对应的 ID 是空的，说明用户想跳过这个排名
       if (targetAccountIds.length > 0 && !assignedAccountId) {
         logInfo('[AutoPilot] 检测到当前排名映射为空，已跳过该排名的渲染与发布', {
@@ -391,10 +392,24 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             });
           }
 
-          const desc = generatePublishDescription(
-            asset.metadata?.sourceSummary || asset.metadata?.suggestedDescription || '',
-            { title: asset.compactLabel || asset.label, includeTags: false }
+          const sourceText = asset.metadata?.sourceSummary || asset.metadata?.suggestedDescription || '';
+          const desc = await generatePublishDescription(
+            sourceText,
+            {
+              title: asset.compactLabel || asset.label,
+              includeTags: false,
+              allowFallback: false,
+              timeoutMs: 180000
+            }
           );
+          if (!desc) {
+            logWarn('[AutoPilot] 模型未返回有效发布描述，跳过创建发布任务', {
+              queueJobId: vjobId,
+              rank: rank + 1,
+              title: asset.compactLabel || asset.label
+            });
+            continue;
+          }
 
           const publishData = {
             title: asset.compactLabel || asset.label,
@@ -412,7 +427,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           if (assignedAccountId && Array.isArray(pcfg?.accounts)) {
             account = pcfg.accounts.find((item) => item.id === assignedAccountId) || null;
           }
-          
+
           // 改进后的判定：
           // 1. 如果映射表里有这个 ID 且找到了账号，那是最好的。
           // 2. 如果映射表里这个位置是空的，或者 ID 不存在（且映射表本身不为空），直接跳过此项。
@@ -450,7 +465,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             archived: false,
             archivedAt: null,
             status: 'scheduled_wait',
-            scheduledTime: isoScheduledTime,
+            scheduledAt: isoScheduledTime,
             asset,
             publishData,
             selectedPlatforms: ['wechatChannels'],
@@ -461,23 +476,23 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             },
             platformTasks: account
               ? [{
-                  platform: 'wechatChannels',
-                  title: publishData.title,
-                  description: publishData.description,
-                  tags: publishData.tags,
-                  coverUrl: publishData.coverUrl,
-                  videoUrl: asset.url,
-                  status: 'scheduled_wait',
-                  accountId: account.id,
-                  accountLabel: account.displayName || account.finderUserName || account.helperAccount || '',
-                  runtime: {
-                    state: 'scheduled_wait',
-                    lastMessage: scheduledAlreadyDue
-                      ? `发布时间已过 (${targetTime})，渲染完成后将立即补发`
-                      : `等待定时发布 (${targetTime})`,
-                    updatedAt: new Date().toISOString()
-                  }
-                }]
+                platform: 'wechatChannels',
+                title: publishData.title,
+                description: publishData.description,
+                tags: publishData.tags,
+                coverUrl: publishData.coverUrl,
+                videoUrl: asset.url,
+                status: 'scheduled_wait',
+                accountId: account.id,
+                accountLabel: account.displayName || account.finderUserName || account.helperAccount || '',
+                runtime: {
+                  state: 'scheduled_wait',
+                  lastMessage: scheduledAlreadyDue
+                    ? `发布时间已过 (${targetTime})，渲染完成后将立即补发`
+                    : `等待定时发布 (${targetTime})`,
+                  updatedAt: new Date().toISOString()
+                }
+              }]
               : [],
             platformErrors: []
           };
@@ -534,18 +549,18 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     try {
       const payload = publishStore.readPublishJobs();
       for (const job of payload.jobs || []) {
-        if (!job?.scheduledTime || String(job.status || '') === 'scheduled_wait') {
+        if (!job?.scheduledAt || String(job.status || '') === 'scheduled_wait') {
           continue;
         }
         if (['published', 'failed', 'cancelled', 'ready_for_manual_publish'].includes(String(job.status || ''))) {
           continue;
         }
-        const warnKey = `${job.id}:${job.status}:${job.scheduledTime}`;
+        const warnKey = `${job.id}:${job.status}:${job.scheduledAt}`;
         if (warnedScheduledJobs.has(warnKey)) {
           continue;
         }
         warnedScheduledJobs.add(warnKey);
-        logWarn('[Scheduler -> 微信发布] 发现带有 scheduledTime 但状态不是 scheduled_wait 的任务，这类任务不会被定时发送', {
+        logWarn('[Scheduler -> 微信发布] 发现带有 scheduledAt 但状态不是 scheduled_wait 的任务，这类任务不会被定时发送', {
           ...formatJobBrief(job),
           platformErrors: job.platformErrors || [],
           wechatTaskStatus: (job.platformTasks || []).find((task) => task.platform === 'wechatChannels')?.status || ''
@@ -577,16 +592,115 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
         });
 
         if (wechatRpaService && typeof wechatRpaService.startWechatRpa === 'function') {
-          wechatRpaService.startWechatRpa(job.id, 'publish');
+          wechatRpaService.startWechatRpa(job.id, 'publish').catch((err) => {
+            logError('[Scheduler -> 微信发布] 启动失败', err, formatJobBrief(job));
+          });
           logInfo('[Scheduler -> 微信发布] 已触发微信自动发布', formatJobBrief(job));
         } else {
           logWarn('[Scheduler -> 微信发布] wechatRpaService.startWechatRpa 不可用，无法执行定时发布', formatJobBrief(job));
         }
       } catch (err) {
-        logError(`[Scheduler -> 微信发布] 触发任务失败`, err, formatJobBrief(job));
+        logError('[Scheduler -> 微信发布] 触发任务失败', err, formatJobBrief(job));
       }
     }
   });
+
+  // 自动归档已发布任务
+  cron.schedule('* * * * *', async () => {
+    if (!publishStore || typeof publishStore.getDueArchiveJobs !== 'function') {
+      return;
+    }
+
+    const config = publishStore?.readPublishConfig() || {};
+    const autoArchiveEnabled = config?.global?.autoArchiveEnabled !== undefined
+      ? Boolean(config.global.autoArchiveEnabled)
+      : process.env.AUTO_ARCHIVE_PUBLISHED !== 'false';
+
+    if (!autoArchiveEnabled) {
+      return;
+    }
+
+    let dueJobs = [];
+    try {
+      dueJobs = publishStore.getDueArchiveJobs(Date.now());
+      if (dueJobs.length > 0) {
+        logInfo('[Scheduler -> 自动归档] 查询到到期归档任务', {
+          count: dueJobs.length,
+          jobs: dueJobs.map((job) => ({
+            jobId: job?.id || '',
+            title: job?.publishData?.title || job?.asset?.label || '',
+            status: job?.status || '',
+            archiveDueAt: job?.archiveDueAt || null
+          }))
+        });
+      }
+    } catch (err) {
+      logError('[Scheduler -> 自动归档] 查询到期归档任务失败', err);
+      return;
+    }
+
+    for (const job of dueJobs) {
+      try {
+        publishStore.archivePublishJob(job.id, true);
+        logInfo('[Scheduler -> 自动归档] 已自动归档已发布任务', {
+          jobId: job.id,
+          title: job?.publishData?.title || job?.asset?.label || '',
+          archiveDueAt: job.archiveDueAt
+        });
+      } catch (err) {
+        logError('[Scheduler -> 自动归档] 归档任务失败', err, {
+          jobId: job.id,
+          title: job?.publishData?.title || job?.asset?.label || ''
+        });
+      }
+    }
+  });
+
+  // 自动清理旧运行产物
+  const cleanupConfig = getCleanupConfig();
+  if (cleanupConfig.enabled) {
+    const baseDir = path.join(__dirname, '../../..');
+
+    logInfo('[Scheduler] 启动运行产物自动清理', {
+      schedule: cleanupConfig.schedule,
+      dryRun: cleanupConfig.dryRun,
+      rules: Object.keys(cleanupConfig.rules).filter(k => cleanupConfig.rules[k].enabled)
+    });
+
+    cron.schedule(cleanupConfig.schedule, () => {
+      logInfo('[Scheduler -> 清理] 开始执行定时清理任务');
+
+      try {
+        const summary = runCleanup(baseDir, { dryRun: cleanupConfig.dryRun });
+
+        logInfo('[Scheduler -> 清理] 清理任务完成', {
+          filesRemoved: summary.totalFilesRemoved,
+          dirsRemoved: summary.totalDirsRemoved,
+          bytesFreed: summary.totalBytesFreed,
+          errors: summary.totalErrors,
+          dryRun: summary.dryRun
+        });
+
+        // 如果有错误，记录详情
+        if (summary.totalErrors > 0) {
+          summary.results.forEach(result => {
+            if (result.errors.length > 0) {
+              logWarn('[Scheduler -> 清理] 清理规则执行出错', {
+                rule: result.rule,
+                errors: result.errors
+              });
+            }
+          });
+        }
+      } catch (err) {
+        logError('[Scheduler -> 清理] 清理任务失败', err);
+      }
+    }, {
+      timezone: SCHEDULER_TIME_ZONE
+    });
+  } else {
+    logInfo('[Scheduler] 运行产物自动清理已禁用');
+  }
 
   // 登录状态定时检测
   if (loginStatusService) {
@@ -621,7 +735,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           await feishuService.sendText(
             `⚠️ 登录状态检测：${summary.need_login} 个账号需要重新登录\n` +
             `账号：${accountNames}\n` +
-            `请及时处理以确保自动发布功能正常运行`
+            '请及时处理以确保自动发布功能正常运行'
           );
         }
       } catch (err) {

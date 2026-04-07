@@ -91,7 +91,7 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_ASSETS_READ_FAILED', stage: 'publish.assets', error: '读取发布素材失败', details: err.message });
       }
     },
-    generateDescription: (req, res) => {
+    generateDescription: async (req, res) => {
       try {
         const assets = collectPublishAssets();
         const assetId = String(req.body?.assetId || '').trim();
@@ -111,9 +111,11 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 400, code: 'PUBLISH_SOURCE_SUMMARY_MISSING', stage: 'publish.description', error: '当前素材缺少可用于生成描述的内容摘要' });
         }
 
-        const description = generatePublishDescription(sourceText, {
+        const description = await generatePublishDescription(sourceText, {
           includeTags: tagStrategy === 'model',
-          title
+          title,
+          allowFallback: false,
+          timeoutMs: 180000
         });
         if (!description) {
           return sendError(res, { status: 500, code: 'PUBLISH_DESCRIPTION_GENERATE_FAILED', stage: 'publish.description', error: '自动描述生成失败，请稍后重试', hint: '可切换模型或检查 Gemini Key 与网络状态' });
@@ -187,13 +189,17 @@ function createPublishHandlers(deps) {
     },
     archiveCompleted: (_req, res) => {
       try {
-        const payload = archiveCompletedPublishJobs();
-        res.json({ success: true, jobs: payload.jobs || [] });
+        const result = archiveCompletedPublishJobs();
+        res.json({
+          success: true,
+          jobs: result.jobs || [],
+          archivedCount: result.archivedCount || 0
+        });
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_JOB_ARCHIVE_COMPLETED_FAILED', stage: 'publish.jobs', error: '归档已完成任务失败', details: err.message });
       }
     },
-    createJob: (req, res) => {
+    createJob: async (req, res) => {
       try {
         const config = readPublishConfig();
         const assets = collectPublishAssets();
@@ -255,15 +261,26 @@ function createPublishHandlers(deps) {
         const shortTitle = buildShortTitle(title, '热点速递');
         let finalDescription = description;
         if (!finalDescription) {
-          finalDescription = generatePublishDescription(
+          finalDescription = await generatePublishDescription(
             asset?.metadata?.sourceSummary
             || asset?.metadata?.suggestedDescription
             || '',
             {
               includeTags: tagStrategy === 'model',
-              title
+              title,
+              allowFallback: false,
+              timeoutMs: 180000
             }
           );
+        }
+        if (!finalDescription) {
+          return sendError(res, {
+            status: 500,
+            code: 'PUBLISH_DESCRIPTION_GENERATE_FAILED',
+            stage: 'publish.create_job',
+            error: '模型未返回有效描述，发布任务未创建',
+            hint: '请稍后重试，或检查当前 LLM 提供商与网络状态'
+          });
         }
         const publishData = { title, shortTitle, description: finalDescription, tags, coverUrl, tagStrategy };
         const platformTasks = [];
@@ -326,7 +343,7 @@ function createPublishHandlers(deps) {
           archived: false,
           archivedAt: null,
           status: scheduledTime ? 'scheduled_wait' : (platformErrors.length > 0 ? 'partial_ready' : 'ready'),
-          scheduledTime: scheduledTime ? new Date(scheduledTime).toISOString() : null,
+          scheduledAt: scheduledTime ? new Date(scheduledTime).toISOString() : null,
           asset,
           publishData,
           selectedPlatforms,
@@ -341,7 +358,7 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_CREATE_JOB_FAILED', stage: 'publish.create_job', error: '创建发布任务失败', details: err.message });
       }
     },
-    regenerateDescription: (req, res) => {
+    regenerateDescription: async (req, res) => {
       try {
         const jobId = String(req.params.jobId || '').trim();
         if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.regenerate_description', error: '缺少任务 ID' });
@@ -361,9 +378,11 @@ function createPublishHandlers(deps) {
         }
 
         const tagStrategy = job?.publishData?.tagStrategy === 'model' ? 'model' : 'system';
-        const nextDescription = generatePublishDescription(sourceText, {
+        const nextDescription = await generatePublishDescription(sourceText, {
           includeTags: tagStrategy === 'model',
-          title: job?.publishData?.title || job?.asset?.metadata?.suggestedTitle || job?.asset?.compactLabel || job?.asset?.label || ''
+          title: job?.publishData?.title || job?.asset?.metadata?.suggestedTitle || job?.asset?.compactLabel || job?.asset?.label || '',
+          allowFallback: false,
+          timeoutMs: 180000
         });
         if (!nextDescription) {
           return sendError(res, { status: 500, code: 'PUBLISH_DESCRIPTION_GENERATE_FAILED', stage: 'publish.regenerate_description', error: '自动描述生成失败，请稍后重试', hint: '可切换模型或检查 Gemini Key 与网络状态' });
@@ -376,9 +395,9 @@ function createPublishHandlers(deps) {
           };
           current.platformTasks = Array.isArray(current.platformTasks)
             ? current.platformTasks.map((task) => ({
-                ...task,
-                description: nextDescription
-              }))
+              ...task,
+              description: nextDescription
+            }))
             : [];
           return current;
         });
@@ -389,11 +408,11 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_REGENERATE_DESCRIPTION_FAILED', stage: 'publish.regenerate_description', error: '重新生成描述失败', details: err.message });
       }
     },
-    startAllWechat: (req, res) => {
+    startAllWechat: async (req, res) => {
       try {
-        const mode = String(req.body?.mode || "draft").trim();
-        if (!["draft", "publish"].includes(mode)) {
-          return sendError(res, { status: 400, code: "PUBLISH_MODE_INVALID", stage: "publish.wechat", error: "mode 仅支持 draft 或 publish" });
+        const mode = String(req.body?.mode || 'draft').trim();
+        if (!['draft', 'publish'].includes(mode)) {
+          return sendError(res, { status: 400, code: 'PUBLISH_MODE_INVALID', stage: 'publish.wechat', error: 'mode 仅支持 draft 或 publish' });
         }
         const payload = readPublishJobs();
         const jobs = payload.jobs || [];
@@ -402,14 +421,14 @@ function createPublishHandlers(deps) {
         const errors = [];
 
         for (const job of jobs) {
-          const task = (job.platformTasks || []).find((item) => item.platform === "wechatChannels");
+          const task = (job.platformTasks || []).find((item) => item.platform === 'wechatChannels');
           if (!task) continue;
-          const status = task.status || "draft_preparing";
-          if (["published", "publishing", "starting", "navigating", "login_ready", "need_login", "uploading", "uploaded", "editing", "edited", "ready_for_manual_publish"].includes(status)) {
+          const status = task.status || 'draft_preparing';
+          if (['published', 'publishing', 'starting', 'navigating', 'login_ready', 'need_login', 'uploading', 'uploaded', 'editing', 'edited', 'ready_for_manual_publish'].includes(status)) {
             continue;
           }
           try {
-            startWechatRpa(job.id, mode);
+            await startWechatRpa(job.id, mode);
             startedCount++;
           } catch (err) {
             failedCount++;
@@ -420,17 +439,17 @@ function createPublishHandlers(deps) {
         const newPayload = readPublishJobs();
         res.json({ success: true, startedCount, failedCount, errors, jobs: newPayload.jobs || [] });
       } catch (err) {
-        sendError(res, { status: 500, code: "PUBLISH_WECHAT_START_ALL_FAILED", stage: "publish.wechat", error: "一键启动所有任务失败", details: err.message });
+        sendError(res, { status: 500, code: 'PUBLISH_WECHAT_START_ALL_FAILED', stage: 'publish.wechat', error: '一键启动所有任务失败', details: err.message });
       }
     },
-    runWechat: (req, res) => {
+    runWechat: async (req, res) => {
       try {
         const jobId = String(req.params.jobId || '').trim();
         const mode = String(req.body?.mode || 'draft').trim();
         if (!['draft', 'publish'].includes(mode)) {
           return sendError(res, { status: 400, code: 'PUBLISH_MODE_INVALID', stage: 'publish.wechat', error: 'mode 仅支持 draft 或 publish' });
         }
-        startWechatRpa(jobId, mode);
+        await startWechatRpa(jobId, mode);
         const payload = readPublishJobs();
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
@@ -470,6 +489,46 @@ function createPublishHandlers(deps) {
         res.json(result);
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_TEST_LOGIN_FAILED', stage: 'publish.wechat', error: '测试视频号登录状态失败', details: err.message });
+      }
+    },
+    getAccountDashboard: async (req, res) => {
+      try {
+        if (!deps.accountDashboardService) {
+          return sendError(res, { status: 500, code: 'ACCOUNT_DASHBOARD_NOT_AVAILABLE', stage: 'publish.accounts', error: '账号看板服务未初始化' });
+        }
+        const dashboard = await deps.accountDashboardService.getAccountDashboard();
+        res.json({ success: true, ...dashboard });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'ACCOUNT_DASHBOARD_FAILED', stage: 'publish.accounts', error: '获取账号看板失败', details: err.message });
+      }
+    },
+    getAccountJobs: (req, res) => {
+      try {
+        if (!deps.accountDashboardService) {
+          return sendError(res, { status: 500, code: 'ACCOUNT_DASHBOARD_NOT_AVAILABLE', stage: 'publish.accounts', error: '账号看板服务未初始化' });
+        }
+        const accountId = String(req.params.accountId || '').trim();
+        if (!accountId) return sendError(res, { status: 400, code: 'ACCOUNT_ID_MISSING', stage: 'publish.accounts', error: '缺少账号 ID' });
+        const status = String(req.query.status || '').trim() || undefined;
+        const limit = parseInt(req.query.limit || '50', 10);
+        const jobs = deps.accountDashboardService.getAccountJobs(accountId, { status, limit });
+        res.json({ success: true, jobs });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'ACCOUNT_JOBS_FAILED', stage: 'publish.accounts', error: '获取账号任务列表失败', details: err.message });
+      }
+    },
+    getAccountFailures: (req, res) => {
+      try {
+        if (!deps.accountDashboardService) {
+          return sendError(res, { status: 500, code: 'ACCOUNT_DASHBOARD_NOT_AVAILABLE', stage: 'publish.accounts', error: '账号看板服务未初始化' });
+        }
+        const accountId = String(req.params.accountId || '').trim();
+        if (!accountId) return sendError(res, { status: 400, code: 'ACCOUNT_ID_MISSING', stage: 'publish.accounts', error: '缺少账号 ID' });
+        const limit = parseInt(req.query.limit || '20', 10);
+        const jobs = deps.accountDashboardService.getAccountFailedJobs(accountId, limit);
+        res.json({ success: true, jobs });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'ACCOUNT_FAILURES_FAILED', stage: 'publish.accounts', error: '获取账号失败任务失败', details: err.message });
       }
     }
   };

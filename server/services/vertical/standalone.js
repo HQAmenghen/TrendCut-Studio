@@ -38,6 +38,12 @@ function createStandaloneHandler(deps) {
       const convertSrtScript = path.join(pipelineDir, 'convert_srt_to_json.py');
       const makeVerticalScript = path.join(pipelineDir, 'make_vertical_video.py');
       const renderOptions = req.body.renderOptions ? JSON.parse(req.body.renderOptions) : {};
+      const resolvedRenderOptions = {
+        ...renderOptions,
+        titleMinSize: renderOptions.titleMinSize ?? renderOptions.titleMinFontSize,
+        subtitleMinSize: renderOptions.subtitleMinSize ?? renderOptions.subtitleMinFontSize,
+        englishFontSize: renderOptions.englishFontSize ?? renderOptions.englishSubtitleFontSize
+      };
       if (!req.files.video) {
         return sendError(res, {
           status: 400,
@@ -93,26 +99,26 @@ function createStandaloneHandler(deps) {
       const outputPath = path.join(taskDir, outputName);
 
       await runPythonScript(makeVerticalScript, [
-          '--input', inputVideoPath,
-          '--content', contentJsonPath,
-          '--subtitles', subsJsonPath,
-          '--output', outputPath,
-          '--background', path.join(taskDir, 'background_generated.png'),
-          '--sub-dir', path.join(taskDir, 'subtitle_cards'),
-          '--title-font-size', String(renderOptions.titleFontSize || 104),
-          '--title-min-size', String(renderOptions.titleMinSize || 52),
-          '--title-max-lines', String(renderOptions.titleMaxLines || 2),
-          '--subtitle-font-size', String(renderOptions.subtitleFontSize || 50),
-          '--subtitle-min-size', String(renderOptions.subtitleMinSize || 28),
-          '--subtitle-max-lines', String(renderOptions.subtitleMaxLines || 2),
-          '--subtitle-offset-y', String(Number.isFinite(Number(renderOptions.subtitleOffsetY)) ? Number(renderOptions.subtitleOffsetY) : 20),
-          '--english-font-size', String(renderOptions.englishFontSize || 52),
-          '--english-min-size', String(renderOptions.englishMinSize || 30),
-          '--english-max-lines', String(renderOptions.englishMaxLines || 2)
-        ], {
-          cwd: taskDir,
-          onStderr: (chunk) => console.error(`[standalone_vertical stderr]: ${chunk}`)
-        });
+        '--input', inputVideoPath,
+        '--content', contentJsonPath,
+        '--subtitles', subsJsonPath,
+        '--output', outputPath,
+        '--background', path.join(taskDir, 'background_generated.png'),
+        '--sub-dir', path.join(taskDir, 'subtitle_cards'),
+        '--title-font-size', String(resolvedRenderOptions.titleFontSize || 104),
+        '--title-min-size', String(resolvedRenderOptions.titleMinSize || 52),
+        '--title-max-lines', String(resolvedRenderOptions.titleMaxLines || 2),
+        '--subtitle-font-size', String(resolvedRenderOptions.subtitleFontSize || 50),
+        '--subtitle-min-size', String(resolvedRenderOptions.subtitleMinSize || 28),
+        '--subtitle-max-lines', String(resolvedRenderOptions.subtitleMaxLines || 2),
+        '--subtitle-offset-y', String(Number.isFinite(Number(resolvedRenderOptions.subtitleOffsetY)) ? Number(resolvedRenderOptions.subtitleOffsetY) : 20),
+        '--english-font-size', String(resolvedRenderOptions.englishFontSize || 52),
+        '--english-min-size', String(resolvedRenderOptions.englishMinSize || 30),
+        '--english-max-lines', String(resolvedRenderOptions.englishMaxLines || 2)
+      ], {
+        cwd: taskDir,
+        onStderr: (chunk) => console.error(`[standalone_vertical stderr]: ${chunk}`)
+      });
 
       const finalUrlPath = path.join(baseDir, 'public', outputName);
       fs.copyFileSync(outputPath, finalUrlPath);

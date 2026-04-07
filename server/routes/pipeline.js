@@ -1,6 +1,7 @@
 function registerPipelineRoutes(app, upload, handlers) {
-  app.post('/api/generate', upload.fields([{ name: 'audio' }, { name: 'image' }]), handlers.handleGenerate);
-  app.post('/api/run-pipeline', upload.fields([{ name: 'aiman' }, { name: 'material' }]), handlers.handleRunPipeline);
+  app.post('/api/plan-pipeline', upload.fields([{ name: 'material' }]), handlers.handlePlanPipeline);
+  app.get('/api/plan-pipeline-result', handlers.handleGetPlanPipelineResult);
+  app.post('/api/run-pipeline', upload.fields([{ name: 'material' }]), handlers.handleRunPipeline);
 }
 
 module.exports = { registerPipelineRoutes };

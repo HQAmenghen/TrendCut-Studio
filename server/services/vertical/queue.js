@@ -1,6 +1,17 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { createError } = require('../../core/errorCodes');
+const {
+  createTaskInput,
+  writeTaskInput,
+  readTaskOutput,
+  resolveArtifactPaths
+} = require('../../core/taskProtocol');
+const {
+  createFailureSummaryFromPythonError,
+  createFailureSummaryFromError
+} = require('../../core/failureSummary');
 
 function createVerticalQueueService(deps) {
   const {
@@ -8,6 +19,7 @@ function createVerticalQueueService(deps) {
     pipelineDir,
     verticalQueueRoot,
     verticalPublicDir,
+    taskStore,
     ensureDir,
     makeJobId,
     slugifyText,
@@ -17,8 +29,10 @@ function createVerticalQueueService(deps) {
     removeDirIfExists,
     buildFallbackTitleFromSubtitles,
     spawnScript,
+    spawnScriptCancellable,
     writeJsonFile,
     runPythonScript,
+    summarizePythonError,
     writeMediaMetadata,
     readMediaMetadata,
     triggerAutoReview
@@ -33,7 +47,9 @@ function createVerticalQueueService(deps) {
   function appendPersistentLine(filePath, line) {
     try {
       ensureDir(path.dirname(filePath));
-      fs.appendFileSync(filePath, `${line}\n`, 'utf8');
+      fs.appendFile(filePath, `${line}\n`, 'utf8', (err) => {
+        // 静默失败
+      });
     } catch (_error) {}
   }
 
@@ -53,22 +69,6 @@ function createVerticalQueueService(deps) {
 
   function ensureAsciiSafeReplacer(_key, value) {
     return value;
-  }
-
-  function summarizePythonError(error) {
-    const stderrLines = sanitizeProcessLogLines(error?.stderr || '').slice(-20);
-    const stdoutLines = sanitizeProcessLogLines(error?.stdout || '').slice(-12);
-    return {
-      message: String(error?.message || '未知错误'),
-      code: String(error?.code || ''),
-      stage: String(error?.stage || ''),
-      details: String(error?.details || ''),
-      hint: String(error?.hint || ''),
-      exitCode: Number.isFinite(Number(error?.exitCode)) ? Number(error.exitCode) : null,
-      stderrTail: stderrLines,
-      stdoutTail: stdoutLines,
-      protocol: error?.protocol || null
-    };
   }
 
   function persistJobFailure(job, failureSummary, jobDir) {
@@ -108,6 +108,8 @@ function createVerticalQueueService(deps) {
     const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(message).trim()}`;
     job.logs = [...(Array.isArray(job.logs) ? job.logs : []), line].slice(-120);
     job.updatedAt = new Date().toISOString();
+
+    // 写入文件日志
     appendPersistentLine(
       verticalQueueLogPath,
       formatPersistentLogLine(job, message)
@@ -117,6 +119,30 @@ function createVerticalQueueService(deps) {
       jobLogPath,
       formatPersistentLogLine(job, message)
     );
+
+    // 同步到 taskStore
+    if (taskStore) {
+      try {
+        taskStore.appendLog(job.id, message);
+      } catch (err) {
+        // 静默失败
+      }
+    }
+  }
+
+  function syncJobToTaskStore(job) {
+    if (!taskStore) return;
+    try {
+      taskStore.updateTask(job.id, {
+        status: job.status,
+        progress: job.progress,
+        message: job.message || '',
+        startedAt: job.startedAt || null,
+        completedAt: job.completedAt || null
+      });
+    } catch (err) {
+      // 静默失败
+    }
   }
 
   function getStatus() {
@@ -162,7 +188,7 @@ function createVerticalQueueService(deps) {
       }
     }
 
-    throw new Error(`远程视频下载失败，已重试 ${maxAttempts} 次: ${lastError?.message || 'unknown error'}`);
+    throw createError('VERTICAL_QUEUE_VIDEO_DOWNLOAD_FAILED', `已重试 ${maxAttempts} 次: ${lastError?.message || 'unknown error'}`);
   }
 
   async function generateHotTitle(jobDir, subtitlesFileName = 'subtitles.json') {
@@ -197,6 +223,11 @@ function createVerticalQueueService(deps) {
     const updateJob = (patch, logMessage = '') => {
       Object.assign(job, patch, { updatedAt: new Date().toISOString() });
       if (logMessage) appendLog(job, logMessage);
+      syncJobToTaskStore(job); // 同步到 taskStore
+    };
+    const updateStage = (stage, patch, logMessage = '') => {
+      job.currentStage = stage;
+      updateJob(patch, logMessage);
     };
     const stageHeartbeat = (stageLabel, progress, baseMessage) => (elapsedSeconds) => {
       const elapsedLabel = formatElapsedSeconds(elapsedSeconds);
@@ -221,24 +252,71 @@ function createVerticalQueueService(deps) {
       return;
     }
 
-    updateJob({ status: 'downloading', progress: 10, message: '正在下载远程视频...' }, '开始下载远程视频');
-    await downloadRemoteFile(job.videoUrl, sourceVideoPath);
+    // 如果是重新生成任务且提供了原始视频路径，直接复制本地文件
+    if (renderOptions.originalVideoPath && fs.existsSync(renderOptions.originalVideoPath)) {
+      updateStage('prepare', { status: 'preparing', progress: 10, message: '正在准备源视频...' }, '使用本地视频文件（重新生成任务）');
+      try {
+        fs.copyFileSync(renderOptions.originalVideoPath, sourceVideoPath);
+        appendLog(job, `已复制本地视频: ${renderOptions.originalVideoPath}`);
+      } catch (err) {
+        throw createError('VERTICAL_QUEUE_VIDEO_COPY_FAILED', `复制本地视频失败: ${err.message}`);
+      }
+    } else {
+      // 正常下载流程
+      updateStage('download', { status: 'downloading', progress: 10, message: '正在下载远程视频...' }, '开始下载远程视频');
+      await downloadRemoteFile(job.videoUrl, sourceVideoPath);
+    }
+
     if (job.cancelRequested) {
-      updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, '下载完成后任务被取消');
+      updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, '准备完成后任务被取消');
       return;
     }
 
-    updateJob({ status: 'transcribing', progress: 35, message: '正在执行 ASR 自动打轴...' }, '进入 ASR 自动打轴阶段');
-    await spawnScript(runAsrPath, ['--input', sourceVideoPath, '--allow-no-audio'], {
+    updateStage('transcribe', { status: 'transcribing', progress: 35, message: '正在执行 ASR 自动打轴...' }, '进入 ASR 自动打轴阶段');
+
+    // 写入任务协议输入（可选，脚本可以选择使用或忽略）
+    try {
+      const asrTaskInput = createTaskInput(job.id, 'asr', {
+        inputFile: sourceVideoPath,
+        allowNoAudio: true
+      }, jobDir);
+      writeTaskInput(jobDir, asrTaskInput);
+    } catch (_err) {
+      // 任务协议写入失败不影响主流程
+    }
+
+    const asrHandle = spawnScriptCancellable(runAsrPath, ['--input', sourceVideoPath, '--allow-no-audio'], {
       cwd: jobDir,
       onSpawn: (proc) => { job.currentProc = proc; },
       onStdout: pipeProcessLogs('ASR'),
       onStderr: pipeProcessLogs('ASR', true),
       onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
     });
-    job.currentProc = null;
-    const subtitlesPayload = path.join(jobDir, 'subtitles.json');
-    const subtitlesData = fs.existsSync(subtitlesPayload) ? readJsonSafe(subtitlesPayload, []) : [];
+    job.currentCancelHandle = asrHandle.cancel;
+    try {
+      await asrHandle.promise;
+    } finally {
+      job.currentProc = null;
+      job.currentCancelHandle = null;
+    }
+
+    // 尝试读取任务协议输出（可选，回退到文件假设）
+    const asrOutput = readTaskOutput(jobDir);
+    let subtitlesData = [];
+    if (asrOutput && asrOutput.status === 'success' && asrOutput.artifacts?.subtitles) {
+      // 使用任务协议输出
+      const artifacts = resolveArtifactPaths(jobDir, asrOutput.artifacts);
+      const subtitlesFile = artifacts.subtitles;
+      if (fs.existsSync(subtitlesFile)) {
+        subtitlesData = readJsonSafe(subtitlesFile, []);
+        appendLog(job, '已从任务协议输出读取字幕文件');
+      }
+    } else {
+      // 回退到文件假设（向后兼容）
+      const subtitlesPayload = path.join(jobDir, 'subtitles.json');
+      subtitlesData = fs.existsSync(subtitlesPayload) ? readJsonSafe(subtitlesPayload, []) : [];
+    }
+
     if (Array.isArray(subtitlesData) && subtitlesData.length > 0) {
       appendLog(job, '发布描述来源已切换为字幕内容');
     } else if (descriptionSource === 'post_summary') {
@@ -262,8 +340,23 @@ function createVerticalQueueService(deps) {
     }
 
     writeJsonFile(contentPath, { title: finalTitle });
-    updateJob({ status: 'rendering', progress: 75, message: '正在渲染竖屏视频...' }, '进入竖屏渲染阶段');
-    await spawnScript(makeVerticalPath, [
+    updateStage('render', { status: 'rendering', progress: 75, message: '正在渲染竖屏视频...' }, '进入竖屏渲染阶段');
+
+    // 写入任务协议输入（可选）
+    try {
+      const renderTaskInput = createTaskInput(job.id, 'render_vertical', {
+        inputFile: sourceVideoPath,
+        contentFile: contentPath,
+        subtitlesFile: subtitlesPath,
+        outputFile: outputPath,
+        renderOptions
+      }, jobDir);
+      writeTaskInput(jobDir, renderTaskInput);
+    } catch (_err) {
+      // 任务协议写入失败不影响主流程
+    }
+
+    const renderHandle = spawnScriptCancellable(makeVerticalPath, [
       '--input', sourceVideoPath,
       '--content', contentPath,
       '--subtitles', subtitlesPath,
@@ -287,13 +380,34 @@ function createVerticalQueueService(deps) {
       onStderr: pipeProcessLogs('竖屏渲染', true),
       onHeartbeat: stageHeartbeat('竖屏渲染阶段', 75, '正在渲染竖屏视频...')
     });
-    job.currentProc = null;
+    job.currentCancelHandle = renderHandle.cancel;
+    try {
+      await renderHandle.promise;
+    } finally {
+      job.currentProc = null;
+      job.currentCancelHandle = null;
+    }
     if (job.cancelRequested) {
       updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, '渲染阶段后任务被取消');
       return;
     }
 
-    fs.copyFileSync(outputPath, publicOutputPath);
+    // 尝试读取任务协议输出（可选，回退到文件假设）
+    const renderOutput = readTaskOutput(jobDir);
+    let finalOutputPath = outputPath;
+    if (renderOutput && renderOutput.status === 'success' && renderOutput.artifacts?.video) {
+      // 使用任务协议输出
+      const artifacts = resolveArtifactPaths(jobDir, renderOutput.artifacts);
+      finalOutputPath = artifacts.video;
+      if (fs.existsSync(finalOutputPath)) {
+        appendLog(job, '已从任务协议输出读取视频文件');
+      } else {
+        // 回退到默认路径
+        finalOutputPath = outputPath;
+      }
+    }
+
+    fs.copyFileSync(finalOutputPath, publicOutputPath);
     const metadata = {
       ...(typeof readMediaMetadata === 'function' ? (readMediaMetadata(publicOutputPath) || {}) : {}),
       taskType: 'xai_queue',
@@ -373,6 +487,7 @@ function createVerticalQueueService(deps) {
             job.completedAt = job.updatedAt;
             job.durationSeconds = job.startedAt ? Math.max(0, Math.floor((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null;
             appendLog(job, '任务在执行过程中被取消');
+            syncJobToTaskStore(job);
             return;
           }
           job.status = 'failed';
@@ -383,15 +498,36 @@ function createVerticalQueueService(deps) {
           job.completedAt = job.updatedAt;
           job.durationSeconds = job.startedAt ? Math.max(0, Math.floor((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null;
           appendLog(job, `任务失败：${error.message}`);
-          const failureSummary = summarizePythonError(error);
+
+          // 使用统一的失败摘要结构
+          const failureSummary = error?.code
+            ? createFailureSummaryFromPythonError(error, 'vertical_queue', {
+              stage: job.currentStage || 'unknown',
+              context: {
+                jobId: job.id,
+                sourceType: job.sourceType,
+                videoUrl: job.videoUrl
+              }
+            })
+            : createFailureSummaryFromError(error, 'vertical_queue', job.currentStage || 'unknown', {
+              context: {
+                jobId: job.id,
+                sourceType: job.sourceType,
+                videoUrl: job.videoUrl
+              }
+            });
+
+          job.failureSummary = failureSummary;
           persistJobFailure(job, failureSummary, path.join(verticalQueueRoot, job.id));
           appendPersistentLine(
             verticalQueueLogPath,
             formatPersistentLogLine(job, '任务失败详情已持久化', failureSummary)
           );
+          syncJobToTaskStore(job);
         })
         .finally(() => {
           job.currentProc = null;
+          job.currentCancelHandle = null;
           verticalActiveCount = Math.max(0, verticalActiveCount - 1);
           processQueue();
         });
@@ -399,9 +535,40 @@ function createVerticalQueueService(deps) {
   }
 
   function enqueue(item) {
-    const id = makeJobId();
+    // 先在 taskStore 中创建任务，使用其生成的 ID
+    let taskId;
+    if (taskStore) {
+      const task = taskStore.createTask('vertical_queue', {
+        sourceType: item.sourceType || 'xai_top10',
+        author: item.author || '',
+        postId: item.postId || '',
+        postUrl: item.postUrl || '',
+        title: String(item.title || '').trim(),
+        summary: String(item.summary || '').trim(),
+        videoUrl: item.videoUrl,
+        videoLabel: slugifyText(item.author || item.postId || item.title || 'video'),
+        renderOptions: item.renderOptions || {},
+        // 保存原始参数用于恢复
+        originalItem: {
+          sourceType: item.sourceType,
+          author: item.author,
+          postId: item.postId,
+          postUrl: item.postUrl,
+          title: item.title,
+          summary: item.summary,
+          videoUrl: item.videoUrl,
+          renderOptions: item.renderOptions
+        }
+      });
+      taskId = task.id;
+      taskStore.appendLog(taskId, '任务已进入竖屏队列');
+    } else {
+      taskId = makeJobId();
+    }
+
+    // 创建内存 job 对象（用于快速访问）
     const job = {
-      id,
+      id: taskId,
       status: 'queued',
       progress: 0,
       createdAt: new Date().toISOString(),
@@ -409,6 +576,7 @@ function createVerticalQueueService(deps) {
       logs: [],
       cancelRequested: false,
       currentProc: null,
+      currentCancelHandle: null,
       sourceType: item.sourceType || 'xai_top10',
       author: item.author || '',
       postId: item.postId || '',
@@ -419,8 +587,12 @@ function createVerticalQueueService(deps) {
       videoLabel: slugifyText(item.author || item.postId || item.title || 'video'),
       renderOptions: item.renderOptions || {}
     };
-    appendLog(job, '任务已进入竖屏队列');
-    verticalJobs.set(id, job);
+
+    if (!taskStore) {
+      appendLog(job, '任务已进入竖屏队列');
+    }
+
+    verticalJobs.set(taskId, job);
     verticalJobQueue.push(job);
     processQueue();
     return job;
@@ -437,22 +609,22 @@ function createVerticalQueueService(deps) {
   function cancel(jobId) {
     const job = verticalJobs.get(String(jobId || '').trim());
     if (!job) {
-      const error = new Error('竖屏任务不存在');
+      const error = createError('VERTICAL_QUEUE_CANCEL_FAILED', '任务不存在');
       error.status = 404;
       throw error;
     }
     if (job.status === 'completed') {
-      const error = new Error('任务已完成，无法取消');
+      const error = createError('VERTICAL_QUEUE_CANCEL_FAILED', '任务已完成，无法取消');
       error.status = 409;
       throw error;
     }
     if (job.status === 'failed') {
-      const error = new Error('任务已失败，无法取消');
+      const error = createError('VERTICAL_QUEUE_CANCEL_FAILED', '任务已失败，无法取消');
       error.status = 409;
       throw error;
     }
     if (job.status === 'cancelled') {
-      const error = new Error('任务已取消');
+      const error = createError('VERTICAL_QUEUE_CANCEL_FAILED', '任务已取消');
       error.status = 409;
       throw error;
     }
@@ -470,6 +642,17 @@ function createVerticalQueueService(deps) {
       job.completedAt = job.updatedAt;
       job.durationSeconds = job.startedAt ? Math.max(0, Math.floor((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null;
       appendLog(job, '排队任务已取消');
+      syncJobToTaskStore(job);
+    } else if (job.currentCancelHandle) {
+      job.currentCancelHandle();
+      job.status = 'cancelled';
+      job.progress = 100;
+      job.message = '正在取消任务...';
+      job.updatedAt = new Date().toISOString();
+      job.completedAt = job.updatedAt;
+      job.durationSeconds = job.startedAt ? Math.max(0, Math.floor((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null;
+      appendLog(job, '正在终止当前执行进程');
+      syncJobToTaskStore(job);
     } else if (job.currentProc) {
       stopProcessTree(job.currentProc);
       job.status = 'cancelled';
@@ -479,6 +662,7 @@ function createVerticalQueueService(deps) {
       job.completedAt = job.updatedAt;
       job.durationSeconds = job.startedAt ? Math.max(0, Math.floor((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null;
       appendLog(job, '正在终止当前执行进程');
+      syncJobToTaskStore(job);
     } else {
       job.status = 'cancelled';
       job.progress = 100;
@@ -494,12 +678,12 @@ function createVerticalQueueService(deps) {
     const normalizedJobId = String(jobId || '').trim();
     const job = verticalJobs.get(normalizedJobId);
     if (!job) {
-      const error = new Error('竖屏任务不存在');
+      const error = createError('VERTICAL_QUEUE_REMOVE_FAILED', '任务不存在');
       error.status = 404;
       throw error;
     }
     if (!['completed', 'failed', 'cancelled'].includes(job.status)) {
-      const error = new Error('仅已完成、失败或已取消的任务允许删除');
+      const error = createError('VERTICAL_QUEUE_REMOVE_FAILED', '仅已完成、失败或已取消的任务允许删除');
       error.status = 409;
       throw error;
     }

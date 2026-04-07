@@ -406,8 +406,7 @@ async function reviewVideo(video) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           videoPath: video.path,
-          assetId: video.assetId,
-          renameFile: true
+          assetId: video.assetId
         })
       });
     const data = await res.json();

@@ -412,6 +412,40 @@ def fit_text(draw: ImageDraw.ImageDraw, text: str, font_candidates: list[str], s
             return font, wrapped
     return font, wrapped
 
+
+def fit_text_adaptive(draw: ImageDraw.ImageDraw, text: str, font_candidates: list[str], start_size: int, min_size: int, max_width: int, max_height: int, max_lines: int | None = None, relax_max_lines: int | None = None, **kwargs) -> tuple[ImageFont.FreeTypeFont, str]:
+    font, wrapped = fit_text(
+        draw,
+        text,
+        font_candidates,
+        start_size,
+        min_size,
+        max_width,
+        max_height,
+        max_lines=max_lines,
+        **kwargs
+    )
+
+    # 如果当前排版已经出现省略，尝试放宽一行，优先保证完整显示。
+    if "..." not in wrapped or not relax_max_lines or not max_lines or relax_max_lines <= max_lines:
+        return font, wrapped
+
+    relaxed_font, relaxed_wrapped = fit_text(
+        draw,
+        text,
+        font_candidates,
+        start_size,
+        min_size,
+        max_width,
+        max_height,
+        max_lines=relax_max_lines,
+        **kwargs
+    )
+
+    if "..." not in relaxed_wrapped:
+        return relaxed_font, relaxed_wrapped
+    return font, wrapped
+
 def fit_title_text(draw: ImageDraw.ImageDraw, text: str, font_candidates: list[str], start_size: int, min_size: int, max_width: int, max_height: int, max_lines: int | None = None, **kwargs) -> tuple[ImageFont.FreeTypeFont, str]:
     explicit_lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     if len(explicit_lines) >= 2:
@@ -473,13 +507,35 @@ def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min
 
     box_y_offset = 10
     if en_text_content:
-        en_font, en_text = fit_text(draw, en_text_content, EN_FONTS, en_font_size, en_min_size, 860, 110, max_lines=en_max_lines, spacing=6)
+        en_font, en_text = fit_text_adaptive(
+            draw,
+            en_text_content,
+            EN_FONTS,
+            en_font_size,
+            en_min_size,
+            860,
+            150,
+            max_lines=en_max_lines,
+            relax_max_lines=min(3, max(en_max_lines, 2) + 1),
+            spacing=6
+        )
         en_bbox = text_bbox(draw, en_text, en_font, spacing=6)
         draw.multiline_text(((SUBTITLE_CARD_SIZE[0] - (en_bbox[2]-en_bbox[0])) / 2, box_y_offset), en_text, font=en_font, fill="white", align="center", spacing=6)
         box_y_offset += (en_bbox[3]-en_bbox[1]) + 38
 
     if zh_text_content:
-        zh_font, zh_text = fit_text(draw, zh_text_content, ZH_FONTS, zh_font_size, zh_min_size, 760, 150, max_lines=zh_max_lines, spacing=4)
+        zh_font, zh_text = fit_text_adaptive(
+            draw,
+            zh_text_content,
+            ZH_FONTS,
+            zh_font_size,
+            zh_min_size,
+            760,
+            210,
+            max_lines=zh_max_lines,
+            relax_max_lines=min(3, max(zh_max_lines, 2) + 1),
+            spacing=4
+        )
         zh_bbox = text_bbox(draw, zh_text, zh_font, spacing=4)
         box_h = (zh_bbox[3]-zh_bbox[1]) + 40
         box_w = min(920, max((zh_bbox[2]-zh_bbox[0]) + 100, 420))

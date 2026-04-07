@@ -1,3 +1,4 @@
+const os = require('os');
 const { readPublishConfig } = require('../publish/store');
 
 /**
@@ -21,6 +22,83 @@ class LoginStatusService {
     this.enabled = process.env.LOGIN_CHECK_ENABLED !== 'false';
     this.retryTimes = parseInt(process.env.LOGIN_CHECK_RETRY_TIMES) || 3;
     this.notifyLoginStatus = process.env.FEISHU_NOTIFY_LOGIN_STATUS !== 'false';
+    this.panelBaseUrl = this.resolvePublicPanelBaseUrl();
+  }
+
+  getPreferredLanIp() {
+    try {
+      const interfaces = os.networkInterfaces();
+      const preferred = [];
+      const fallback = [];
+
+      for (const entries of Object.values(interfaces || {})) {
+        for (const item of entries || []) {
+          if (!item || item.internal || item.family !== 'IPv4') continue;
+          const address = String(item.address || '').trim();
+          if (!address) continue;
+          if (
+            address.startsWith('192.168.') ||
+            address.startsWith('10.') ||
+            /^172\.(1[6-9]|2\d|3[0-1])\./.test(address)
+          ) {
+            preferred.push(address);
+          } else {
+            fallback.push(address);
+          }
+        }
+      }
+
+      return preferred[0] || fallback[0] || '';
+    } catch (err) {
+      console.warn(`[LoginStatus] 自动探测局域网 IP 失败: ${err.message}`);
+      return '';
+    }
+  }
+
+  buildFallbackPublicPanelBaseUrl() {
+    const host = String(process.env.HOST || '0.0.0.0').trim();
+    const port = String(process.env.PORT || '3001').trim() || '3001';
+
+    if (host && host !== '0.0.0.0' && host !== '::' && host !== 'localhost' && host !== '127.0.0.1') {
+      return `http://${host}:${port}`;
+    }
+
+    const lanIp = this.getPreferredLanIp();
+    if (!lanIp) return '';
+    return `http://${lanIp}:${port}`;
+  }
+
+  resolvePublicPanelBaseUrl() {
+    const raw =
+      process.env.LOGIN_STATUS_PUBLIC_BASE_URL ||
+      process.env.PANEL_PUBLIC_BASE_URL ||
+      process.env.PUBLIC_BASE_URL ||
+      process.env.APP_PUBLIC_BASE_URL ||
+      '';
+    const base = String(raw || '').trim().replace(/\/+$/, '');
+
+    if (base) {
+      try {
+        const parsed = new URL(base);
+        const host = String(parsed.hostname || '').toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+          console.warn(`[LoginStatus] 公共访问地址不能是本机地址(${base})，手机无法访问。将尝试自动推导局域网地址。`);
+        } else {
+          return base;
+        }
+      } catch (err) {
+        console.warn(`[LoginStatus] 公共访问地址格式无效: ${base}，错误: ${err.message}。将尝试自动推导局域网地址。`);
+      }
+    }
+
+    const fallbackBase = this.buildFallbackPublicPanelBaseUrl();
+    if (fallbackBase) {
+      console.log(`[LoginStatus] 已自动推导飞书卡片访问地址: ${fallbackBase}`);
+      return fallbackBase;
+    }
+
+    console.warn('[LoginStatus] 未配置公共访问地址，且无法自动推导局域网地址，飞书卡片将不包含可点击登录链接。请配置 LOGIN_STATUS_PUBLIC_BASE_URL');
+    return '';
   }
 
   /**
@@ -41,6 +119,16 @@ class LoginStatusService {
       console.error('[LoginStatus] 获取账号列表失败:', err.message);
       return [];
     }
+  }
+
+  getAccountById(accountId) {
+    return this.getAccountsToCheck().find(acc => acc.id === accountId) || null;
+  }
+
+  getRefreshQrUrl(accountId) {
+    if (!this.panelBaseUrl) return '';
+    const base = String(this.panelBaseUrl).replace(/\/+$/, '');
+    return `${base}/api/login-status/request-latest-qr/${encodeURIComponent(accountId)}`;
   }
 
   /**
@@ -82,7 +170,7 @@ class LoginStatusService {
             // 更新缓存
             const cached = this.statusCache.get(accountId) || {};
             const statusChanged = cached.status && cached.status !== status;
-            const isFirstCheck = !cached.status;  // 首次检测
+            const isFirstCheck = !cached.status; // 首次检测
 
             this.statusCache.set(accountId, {
               status,
@@ -274,18 +362,20 @@ class LoginStatusService {
     }
 
     try {
+      const forceNotify = details.forceNotify === true;
       // 通知条件：
       // 1. 状态恶化：logged_in -> need_login/error
       // 2. 状态恢复：need_login/error -> logged_in
       // 3. 首次检测到需要登录：oldStatus 为空且 newStatus 为 need_login
       // 4. 检测异常：newStatus 为 error
       const shouldNotify =
+        forceNotify ||
         (oldStatus === 'logged_in' && newStatus !== 'logged_in') ||
         (oldStatus !== 'logged_in' && newStatus === 'logged_in') ||
-        (!oldStatus && newStatus === 'need_login') ||  // 首次检测到需要登录
+        (!oldStatus && newStatus === 'need_login') || // 首次检测到需要登录
         (newStatus === 'error');
 
-      console.log(`[LoginStatus] 通知条件判断: shouldNotify=${shouldNotify}, 条件详情: {logged_in->other: ${oldStatus === 'logged_in' && newStatus !== 'logged_in'}, other->logged_in: ${oldStatus !== 'logged_in' && newStatus === 'logged_in'}, first_need_login: ${!oldStatus && newStatus === 'need_login'}, error: ${newStatus === 'error'}}`);
+      console.log(`[LoginStatus] 通知条件判断: shouldNotify=${shouldNotify}, forceNotify=${forceNotify}, 条件详情: {logged_in->other: ${oldStatus === 'logged_in' && newStatus !== 'logged_in'}, other->logged_in: ${oldStatus !== 'logged_in' && newStatus === 'logged_in'}, first_need_login: ${!oldStatus && newStatus === 'need_login'}, error: ${newStatus === 'error'}}`);
 
       if (!shouldNotify) {
         console.log(`[LoginStatus] 跳过通知: ${account.id} ${oldStatus || '无'} -> ${newStatus}`);
@@ -301,7 +391,8 @@ class LoginStatusService {
 
       const result = await this.feishuService.sendLoginAlert(account, newStatus, {
         ...details,
-        loginUrl: `http://localhost:3001`,
+        loginUrl: this.panelBaseUrl || undefined,
+        refreshQrUrl: this.getRefreshQrUrl(account.id),
         oldStatus,
         receiveIdType: this.feishuReceiveIdType,
         receiveId: this.feishuReceiveId
@@ -336,6 +427,64 @@ class LoginStatusService {
       });
     }
     return statuses;
+  }
+
+  /**
+   * 主动获取最新二维码并发送到飞书
+   */
+  async requestLatestQrCode(accountId, options = {}) {
+    const notifyFeishu = options.notifyFeishu !== false;
+    const trigger = String(options.trigger || 'manual').trim() || 'manual';
+    const account = this.getAccountById(accountId);
+
+    if (!account) {
+      throw new Error('账号不存在');
+    }
+
+    console.log(`[LoginStatus] 主动获取最新二维码: accountId=${accountId}, trigger=${trigger}, notifyFeishu=${notifyFeishu}`);
+
+    const result = await this.checkWechatLogin(accountId, {
+      poll: false,
+      forceRefresh: true
+    });
+
+    const normalizedStatus = result.status === 'logged_in' ? 'logged_in' : 'need_login';
+    const qrCodePath = String(result.qrCodePath || '').trim();
+    const now = Date.now();
+    const cached = this.statusCache.get(accountId) || {};
+
+    this.statusCache.set(accountId, {
+      status: normalizedStatus,
+      lastCheck: now,
+      lastNotify: notifyFeishu ? now : cached.lastNotify,
+      qrCodePath,
+      account
+    });
+
+    console.log('[LoginStatus] 最新二维码请求结果:', {
+      accountId,
+      normalizedStatus,
+      hasQrCodePath: Boolean(qrCodePath),
+      trigger
+    });
+
+    if (notifyFeishu && this.notifyLoginStatus && this.feishuService) {
+      console.log(`[LoginStatus] 准备仅发送最新二维码到飞书: accountId=${accountId}`);
+      await this.feishuService.sendLatestQrCode(account, {
+        qrCodePath,
+        loginUrl: this.panelBaseUrl || undefined,
+        receiveIdType: this.feishuReceiveIdType,
+        receiveId: this.feishuReceiveId
+      });
+    }
+
+    return {
+      success: true,
+      accountId,
+      status: normalizedStatus,
+      qrCodePath,
+      refreshQrUrl: this.getRefreshQrUrl(accountId)
+    };
   }
 
   /**

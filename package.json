@@ -8,7 +8,15 @@
     "dev:front": "vite --config vite.config.mjs",
     "build:front": "vite build --config vite.config.mjs",
     "preview:front": "vite preview --config vite.config.mjs",
-    "smoke:test": "node scripts/smoke_test.js"
+    "smoke:test": "node scripts/smoke_test.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint server/ scripts/ --ext .js",
+    "lint:fix": "eslint server/ scripts/ --ext .js --fix",
+    "ci": "node scripts/ci.js",
+    "install-hooks": "node scripts/install-hooks.js",
+    "postinstall": "node scripts/install-hooks.js"
   },
   "dependencies": {
     "axios": "^1.6.8",
@@ -25,9 +33,25 @@
     "@tailwindcss/vite": "^4.2.2",
     "@vitejs/plugin-vue": "^6.0.5",
     "autoprefixer": "^10.4.27",
+    "eslint": "^8.57.1",
+    "jest": "^30.3.0",
     "postcss": "^8.5.8",
+    "sinon": "^21.0.3",
     "tailwindcss": "^4.2.2",
     "vite": "^8.0.2",
     "vue": "^3.5.30"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/__tests__/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "server/**/*.js"
+    ],
+    "coveragePathIgnorePatterns": [
+      "/node_modules/",
+      "/__tests__/"
+    ]
   }
 }

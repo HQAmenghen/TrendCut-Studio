@@ -76,6 +76,25 @@ function enqueueRegenerationFromReview({
   }
 
   const adjustments = buildRegenerationAdjustments(aiReview.fixSuggestions);
+
+  // 查找源视频路径
+  let sourceVideoPath = null;
+  if (metadata.taskDir) {
+    // 尝试从任务目录中找到源视频
+    const possibleSourcePath = require('path').join(metadata.taskDir, 'source.mp4');
+    if (require('fs').existsSync(possibleSourcePath)) {
+      sourceVideoPath = possibleSourcePath;
+    }
+  }
+
+  // 如果找不到源视频，拒绝执行
+  if (!sourceVideoPath) {
+    const error = new Error('无法找到源视频文件，无法重新生成');
+    error.code = 'REVIEW_SOURCE_VIDEO_NOT_FOUND';
+    error.hint = '只有通过自动流水线生成的视频才支持重新生成，且源视频文件必须存在';
+    throw error;
+  }
+
   const regenerateParams = {
     sourceType: sourceType || 'manual',
     title: adjustments.suggestedTitle || metadata.suggestedTitle || metadata.title,
@@ -86,7 +105,7 @@ function enqueueRegenerationFromReview({
     postUrl: metadata.postUrl || metadata.sourceUrl || '',
     renderOptions: {
       regenerateSubtitles: adjustments.needsSubtitleRegeneration,
-      originalVideoPath: videoPath,
+      originalVideoPath: sourceVideoPath,
       isRegeneration: true,
       previousReviewId: aiReview.reviewId,
       appliedSuggestions: adjustments.highPrioritySuggestions.map((s) => s.issue)

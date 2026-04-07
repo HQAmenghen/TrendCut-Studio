@@ -96,6 +96,7 @@ export function usePublishCenter() {
   const errorState = ref({ message: '', code: '', stage: '', hint: '', details: '' });
   const savingConfig = ref(false);
   const creating = ref(false);
+  const creatingStatusMessage = ref('');
   const generatingDescription = ref(false);
   const regeneratingDescriptionJobId = ref('');
   const assets = ref([]);
@@ -109,6 +110,11 @@ export function usePublishCenter() {
   const errorLogs = ref([]);
   let autoRefreshTimer = null;
   let qrLoginPollTimer = null;
+
+  // 登录状态检测相关状态
+  const accountLoginStatus = ref({});
+  const checkingLoginAccounts = ref(new Set());
+  const checkingBatchLogin = ref(false);
 
   const appendLog = (message) => {
     const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(message || '').trim()}`;
@@ -485,10 +491,10 @@ const clearErrorState = () => {
     editor.value.tagStrategy = job?.publishData?.tagStrategy === 'model' ? 'model' : 'system';
     editor.value.tags = normalizeTags(job?.publishData?.tags || []).join(', ');
     editor.value.coverUrl = job?.publishData?.coverUrl || '';
-    
-    if (job?.scheduledTime) {
+
+    if (job?.scheduledAt) {
       // datetime-local 格式需求: YYYY-MM-DDThh:mm
-      const rawDate = new Date(job.scheduledTime);
+      const rawDate = new Date(job.scheduledAt);
       editor.value.scheduledTime = new Date(rawDate.getTime() - (rawDate.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
     } else {
       editor.value.scheduledTime = '';
@@ -628,8 +634,15 @@ const clearErrorState = () => {
       return;
     }
     creating.value = true;
+    creatingStatusMessage.value = '';
     clearErrorState();
     appendLog('创建一键发布任务');
+    if (!String(editor.value.description || '').trim()) {
+      creatingStatusMessage.value = '正在等待模型生成描述，这一步可能需要 1 到 3 分钟，请耐心等待。';
+      appendLog('当前未手动填写描述，系统将优先等待模型生成描述后再创建任务');
+    } else {
+      creatingStatusMessage.value = '正在创建发布任务...';
+    }
     try {
       const res = await axios.post('/api/publish/jobs', {
         assetId: selectedAssetId.value,
@@ -643,6 +656,7 @@ const clearErrorState = () => {
         platformSelections: editor.value.platformSelections
       });
       jobs.value = res.data?.jobs || jobs.value;
+      creatingStatusMessage.value = '';
     } catch (err) {
       setErrorState(normalizeApiError(err, '创建发布任务失败'));
     } finally {
@@ -862,6 +876,7 @@ const clearErrorState = () => {
     errorState,
     savingConfig,
     creating,
+    creatingStatusMessage,
     generatingDescription,
     regeneratingDescriptionJobId,
     assets,
@@ -921,6 +936,66 @@ const clearErrorState = () => {
     getJobTerminalState,
     getJobStatusLabel,
     getWechatProgress,
-    canRunWechat
+    canRunWechat,
+    // 登录状态检测函数
+    accountLoginStatus,
+    checkingLoginAccounts,
+    checkingBatchLogin,
+    loadAllLoginStatus: async () => {
+      try {
+        const res = await axios.get('/api/login-status/all');
+        if (res.data?.success) {
+          const statuses = {};
+          res.data.statuses.forEach(status => {
+            statuses[status.accountId] = status;
+          });
+          accountLoginStatus.value = statuses;
+        }
+      } catch (err) {
+        console.error('加载登录状态失败:', err);
+      }
+    },
+    checkSingleAccountLogin: async (accountId) => {
+      checkingLoginAccounts.value.add(accountId);
+      try {
+        const res = await axios.post(`/api/login-status/check/${accountId}`);
+        if (res.data?.success) {
+          accountLoginStatus.value = {
+            ...accountLoginStatus.value,
+            [accountId]: res.data.result
+          };
+          return res.data.result;
+        }
+      } catch (err) {
+        console.error('检测登录状态失败:', err);
+      } finally {
+        checkingLoginAccounts.value.delete(accountId);
+      }
+      return null;
+    },
+    checkSelectedAccountsLogin: async (accountIds, notifyFeishu = false) => {
+      if (!accountIds || accountIds.length === 0) return null;
+      checkingBatchLogin.value = true;
+      try {
+        const res = await axios.post('/api/login-status/check-batch', {
+          accountIds,
+          notifyFeishu,
+          parallel: false
+        });
+        if (res.data?.success) {
+          const newStatuses = { ...accountLoginStatus.value };
+          res.data.summary.results.forEach(result => {
+            newStatuses[result.accountId] = result;
+          });
+          accountLoginStatus.value = newStatuses;
+          return res.data.summary;
+        }
+      } catch (err) {
+        console.error('批量检测失败:', err);
+      } finally {
+        checkingBatchLogin.value = false;
+      }
+      return null;
+    }
   };
 }

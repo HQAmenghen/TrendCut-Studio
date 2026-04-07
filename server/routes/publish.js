@@ -11,11 +11,16 @@ function registerPublishRoutes(app, handlers) {
   app.post('/api/publish/jobs/archive-completed', handlers.archiveCompleted);
   app.post('/api/publish/jobs', handlers.createJob);
   app.post('/api/publish/jobs/:jobId/regenerate-description', handlers.regenerateDescription);
-  app.post("/api/publish/jobs/wechat-channels/start-all", handlers.startAllWechat);
+  app.post('/api/publish/jobs/wechat-channels/start-all', handlers.startAllWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels', handlers.runWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/retry', handlers.retryWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/cancel', handlers.cancelWechat);
   app.post('/api/publish/wechat/test-login/:accountId', handlers.testWechatLogin);
+
+  // Account dashboard routes
+  app.get('/api/publish/accounts/dashboard', handlers.getAccountDashboard);
+  app.get('/api/publish/accounts/:accountId/jobs', handlers.getAccountJobs);
+  app.get('/api/publish/accounts/:accountId/failures', handlers.getAccountFailures);
 }
 
 module.exports = {

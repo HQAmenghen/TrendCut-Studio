@@ -1,6 +1,20 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 
+function stopProcessTree(proc) {
+  if (!proc || proc.killed) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/pid', proc.pid, '/f', '/t']);
+    } else {
+      proc.kill('SIGTERM');
+      setTimeout(() => {
+        if (!proc.killed) proc.kill('SIGKILL');
+      }, 5000);
+    }
+  } catch (_err) {}
+}
+
 const PYTHON_PROTOCOL_PREFIX = '__CODEX_PYTHON__';
 
 function createProtocolState() {
@@ -111,6 +125,29 @@ function createPythonError(scriptPath, protocol, fallbackMessage, extra = {}) {
   return err;
 }
 
+function sanitizeProcessLogLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function summarizePythonError(error, stderrLines = 20, stdoutLines = 12) {
+  const stderrTail = sanitizeProcessLogLines(error?.stderr || '').slice(-stderrLines);
+  const stdoutTail = sanitizeProcessLogLines(error?.stdout || '').slice(-stdoutLines);
+  return {
+    message: String(error?.message || '未知错误'),
+    code: String(error?.code || ''),
+    stage: String(error?.stage || ''),
+    details: String(error?.details || ''),
+    hint: String(error?.hint || ''),
+    exitCode: Number.isFinite(Number(error?.exitCode)) ? Number(error.exitCode) : null,
+    stderrTail,
+    stdoutTail,
+    protocol: error?.protocol || null
+  };
+}
+
 function runPythonScript(scriptPath, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const protocol = createProtocolState();
@@ -128,11 +165,20 @@ function runPythonScript(scriptPath, args = [], options = {}) {
     let stderr = '';
     const heartbeatStartedAt = Date.now();
     let heartbeatHandle = null;
+    let timeoutHandle = null;
+    let timedOut = false;
 
     if (typeof options.onHeartbeat === 'function') {
       heartbeatHandle = setInterval(() => {
         options.onHeartbeat(Math.max(0, Math.floor((Date.now() - heartbeatStartedAt) / 1000)), proc);
       }, Number(options.heartbeatMs) || 15000);
+    }
+
+    if (Number.isFinite(Number(options.timeout)) && Number(options.timeout) > 0) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        stopProcessTree(proc);
+      }, Number(options.timeout));
     }
 
     proc.stdout.on('data', (data) => {
@@ -151,11 +197,13 @@ function runPythonScript(scriptPath, args = [], options = {}) {
 
     proc.on('error', (error) => {
       if (heartbeatHandle) clearInterval(heartbeatHandle);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       reject(createPythonError(scriptPath, protocol.error, error.message, { stdout, stderr, exitCode: null }));
     });
 
     proc.on('close', (code) => {
       if (heartbeatHandle) clearInterval(heartbeatHandle);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
 
       const remainingStdout = flushProtocolBuffer(protocol, 'stdout');
       if (remainingStdout) {
@@ -168,6 +216,11 @@ function runPythonScript(scriptPath, args = [], options = {}) {
         if (typeof options.onStderr === 'function') options.onStderr(remainingStderr);
       }
 
+      if (timedOut) {
+        reject(createPythonError(scriptPath, protocol.error, 'Python script timed out', { stdout, stderr, exitCode: code }));
+        return;
+      }
+
       const payload = { stdout, stderr, code, protocol };
       if (code === 0) {
         resolve(payload);
@@ -178,6 +231,114 @@ function runPythonScript(scriptPath, args = [], options = {}) {
       reject(createPythonError(scriptPath, protocol.error, fallbackMessage, { stdout, stderr, exitCode: code }));
     });
   });
+}
+
+function runPythonScriptCancellable(scriptPath, args = [], options = {}) {
+  let proc = null;
+  let cancelled = false;
+  let heartbeatHandle = null;
+  let timeoutHandle = null;
+
+  const promise = new Promise((resolve, reject) => {
+    const protocol = createProtocolState();
+    proc = spawn('python', buildPythonArgs(scriptPath, args), {
+      cwd: options.cwd,
+      env: buildPythonEnv(options.env)
+    });
+    proc.codexPython = protocol;
+
+    if (typeof options.onSpawn === 'function') {
+      options.onSpawn(proc);
+    }
+
+    let stdout = '';
+    let stderr = '';
+    const heartbeatStartedAt = Date.now();
+    let timedOut = false;
+
+    if (typeof options.onHeartbeat === 'function') {
+      heartbeatHandle = setInterval(() => {
+        options.onHeartbeat(Math.max(0, Math.floor((Date.now() - heartbeatStartedAt) / 1000)), proc);
+      }, Number(options.heartbeatMs) || 15000);
+    }
+
+    if (Number.isFinite(Number(options.timeout)) && Number(options.timeout) > 0) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        stopProcessTree(proc);
+      }, Number(options.timeout));
+    }
+
+    proc.stdout.on('data', (data) => {
+      const visible = consumeProtocolChunk(protocol, 'stdout', data.toString());
+      if (!visible) return;
+      stdout += visible;
+      if (typeof options.onStdout === 'function') options.onStdout(visible);
+    });
+
+    proc.stderr.on('data', (data) => {
+      const visible = consumeProtocolChunk(protocol, 'stderr', data.toString());
+      if (!visible) return;
+      stderr += visible;
+      if (typeof options.onStderr === 'function') options.onStderr(visible);
+    });
+
+    proc.on('error', (error) => {
+      if (heartbeatHandle) clearInterval(heartbeatHandle);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      reject(createPythonError(scriptPath, protocol.error, error.message, { stdout, stderr, exitCode: null }));
+    });
+
+    proc.on('close', (code) => {
+      if (heartbeatHandle) clearInterval(heartbeatHandle);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+
+      const remainingStdout = flushProtocolBuffer(protocol, 'stdout');
+      if (remainingStdout) {
+        stdout += remainingStdout;
+        if (typeof options.onStdout === 'function') options.onStdout(remainingStdout);
+      }
+      const remainingStderr = flushProtocolBuffer(protocol, 'stderr');
+      if (remainingStderr) {
+        stderr += remainingStderr;
+        if (typeof options.onStderr === 'function') options.onStderr(remainingStderr);
+      }
+
+      if (cancelled) {
+        const err = new Error('Python script was cancelled');
+        err.code = 'PYTHON_SCRIPT_CANCELLED';
+        err.stdout = stdout;
+        err.stderr = stderr;
+        err.exitCode = code;
+        reject(err);
+        return;
+      }
+
+      if (timedOut) {
+        reject(createPythonError(scriptPath, protocol.error, 'Python script timed out', { stdout, stderr, exitCode: code }));
+        return;
+      }
+
+      const payload = { stdout, stderr, code, protocol };
+      if (code === 0) {
+        resolve(payload);
+        return;
+      }
+
+      const fallbackMessage = stderr.trim() || stdout.trim() || `${path.basename(scriptPath)} failed`;
+      reject(createPythonError(scriptPath, protocol.error, fallbackMessage, { stdout, stderr, exitCode: code }));
+    });
+  });
+
+  const cancel = () => {
+    if (cancelled || !proc || proc.killed) return;
+    cancelled = true;
+    if (heartbeatHandle) clearInterval(heartbeatHandle);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    stopProcessTree(proc);
+  };
+
+  return { process: proc, promise, cancel };
 }
 
 function runPythonScriptSync(scriptPath, args = [], options = {}) {
@@ -215,5 +376,8 @@ function runPythonScriptSync(scriptPath, args = [], options = {}) {
 module.exports = {
   PYTHON_PROTOCOL_PREFIX,
   runPythonScript,
-  runPythonScriptSync
+  runPythonScriptSync,
+  runPythonScriptCancellable,
+  summarizePythonError,
+  stopProcessTree
 };

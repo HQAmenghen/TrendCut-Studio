@@ -199,6 +199,61 @@
           </div>
         </div>
 
+        <div class="panel" style="margin-bottom: 24px;">
+          <div class="panel-header panel-header-between">
+            <span>📦 自动归档设置</span>
+            <button type="button" class="save-chip" @click="center.saveConfig('归档设置')" :disabled="center.savingConfig.value">
+              {{ center.savingConfig.value ? '保存中...' : '保存归档配置' }}
+            </button>
+          </div>
+          <div class="panel-body">
+            <div class="platform-block mb-0" style="background: rgba(0,0,0,0.1); border: none;">
+              <div class="platform-block-head">
+                <div>
+                  <div class="platform-name">自动归档已发布任务</div>
+                  <div class="platform-tip">
+                    开启后，状态为 published 的任务会在延迟时间后自动归档，降低发布中心噪音。
+                  </div>
+                </div>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    :checked="!!center.config.value?.global?.autoArchiveEnabled"
+                    @change="center.updateConfigField('global', 'autoArchiveEnabled', $event.target.checked)"
+                  />
+                  启用归档
+                </label>
+              </div>
+              <div class="px-3 pb-3 pt-0" v-if="center.config.value?.global?.autoArchiveEnabled">
+                <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 16px;">
+                  <div>
+                    <label class="control-label mb-1 block" style="font-size: 12px;">延迟归档分钟数</label>
+                    <input
+                      type="number"
+                      class="input-dark"
+                      style="font-size: 14px; width: 120px;"
+                      min="0"
+                      :value="center.config.value.global?.autoArchiveDelayMinutes || 30"
+                      @input="center.updateConfigField('global', 'autoArchiveDelayMinutes', parseInt($event.target.value) || 30)"
+                    />
+                  </div>
+                  <div style="font-size: 13px; color: #9ca3af; margin-top: 20px;">
+                    任务发布成功后，将在设定的延迟时间后自动归档
+                  </div>
+                </div>
+                <div style="padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);">
+                  <div style="font-size: 12px; color: #9ca3af; line-height: 1.6;">
+                    <strong style="display: block; color: var(--strong-text); margin-bottom: 6px;">归档规则说明：</strong>
+                    • 仅归档状态为 <code style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px;">published</code> 的任务<br/>
+                    • <code style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px;">failed / cancelled / ready_for_manual_publish</code> 状态不会自动归档<br/>
+                    • 已归档的任务可在"查看已归档"中找回并取消归档
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="panel">
           <div class="panel-header panel-header-between">
             <span>🔐 社交账号授权配置</span>
@@ -495,8 +550,12 @@
                     <span v-else>⏳ 正在整理发布任务...</span>
                   </button>
 
-                  <div v-if="center.errorState.value?.message" class="error-box">
-                    <strong>{{ center.errorState.value.message }}</strong>
+                    <div v-if="center.creating.value && center.creatingStatusMessage.value" class="summary-note pending-note">
+                      {{ center.creatingStatusMessage.value }}
+                    </div>
+
+                    <div v-if="center.errorState.value?.message" class="error-box">
+                      <strong>{{ center.errorState.value.message }}</strong>
                     <div v-if="center.errorState.value.code" class="error-meta">错误码：{{ center.errorState.value.code }}</div>
                     <div v-if="center.errorState.value.hint" class="error-meta">排查建议：{{ center.errorState.value.hint }}</div>
                   </div>
@@ -743,14 +802,17 @@ const props = defineProps({
   center: { type: Object, required: true }
 });
 
+const {
+  accountLoginStatus,
+  checkingLoginAccounts,
+  checkingBatchLogin
+} = props.center;
+
 // 审核功能
 const review = useVideoReview();
 
 // 登录状态检测
 const selectedWechatAccounts = ref([]);
-const checkingLoginAccounts = reactive(new Set());
-const checkingBatchLogin = ref(false);
-const accountLoginStatus = reactive({});
 const expandedAccounts = reactive(new Set());
 const batchNotifyFeishu = ref(false);  // 批量检测时是否发送飞书通知
 
@@ -765,17 +827,7 @@ onMounted(() => {
 
 // 加载所有账号的登录状态
 async function loadAllLoginStatus() {
-  try {
-    const res = await fetch('/api/login-status/all');
-    const data = await res.json();
-    if (data.success) {
-      data.statuses.forEach(status => {
-        accountLoginStatus[status.accountId] = status;
-      });
-    }
-  } catch (err) {
-    console.error('加载登录状态失败:', err);
-  }
+  await props.center.loadAllLoginStatus();
 }
 
 // 切换账号选择
@@ -799,53 +851,20 @@ function toggleAccountExpand(accountId) {
 
 // 检测单个账号登录状态
 async function checkSingleAccountLogin(accountId) {
-  checkingLoginAccounts.add(accountId);
-  try {
-    const res = await fetch(`/api/login-status/check/${accountId}`, {
-      method: 'POST'
-    });
-    const data = await res.json();
-    if (data.success) {
-      accountLoginStatus[accountId] = data.result;
-    }
-  } catch (err) {
-    console.error('检测登录状态失败:', err);
-  } finally {
-    checkingLoginAccounts.delete(accountId);
-  }
+  await props.center.checkSingleAccountLogin(accountId);
 }
 
 // 批量检测选中账号
 async function checkSelectedAccountsLogin() {
   if (selectedWechatAccounts.value.length === 0) return;
-
-  checkingBatchLogin.value = true;
-  try {
-    const res = await fetch('/api/login-status/check-batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        accountIds: selectedWechatAccounts.value,
-        notifyFeishu: batchNotifyFeishu.value,
-        parallel: false
-      })
-    });
-    const data = await res.json();
-    if (data.success) {
-      data.summary.results.forEach(result => {
-        accountLoginStatus[result.accountId] = result;
-      });
-      const msg = `检测完成: ${data.summary.logged_in} 已登录, ${data.summary.need_login} 需登录, ${data.summary.error} 异常`;
-      if (batchNotifyFeishu.value && data.summary.need_login > 0) {
-        alert(msg + '\n\n已发送飞书通知');
-      } else {
-        alert(msg);
-      }
+  const result = await props.center.checkSelectedAccountsLogin(selectedWechatAccounts.value, batchNotifyFeishu.value);
+  if (result) {
+    const msg = `检测完成: ${result.logged_in} 已登录, ${result.need_login} 需登录, ${result.error} 异常`;
+    if (batchNotifyFeishu.value && result.need_login > 0) {
+      alert(msg + '\n\n已发送飞书通知');
+    } else {
+      alert(msg);
     }
-  } catch (err) {
-    alert('检测失败: ' + err.message);
-  } finally {
-    checkingBatchLogin.value = false;
   }
 }
 
@@ -1574,6 +1593,12 @@ function selfCheckStatusLabel(status) {
   color: var(--text);
   font-size: 12px;
   line-height: 1.7;
+}
+
+.pending-note {
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--strong-text);
 }
 
 .mt {

@@ -55,6 +55,7 @@ const { createPublishHandlers } = require('./server/services/publish/handlers');
 const { createPublishAssetsService } = require('./server/services/publish/assets');
 const { createPublishStore } = require('./server/services/publish/store');
 const { createWechatRpaService } = require('./server/services/publish/wechatRpa');
+const { createAccountDashboardService } = require('./server/services/publish/accountDashboard');
 const { createSystemHandlers } = require('./server/services/system/handlers');
 const { createSelfCheckService } = require('./server/services/system/selfCheck');
 const { registerPublishRoutes } = require('./server/routes/publish');
@@ -62,6 +63,7 @@ const { registerSystemRoutes } = require('./server/routes/system');
 const { startScheduler } = require('./server/services/system/scheduler');
 const { createReviewHandlers } = require('./server/services/review');
 const { registerReviewRoutes } = require('./server/routes/review');
+const { registerMaterialDrivenRoutes } = require('./server/routes/materialDriven');
 const { readReviewConfig } = require('./server/services/review/store');
 const { createFeishuService } = require('./server/services/notification/feishu');
 const { createLoginStatusService } = require('./server/services/notification/loginStatus');
@@ -79,6 +81,7 @@ const taskStore = new TaskStore(paths.TASK_STORE_DB_PATH);
 
 app.use(express.static(paths.FRONTEND_DIST_DIR));
 app.use(express.static(paths.PUBLIC_DIR));
+app.use('/projects', express.static(paths.PROJECTS_DIR));
 app.use(express.json());
 
 app.get("/", (_req, res) => {
@@ -467,7 +470,7 @@ const {
         applyWorkflowConfig,
         readWorkflow,
         workflowPath: paths.WORKFLOW_PATH,
-        createRuntimeJobDir: utils.createRuntimeJobDir,
+        createRuntimeJobDir: (prefix) => utils.createRuntimeJobDir(prefix, makeJobId),
         readJsonIfExists,
         writeMediaMetadata: utils.writeMediaMetadata,
         buildFallbackTitleFromSubtitles: utils.buildFallbackTitleFromSubtitles,
@@ -626,7 +629,7 @@ const {
         upload,
         getProgressClient,
         sendProgressEvent,
-        createRuntimeJobDir: utils.createRuntimeJobDir,
+        createRuntimeJobDir: (prefix) => utils.createRuntimeJobDir(prefix, makeJobId),
         generateHotTitle,
         writeJsonFile,
         writeMediaMetadata: utils.writeMediaMetadata,
@@ -638,47 +641,6 @@ const {
     registerSystemRoutes(app, systemHandlers);
 
     let schedulerService = null;
-
-    const publishHandlers = createPublishHandlers({
-        sendError,
-        readPublishConfig,
-        maskPlatformConfig,
-        sanitizePlatformConfigInput,
-        writePublishConfig,
-        reconcileAndPersistPublishJobs,
-        getCachedPublishAssets,
-        readPublishJobs,
-        writePublishJobs,
-        updatePublishJob,
-        archivePublishJob,
-        archiveCompletedPublishJobs,
-        collectPublishAssets,
-        makeJobId,
-        buildShortTitle,
-        generatePublishDescription,
-        getWechatAccountMap,
-        buildPublishTask,
-        validateWechatTaskConfig,
-        collectPlatformValidation,
-        startWechatRpa,
-        retryWechatRpa,
-        cancelWechatRpa,
-        checkWechatLogin,
-        triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
-        readReviewConfig,
-        readMediaMetadata: utils.readMediaMetadata
-    });
-
-    registerPublishRoutes(app, publishHandlers);
-
-    // 注册审核路由
-    const reviewHandlers = createReviewHandlers({
-        sendError,
-        readMediaMetadata: utils.readMediaMetadata,
-        writeMediaMetadata: utils.writeMediaMetadata,
-        verticalQueueService
-    });
-    registerReviewRoutes(app, reviewHandlers);
 
     // 初始化飞书通知服务
     const feishuWebhookUrl = process.env.FEISHU_WEBHOOK_URL || '';
@@ -710,8 +672,58 @@ const {
 
     console.log('[LoginStatus] 登录状态检测服务已初始化');
 
-    // 注册登录状态检测路由
+    // 创建账号看板服务
+    const accountDashboardService = createAccountDashboardService({
+        readPublishConfig,
+        readPublishJobs,
+        loginStatusService
+    });
+
+    console.log('[AccountDashboard] 账号看板服务已初始化');
+
+    const publishHandlers = createPublishHandlers({
+        sendError,
+        readPublishConfig,
+        maskPlatformConfig,
+        sanitizePlatformConfigInput,
+        writePublishConfig,
+        reconcileAndPersistPublishJobs,
+        getCachedPublishAssets,
+        readPublishJobs,
+        writePublishJobs,
+        updatePublishJob,
+        archivePublishJob,
+        archiveCompletedPublishJobs,
+        collectPublishAssets,
+        makeJobId,
+        buildShortTitle,
+        generatePublishDescription,
+        getWechatAccountMap,
+        buildPublishTask,
+        validateWechatTaskConfig,
+        collectPlatformValidation,
+        startWechatRpa,
+        retryWechatRpa,
+        cancelWechatRpa,
+        checkWechatLogin,
+        triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
+        readReviewConfig,
+        readMediaMetadata: utils.readMediaMetadata,
+        accountDashboardService
+    });
+
+    registerPublishRoutes(app, publishHandlers);
+
+    // 注册审核路由
+    const reviewHandlers = createReviewHandlers({
+        sendError,
+        readMediaMetadata: utils.readMediaMetadata,
+        writeMediaMetadata: utils.writeMediaMetadata,
+        verticalQueueService
+    });
+    registerReviewRoutes(app, reviewHandlers);
     registerLoginStatusRoutes(app, loginStatusService, feishuService);
+    registerMaterialDrivenRoutes(app, paths);
 
     schedulerService = startScheduler({
         publishStore,
@@ -766,6 +778,7 @@ const {
     ensureDir(paths.VERTICAL_QUEUE_ROOT);
     ensureDir(paths.VERTICAL_PUBLIC_DIR);
     ensureDir(paths.RUNTIME_ROOT);
+    ensureDir(paths.PROJECTS_DIR);
     ensureDir(paths.PUBLISH_CENTER_DIR);
     ensureDir(paths.WECHAT_RPA_PROFILE_ROOT);
     ensureDir(paths.WECHAT_RPA_TASK_DIR);

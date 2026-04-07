@@ -259,45 +259,11 @@ function createReviewHandlers(deps) {
           };
           writeMediaMetadata(videoPath, metadata);
 
-          // 如果请求重命名文件，添加分数到文件名
-          let newVideoPath = videoPath;
-          if (req.body.renameFile) {
-            try {
-              const dir = path.dirname(videoPath);
-              const ext = path.extname(videoPath);
-              const basename = path.basename(videoPath, ext);
-
-              // 移除旧的分数标记（如果有）
-              const cleanBasename = basename.replace(/_\[(\d+)分\]$/, '');
-
-              // 添加新的分数标记
-              const newBasename = `${cleanBasename}_[${result.overall_score}分]`;
-              newVideoPath = path.join(dir, newBasename + ext);
-
-              // 重命名视频文件
-              if (videoPath !== newVideoPath && !fs.existsSync(newVideoPath)) {
-                fs.renameSync(videoPath, newVideoPath);
-
-                // 重命名元数据文件
-                const oldMetaPath = `${videoPath}.meta.json`;
-                const newMetaPath = `${newVideoPath}.meta.json`;
-                if (fs.existsSync(oldMetaPath)) {
-                  fs.renameSync(oldMetaPath, newMetaPath);
-                }
-
-                console.log(`[Review] 文件已重命名: ${path.basename(videoPath)} -> ${path.basename(newVideoPath)}`);
-              }
-            } catch (renameErr) {
-              console.error('[Review] 文件重命名失败:', renameErr);
-              // 重命名失败不影响审核结果
-            }
-          }
-
           res.json({
             success: true,
             reviewId,
-            videoPath: newVideoPath,
-            renamed: newVideoPath !== videoPath,
+            videoPath,
+            renamed: false,
             result: {
               status: result.status,
               overall_score: result.overall_score,
