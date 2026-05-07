@@ -43,8 +43,6 @@ const {
     uploadToComfyUI,
     waitForCompletion
 } = require('./server/services/pipeline/comfy');
-const { createPipelineHandlers } = require('./server/services/pipeline/handlers');
-const { registerPipelineRoutes } = require('./server/routes/pipeline');
 const { createXaiService } = require('./server/services/xai/service');
 const { registerXaiRoutes } = require('./server/routes/xai');
 const { createVerticalQueueService } = require('./server/services/vertical/queue');
@@ -64,6 +62,7 @@ const { startScheduler } = require('./server/services/system/scheduler');
 const { createReviewHandlers } = require('./server/services/review');
 const { registerReviewRoutes } = require('./server/routes/review');
 const { registerMaterialDrivenRoutes } = require('./server/routes/materialDriven');
+const { startMaterialDrivenFromUrl, getTaskStatus } = require('./server/services/materialDriven/autoStart');
 const { readReviewConfig } = require('./server/services/review/store');
 const { createFeishuService } = require('./server/services/notification/feishu');
 const { createLoginStatusService } = require('./server/services/notification/loginStatus');
@@ -372,11 +371,18 @@ const {
         return runPythonScriptCancellable(scriptPath, args, options);
     }
 
-    async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json") {
+    async function generateHotTitle(pipelineDir, subtitlesFileName = "subtitles.json", options = {}) {
         const subtitlesPath = path.join(pipelineDir, subtitlesFileName);
         const scriptPath = path.join(paths.PIPELINE_DIR, 'generate_title.py');
+        const args = ['--subtitles', subtitlesPath];
+        if (options.contextPath) {
+            args.push('--context', options.contextPath);
+        }
+        if (options.scriptPath) {
+            args.push('--script', options.scriptPath);
+        }
         try {
-            const result = await runPythonScript(scriptPath, ['--subtitles', subtitlesPath], { cwd: paths.PIPELINE_DIR });
+            const result = await runPythonScript(scriptPath, args, { cwd: paths.PIPELINE_DIR });
             const title = String(result.protocol?.result?.title || result.stdout || '').trim();
             if (title) {
                 return title;
@@ -458,29 +464,6 @@ const {
         }
     }
 
-    const pipelineHandlers = createPipelineHandlers({
-        baseDir: paths.PROJECT_ROOT,
-        pipelineDir: paths.PIPELINE_DIR,
-        defaultComfyBaseUrl: runtime.DEFAULT_COMFYUI_BASE_URL,
-        getProgressClient,
-        sendProgressEvent,
-        uploadToComfyUI,
-        listenComfyUIProgress,
-        waitForCompletion,
-        applyWorkflowConfig,
-        readWorkflow,
-        workflowPath: paths.WORKFLOW_PATH,
-        createRuntimeJobDir: (prefix) => utils.createRuntimeJobDir(prefix, makeJobId),
-        readJsonIfExists,
-        writeMediaMetadata: utils.writeMediaMetadata,
-        buildFallbackTitleFromSubtitles: utils.buildFallbackTitleFromSubtitles,
-        generateHotTitle,
-        writeJsonFile,
-        runPythonScript,
-        triggerAutoReview
-    });
-
-    registerPipelineRoutes(app, upload, pipelineHandlers);
     const xaiService = createXaiService({
         sendError,
         resultPath: paths.XAI_TOP10_RESULT,
@@ -626,6 +609,7 @@ const {
         sendError,
         baseDir: paths.PROJECT_ROOT,
         pipelineDir: paths.PIPELINE_DIR,
+        projectsDir: paths.PROJECTS_DIR,
         upload,
         getProgressClient,
         sendProgressEvent,
@@ -730,11 +714,16 @@ const {
         wechatRpaService,
         xaiService,
         verticalQueueService,
+        taskStore,
         generatePublishDescription,
         publishAssetsService,
         loginStatusService,
         feishuService,
-        writeMediaMetadata: utils.writeMediaMetadata
+        writeMediaMetadata: utils.writeMediaMetadata,
+        materialDrivenStarter: {
+            start: (params) => startMaterialDrivenFromUrl(paths, params),
+            getStatus: getTaskStatus
+        }
     });
 
     // 初始化恢复服务

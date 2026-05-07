@@ -88,7 +88,7 @@ describe('任务恢复服务', () => {
     const task1 = taskStore.createTask('vertical_queue', {});
     taskStore.updateTask(task1.id, { status: 'running', progress: 50 });
 
-    const task2 = taskStore.createTask('vertical_queue', {});
+    const _task2 = taskStore.createTask('vertical_queue', {});
     // task2 保持 queued 状态
 
     const task3 = taskStore.createTask('vertical_queue', {});

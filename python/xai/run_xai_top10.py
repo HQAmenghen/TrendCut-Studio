@@ -75,6 +75,7 @@ FOLLOWER_WORKERS = get_env_int("XAI_TOP10_FOLLOWER_WORKERS", 4)
 MIN_VALID_FOLLOWERS = 100
 MAX_VALID_FOLLOWERS = 1_000_000_000
 MIN_REQUIRED_VIEWS = 15_000
+MAX_VIDEO_DURATION_SEC = 600
 
 BASE_DIR = Path(__file__).resolve().parent
 PARTIAL_PATH = BASE_DIR / "result.partial.json"
@@ -614,6 +615,7 @@ def fetch_video_variants_from_x_api(post_id: str | None) -> list[dict]:
             continue
         width = media_item.get("width")
         height = media_item.get("height")
+        duration_ms = media_item.get("duration_ms")
         for variant in media_item.get("variants", []) or []:
             url = variant.get("url")
             content_type = variant.get("content_type")
@@ -626,6 +628,7 @@ def fetch_video_variants_from_x_api(post_id: str | None) -> list[dict]:
                     "bit_rate": variant.get("bit_rate"),
                     "width": vw or width,
                     "height": vh or height,
+                    "duration_ms": duration_ms,
                 }
             )
 
@@ -1044,6 +1047,13 @@ def enrich_post(item: dict, cache: dict) -> dict:
     if preferred_variant:
         merged["video_url"] = preferred_variant.get("url") or merged.get("video_url")
         merged["video_variants"] = video_variants
+        duration_ms = preferred_variant.get("duration_ms")
+        if duration_ms is None:
+            for v in video_variants:
+                if v.get("duration_ms"):
+                    duration_ms = v["duration_ms"]
+                    break
+        merged["video_duration_ms"] = safe_number(duration_ms)
     else:
         merged["video_variants"] = []
 
@@ -1260,6 +1270,10 @@ def main() -> int:
         item["account_avg_views"] = baseline_map.get(item["author"])
         compute_metrics(item)
         if (item.get("views") or 0) < MIN_REQUIRED_VIEWS:
+            continue
+        video_duration_ms = safe_number(item.get("video_duration_ms"))
+        if video_duration_ms and video_duration_ms > MAX_VIDEO_DURATION_SEC * 1000:
+            log(f"跳过视频时长超限: {item.get('post_url')} ({video_duration_ms / 1000:.0f}s > {MAX_VIDEO_DURATION_SEC}s)")
             continue
         eligible_items.append(item)
 

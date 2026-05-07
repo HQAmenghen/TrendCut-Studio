@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 素材选用脚本
-从高分片段中选出开场、主体、收尾素材段
+从高分视觉片段中选出开场、主体、收尾素材段
 """
 import sys
 import io
@@ -65,9 +65,21 @@ def select_segments(scored_segments, target_duration=45):
     def position_score(seg, key):
         return float(seg.get("scores", {}).get("position_suitability", {}).get(key, 0) or 0)
 
+    def priority(seg):
+        value = seg.get("recommendation")
+        if isinstance(value, dict):
+            value = value.get("priority")
+        value = str(value or "").strip().lower()
+        mapping = {
+            "high_priority": "high",
+            "medium_priority": "medium",
+            "low_priority": "low",
+        }
+        return mapping.get(value, value or "medium")
+
     # 按推荐级别分组
-    high_priority = [s for s in scored_segments if s.get("recommendation") == "high_priority"]
-    medium_priority = [s for s in scored_segments if s.get("recommendation") == "medium_priority"]
+    high_priority = [s for s in scored_segments if priority(s) == "high"]
+    medium_priority = [s for s in scored_segments if priority(s) == "medium"]
 
     # 选择开场片段（适合开场的高分片段）
     opening_candidates = sorted(
@@ -105,7 +117,7 @@ def select_segments(scored_segments, target_duration=45):
         selected.append({
             "segment": opening_segment,
             "role": "opening",
-            "keep_source_audio": opening_segment.get("has_strong_source_audio", False)
+            "keep_source_audio": False
         })
         used_duration += opening_segment.get("duration_sec", 0)
 
@@ -123,7 +135,7 @@ def select_segments(scored_segments, target_duration=45):
         selected.append({
             "segment": seg,
             "role": f"main_{len([s for s in selected if s['role'].startswith('main')]) + 1}",
-            "keep_source_audio": seg.get("has_strong_source_audio", False)
+            "keep_source_audio": False
         })
         used_duration += seg.get("duration_sec", 0)
 
@@ -133,7 +145,7 @@ def select_segments(scored_segments, target_duration=45):
             selected.append({
                 "segment": closing_segment,
                 "role": "closing",
-                "keep_source_audio": closing_segment.get("has_strong_source_audio", False)
+                "keep_source_audio": False
             })
             used_duration += closing_segment.get("duration_sec", 0)
 
@@ -143,7 +155,7 @@ def select_segments(scored_segments, target_duration=45):
         selected.append({
             "segment": fallback_segment,
             "role": "main_1",
-            "keep_source_audio": fallback_segment.get("has_strong_source_audio", False)
+            "keep_source_audio": False
         })
         used_duration += fallback_segment.get("duration_sec", 0)
 
@@ -161,7 +173,7 @@ def select_segments(scored_segments, target_duration=45):
             selected.append({
                 "segment": fallback_main,
                 "role": "main_1",
-                "keep_source_audio": fallback_main.get("has_strong_source_audio", False)
+                "keep_source_audio": False
             })
             used_duration += fallback_main.get("duration_sec", 0)
 
@@ -177,7 +189,7 @@ def select_segments(scored_segments, target_duration=45):
             selected.append({
                 "segment": extra_segment,
                 "role": f"main_{len([s for s in selected if s['role'].startswith('main')]) + 1}",
-                "keep_source_audio": extra_segment.get("has_strong_source_audio", False)
+                "keep_source_audio": False
             })
             used_duration += extra_segment.get("duration_sec", 0)
 
@@ -193,12 +205,12 @@ def main():
     scored_data = load_json("material_segments_scored.json", {})
     if not scored_data:
         print("❌ 找不到 material_segments_scored.json，请先运行 score_material_segments.py")
-        return
+        return 1
 
     segments = scored_data.get("segments", [])
     if not segments:
         print("❌ 没有找到素材片段")
-        return
+        return 1
 
     print(f"   ✓ 加载了 {len(segments)} 个已打分片段")
 
@@ -265,9 +277,10 @@ def main():
         )
     else:
         print("❌ 保存失败")
-        return
+        return 1
 
     print("\n✅ 素材选用完成")
+    return 0
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ function initReviewDatabase() {
     CREATE TABLE IF NOT EXISTS ai_review_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       enabled INTEGER DEFAULT 1,
-      min_pass_score INTEGER DEFAULT 70,
+      min_pass_score INTEGER DEFAULT 65,
       content_weight INTEGER DEFAULT 30,
       subtitle_weight INTEGER DEFAULT 25,
       title_weight INTEGER DEFAULT 20,
@@ -81,7 +81,7 @@ function readReviewConfig() {
     const config = db.prepare('SELECT * FROM ai_review_config WHERE id = 1').get();
     return config || {
       enabled: 1,
-      min_pass_score: 70,
+      min_pass_score: 65,
       content_weight: 30,
       subtitle_weight: 25,
       title_weight: 20,
@@ -118,7 +118,7 @@ function writeReviewConfig(config) {
       WHERE id = 1
     `).run(
       config.enabled ? 1 : 0,
-      config.min_pass_score || 70,
+      config.min_pass_score || 65,
       config.content_weight || 30,
       config.subtitle_weight || 25,
       config.title_weight || 20,

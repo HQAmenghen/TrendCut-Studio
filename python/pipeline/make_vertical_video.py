@@ -5,12 +5,15 @@ from pathlib import Path
 import argparse
 from PIL import Image, ImageDraw, ImageFont
 import re
+import os
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from script_protocol import emit_error, emit_result, emit_stage
+from llm_client import create_llm_client, generate_content, get_text_llm_provider
+from skills.prompt_skill_loader import load_prompt_text
 
 # 终极防崩溃补丁
 sys.stdout.reconfigure(encoding='utf-8')
@@ -19,11 +22,11 @@ sys.stdout.reconfigure(encoding='utf-8')
 WIDTH = 1080
 HEIGHT = 1920
 TITLE_BOX = (84, 108, 960, 430)
-SUBTITLE_CARD_SIZE = (1080, 360)
+SUBTITLE_CARD_SIZE = (1080, 600)  # Increased from 360 to 600 to prevent dual-language clipping
 VIDEO_FRAME_WIDTH = 1080
 VIDEO_FRAME_HEIGHT = 810
 VIDEO_FRAME_Y = 470
-SUBTITLE_OVERLAY_Y = 1310
+SUBTITLE_OVERLAY_Y = 1315  # Adjusted from 1310/1250 to avoid overlapping with video frame (470+810=1280)
 DEFAULT_SUBTITLE_OFFSET_Y = 10
 SUBTITLE_GAP_SECONDS = 0.08
 TITLE_FONTS = [
@@ -44,130 +47,16 @@ DEFAULT_TITLE_FONT_SIZE = 104
 DEFAULT_TITLE_MIN_SIZE = 60
 DEFAULT_TITLE_MAX_LINES = 2
 DEFAULT_ZH_FONT_SIZE = 50
-DEFAULT_ZH_MIN_SIZE = 28
-DEFAULT_ZH_MAX_LINES = 2
+DEFAULT_ZH_MIN_SIZE = 16
+DEFAULT_ZH_MAX_LINES = 3
 DEFAULT_EN_FONT_SIZE = 52
-DEFAULT_EN_MIN_SIZE = 30
-DEFAULT_EN_MAX_LINES = 2
+DEFAULT_EN_MIN_SIZE = 16
+DEFAULT_EN_MAX_LINES = 3
 
 # ================== Helper Functions ==================
 def load_json(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def load_vertical_plan(path: Path | None):
-    if not path or not path.exists():
-        return []
-    try:
-        payload = load_json(path)
-    except Exception:
-        return []
-
-    if isinstance(payload, list):
-        raw_segments = payload
-    elif isinstance(payload, dict) and isinstance(payload.get("segments"), list):
-        raw_segments = payload["segments"]
-    else:
-        return []
-
-    def anchor_to_ratio(anchor: str, mode: str) -> float:
-        if mode == "preserve_context":
-            return 0.5
-        if anchor == "left":
-            return 0.0
-        if anchor == "right":
-            return 1.0
-        return 0.5
-
-    plan = []
-    for item in raw_segments:
-        try:
-            start = float(item.get("start_time", item.get("start", 0.0)))
-            end = float(item.get("end_time", item.get("end", 0.0)))
-        except Exception:
-            continue
-        if end <= start:
-            continue
-        anchor = str(item.get("crop_anchor", "center")).strip().lower()
-        if anchor not in {"left", "center", "right"}:
-            anchor = "center"
-        vertical_mode = str(item.get("vertical_mode", "center_safe")).strip().lower()
-
-        # crop_x_ratio: 精细裁剪位置 0.0(最左)~1.0(最右)，优先使用，缺省时从 crop_anchor 推导
-        raw_ratio = item.get("crop_x_ratio")
-        if raw_ratio is not None:
-            try:
-                ratio = max(0.0, min(1.0, float(raw_ratio)))
-            except (TypeError, ValueError):
-                ratio = anchor_to_ratio(anchor, vertical_mode)
-        else:
-            ratio = anchor_to_ratio(anchor, vertical_mode)
-
-        plan.append({
-            "start": start,
-            "end": end,
-            "crop_anchor": anchor,
-            "crop_x_ratio": ratio,
-            "vertical_mode": vertical_mode,
-            "focus_target": str(item.get("focus_target", "context")).strip() or "context",
-            "shot_type": str(item.get("shot_type", "single")).strip() or "single",
-        })
-    return plan
-
-
-# 片段切换时的线性缓动时长（秒）。若相邻片段位置差异 <= 0.01 则不插入过渡。
-_CROP_TWEEN_DURATION = 0.4
-
-
-def build_crop_x_expression(vertical_plan: list[dict]) -> str:
-    """
-    将竖屏方案转为 FFmpeg crop x 表达式。
-    - 使用 crop_x_ratio (0.0~1.0) 而非三档离散值，位置更精准。
-    - 相邻片段位置不同时，在新片段起始插入线性缓动区间，避免画面跳切。
-    """
-    if not vertical_plan:
-        return "(iw-ow)/2"
-
-    # 构建区间列表 [(t_start, t_end, ffmpeg_expr), ...]
-    intervals: list[tuple[float, float, str]] = []
-    prev_ratio = vertical_plan[0]["crop_x_ratio"]
-
-    for i, seg in enumerate(vertical_plan):
-        cur_ratio = seg["crop_x_ratio"]
-        t_start = seg["start"]
-        t_end = seg["end"]
-        seg_dur = t_end - t_start
-
-        if i == 0:
-            # 第一个片段：直接稳定，无需过渡
-            intervals.append((t_start, t_end, f"{cur_ratio:.4f}*max(iw-ow,0)"))
-        else:
-            d_ratio = cur_ratio - prev_ratio
-            tween_dur = min(_CROP_TWEEN_DURATION, seg_dur * 0.5)
-            tween_end = t_start + tween_dur
-
-            if abs(d_ratio) > 0.01 and tween_dur > 0.05:
-                # 过渡区间：线性插值从 prev_ratio → cur_ratio
-                tween_expr = (
-                    f"({prev_ratio:.4f}+({d_ratio:+.4f})"
-                    f"*min(1,(t-{t_start:.3f})/{tween_dur:.3f}))*max(iw-ow,0)"
-                )
-                intervals.append((t_start, tween_end, tween_expr))
-                # 稳定区间
-                if tween_end < t_end:
-                    intervals.append((tween_end, t_end, f"{cur_ratio:.4f}*max(iw-ow,0)"))
-            else:
-                intervals.append((t_start, t_end, f"{cur_ratio:.4f}*max(iw-ow,0)"))
-
-        prev_ratio = cur_ratio
-
-    # 将区间列表组装为嵌套 if-else 表达式（从后往前构建）
-    last_ratio = vertical_plan[-1]["crop_x_ratio"]
-    expr = f"{last_ratio:.4f}*max(iw-ow,0)"
-    for t_start, t_end, seg_expr in reversed(intervals):
-        expr = f"if(between(t,{t_start:.3f},{t_end:.3f}),{seg_expr},{expr})"
-    return expr
 
 def probe_media(input_video: Path) -> dict:
     cmd = [
@@ -338,9 +227,7 @@ def normalize_wrapped_lines(lines: list[str], font: ImageFont.FreeTypeFont, max_
             if font.getbbox(merged, **bbox_kwargs)[2] <= max_width:
                 normalized[-1] = merged
                 continue
-            # If it still doesn't fit, keep punctuation attached by trimming the previous line tail.
-            merged_fitted = fit_single_line(merged, font, max_width, **bbox_kwargs)
-            normalized[-1] = merged_fitted
+            normalized.append(stripped)
             continue
         normalized.append(stripped)
 
@@ -354,7 +241,7 @@ def normalize_wrapped_lines(lines: list[str], font: ImageFont.FreeTypeFont, max_
                 normalized.pop()
             else:
                 candidate = fit_single_line(merged, font, max_width, **bbox_kwargs)
-                if visible_text_len(candidate) >= visible_text_len(prev):
+                if "..." not in candidate and visible_text_len(candidate) >= visible_text_len(prev):
                     normalized[-2] = candidate
                     normalized.pop()
 
@@ -499,6 +386,153 @@ def make_background(content: dict, output_path: Path, title_font_size: int, titl
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, quality=95)
 
+def translate_subtitles_batch(subtitles: list[dict]):
+    targets = []
+    for i, entry in enumerate(subtitles):
+        zh_text = entry.get("zh", entry.get("text", "")).strip()
+        en_text = entry.get("en", "").strip()
+        if zh_text and not en_text:
+            targets.append({"index": i, "text": zh_text})
+    
+    if not targets:
+        return subtitles
+    
+    emit_stage("vertical_translate", f"正在自动补全 {len(targets)} 条英文翻译")
+    print(f"INFO: Detected {len(targets)} entries missing English. Translating via LLM...")
+    
+    try:
+        provider = get_text_llm_provider()
+        client = create_llm_client(provider=provider)
+        # 加载用户自定义的翻译优化建议提示词 (与 run_asr.py 保持一致)
+        # 强制补充 index 要求，否则 Refine Translate Prompt 默认不返回 index 导致映射失败
+        base_prompt = load_prompt_text("run_asr_skill.md", "Refine Translate Prompt")
+        custom_instructions = "\n\nCRITICAL: You MUST include the original 'index' (int) field in your output for each object so I can map them back."
+        prompt = (base_prompt + custom_instructions).format(
+            source_language="zh", 
+            payload=json.dumps(targets, ensure_ascii=False)
+        )
+        
+        if provider == "deepseek":
+            model_name = os.getenv("DEEPSEEK_TEXT_MODEL", "deepseek-v4-pro")
+        elif provider in ("gemini", "vertex"):
+            model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        else:
+            model_name = os.getenv("QWEN_TEXT_MODEL", "qwen-max")
+        
+        response = generate_content(
+            client,
+            model=model_name,
+            contents=prompt,
+            response_mime_type="application/json",
+            provider=provider
+        )
+        
+        results = json.loads(response.text)
+        if isinstance(results, list):
+            for res in results:
+                idx = res.get("index")
+                en = res.get("en")
+                if idx is not None and 0 <= idx < len(subtitles) and en:
+                    subtitles[idx]["en"] = en
+            print(f"   ✅ Successfully translated {len(results)} items.")
+    except Exception as e:
+        print(f"   ⚠️ Auto-translation failed: {e}")
+    
+    return subtitles
+
+
+def split_long_subtitles(subtitles: list[dict], max_chars: int = 32):
+    new_subs = []
+    for entry in subtitles:
+        zh = entry.get("zh", entry.get("text", "")).strip()
+        en = entry.get("en", "").strip()
+        time_range = entry.get("time")
+        if not time_range or len(time_range) < 2 or not zh:
+            new_subs.append(entry)
+            continue
+            
+        start, end = float(time_range[0]), float(time_range[1])
+        duration = end - start
+        
+        # Only split if it's long and has enough duration (> 2.5s) to avoid "too fast" switching
+        if len(zh) > max_chars and duration > 2.5:
+            # Split by punctuation
+            parts = re.split(r'([，。！？；：])', zh)
+            chunks = []
+            current = ""
+            for p in parts:
+                if p in "，。！？；：":
+                    current += p
+                    chunks.append(current)
+                    current = ""
+                else:
+                    current += p
+            if current: chunks.append(current)
+            
+            # If splitting by punctuation didn't shorten enough, or no punctuation, split in middle
+            if len(chunks) == 1 or any(len(c) > max_chars + 10 for c in chunks):
+                text_to_split = "".join(chunks)
+                mid = len(text_to_split) // 2
+                chunks = [text_to_split[:mid], text_to_split[mid:]]
+            
+            chunks = [c.strip() for c in chunks if c.strip()]
+            if len(chunks) <= 1:
+                new_subs.append(entry)
+                continue
+                
+            # 智能拆分：根据子句字符长度比例分配时间，而非机械平分
+            total_chars = sum(len(c) for c in chunks)
+            print(f"   -> Splitting long segment: '{zh[:10]}...' into {len(chunks)} fragments with weighted timing.")
+            en_words = en.split()
+            
+            accumulated_time = start
+            for i, chunk_zh in enumerate(chunks):
+                chunk_len = len(chunk_zh)
+                # 计算该片段应占的时长比例
+                ratio = chunk_len / total_chars
+                c_duration = duration * ratio
+                c_start = accumulated_time
+                c_end = c_start + c_duration
+                accumulated_time = c_end # 为下一段更新起始点
+                
+                # 同理分配英文单词 (按比例)
+                chunk_en = ""
+                if en_words:
+                    word_start_idx = int((sum(len(chunks[j]) for j in range(i)) / total_chars) * len(en_words))
+                    word_end_idx = int((sum(len(chunks[j]) for j in range(i+1)) / total_chars) * len(en_words))
+                    if i == len(chunks) - 1: word_end_idx = len(en_words)
+                    chunk_en = " ".join(en_words[word_start_idx:word_end_idx])
+                
+                new_subs.append({
+                    "time": [round(c_start, 3), round(c_end, 3)],
+                    "zh": chunk_zh,
+                    "en": chunk_en or en
+                })
+        else:
+            new_subs.append(entry)
+    return new_subs
+
+
+def deduplicate_subtitles(subtitles: list[dict]):
+    if not subtitles: return []
+    subtitles.sort(key=lambda x: x["time"][0])
+    
+    unique = []
+    current = subtitles[0]
+    for i in range(1, len(subtitles)):
+        next_sub = subtitles[i]
+        # 如果文本相同且时间重叠或极度接近，则强力合并
+        if next_sub.get("zh") == current.get("zh") and next_sub["time"][0] <= current["time"][1] + 0.15:
+            current["time"][1] = max(current["time"][1], next_sub["time"][1])
+            if not current.get("en") and next_sub.get("en"):
+                current["en"] = next_sub["en"]
+        else:
+            unique.append(current)
+            current = next_sub
+    unique.append(current)
+    return unique
+
+
 def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min_size: int, zh_max_lines: int, en_font_size: int, en_min_size: int, en_max_lines: int):
     card = Image.new("RGBA", SUBTITLE_CARD_SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
@@ -513,15 +547,23 @@ def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min
             EN_FONTS,
             en_font_size,
             en_min_size,
-            860,
-            150,
+            960,  # Widen to 960
+            220,  # Increase height to 220 for 3 lines with buffer
             max_lines=en_max_lines,
             relax_max_lines=min(3, max(en_max_lines, 2) + 1),
             spacing=6
         )
         en_bbox = text_bbox(draw, en_text, en_font, spacing=6)
-        draw.multiline_text(((SUBTITLE_CARD_SIZE[0] - (en_bbox[2]-en_bbox[0])) / 2, box_y_offset), en_text, font=en_font, fill="white", align="center", spacing=6)
-        box_y_offset += (en_bbox[3]-en_bbox[1]) + 38
+        # English text - Removed stroke as per user request
+        draw.multiline_text(
+            ((SUBTITLE_CARD_SIZE[0] - (en_bbox[2]-en_bbox[0])) / 2, box_y_offset), 
+            en_text, 
+            font=en_font, 
+            fill="white", 
+            align="center", 
+            spacing=6
+        )
+        box_y_offset += (en_bbox[3]-en_bbox[1]) + 45  # Increased gap
 
     if zh_text_content:
         zh_font, zh_text = fit_text_adaptive(
@@ -530,16 +572,17 @@ def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min
             ZH_FONTS,
             zh_font_size,
             zh_min_size,
-            760,
-            210,
+            920,  # Widen to 920
+            320,  # Increase height to 320 for 3 lines with buffer
             max_lines=zh_max_lines,
             relax_max_lines=min(3, max(zh_max_lines, 2) + 1),
             spacing=4
         )
         zh_bbox = text_bbox(draw, zh_text, zh_font, spacing=4)
         box_h = (zh_bbox[3]-zh_bbox[1]) + 40
-        box_w = min(920, max((zh_bbox[2]-zh_bbox[0]) + 100, 420))
+        box_w = min(1020, max((zh_bbox[2]-zh_bbox[0]) + 100, 420))
         box_pos = ((SUBTITLE_CARD_SIZE[0] - box_w) / 2, box_y_offset)
+        # Ensure box doesn't overflow card at the very bottom
         draw.rounded_rectangle((box_pos[0], box_pos[1], box_pos[0] + box_w, box_pos[1] + box_h), radius=26, fill="white")
         text_x = box_pos[0] + (box_w - (zh_bbox[2] - zh_bbox[0])) / 2
         text_y = box_pos[1] + (box_h - (zh_bbox[3] - zh_bbox[1])) / 2 - 2
@@ -568,14 +611,11 @@ def generate_subtitle_cards(subtitles: list[dict], output_dir: Path, zh_font_siz
         cards.append({"start": start, "end": end, "path": image_path})
     return cards
 
-def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], output_video: Path, subtitle_offset_y: int, vertical_plan: list[dict] | None = None):
+def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], output_video: Path, subtitle_offset_y: int):
     media_info = probe_media(input_video)
     duration = media_info["duration"]
     has_audio = media_info["has_audio"]
     print(f"INFO: Input video duration={duration:.2f}s, has_audio={has_audio}")
-    crop_x_expr = build_crop_x_expression(vertical_plan or [])
-    if vertical_plan:
-        print(f"INFO: Loaded vertical framing plan with {len(vertical_plan)} segments.")
 
     cmd = ["ffmpeg", "-y", "-loop", "1"]
     if duration > 0:
@@ -588,7 +628,7 @@ def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], 
 
     # 滤镜链修复：显式应用 setpts=PTS-STARTPTS 确保即使无音轨时时间戳也从 0 开始同步，并强制 30fps 防止丢帧导致卡死
     filter_parts = [
-        f"[1:v]setpts=PTS-STARTPTS,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:force_original_aspect_ratio=increase,crop={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:x='{crop_x_expr}':y=0,fps=30[v0]",
+        f"[1:v]setpts=PTS-STARTPTS,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:force_original_aspect_ratio=increase,crop={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:x=(iw-ow)/2:y=0,fps=30[v0]",
         f"[0:v][v0]overlay=0:{VIDEO_FRAME_Y}[base0]"
     ]
     current_label = "base0"
@@ -640,7 +680,6 @@ def main():
     parser.add_argument("--english-font-size", type=int, default=DEFAULT_EN_FONT_SIZE)
     parser.add_argument("--english-min-size", type=int, default=DEFAULT_EN_MIN_SIZE)
     parser.add_argument("--english-max-lines", type=int, default=DEFAULT_EN_MAX_LINES)
-    parser.add_argument("--plan", type=str, default="", help="Optional director plan JSON for segment-aware vertical framing.")
     args = parser.parse_args()
 
     base = Path.cwd()
@@ -650,7 +689,6 @@ def main():
     output_video = base / args.output
     background_png = base / args.background
     subtitle_dir = base / args.sub_dir
-    vertical_plan_file = (base / args.plan) if args.plan else None
     
     # --- RIGOROUS CHECKS ---
     print("\n--- [STEP 1] Verifying all input files ---")
@@ -660,14 +698,26 @@ def main():
     content = load_json(content_file)
     subtitles = []
     if not subtitles_file.exists():
-        print("WARNING: Subtitles JSON not found. Proceeding without subtitles.")
+        print(f"INFO: Subtitles JSON not found at {subtitles_file}. Proceeding without subtitles.")
     else:
-        subtitles = load_json(subtitles_file)
-        if not isinstance(subtitles, list):
-            print(f"ERROR: subtitles.json is not a list. Content: {subtitles}")
+        try:
+            subtitles = load_json(subtitles_file)
+            if not isinstance(subtitles, list):
+                print(f"ERROR: subtitles.json is not a list. Content type: {type(subtitles)}")
+                subtitles = []
+            elif not subtitles:
+                print("INFO: Subtitles file is empty (list length is 0).")
+            else:
+                print(f"INFO: Successfully loaded {len(subtitles)} subtitle entries from {subtitles_file.name}")
+        except Exception as e:
+            print(f"ERROR: Failed to parse subtitles JSON: {e}")
             subtitles = []
-        elif not subtitles:
-            print("INFO: Subtitles file is empty. Proceeding without subtitles.")
+
+    if subtitles:
+        # [NEW] 自动补全翻译、长句子自动拆分与强力去重逻辑
+        subtitles = translate_subtitles_batch(subtitles)
+        subtitles = split_long_subtitles(subtitles, max_chars=24)
+        subtitles = deduplicate_subtitles(subtitles)
 
     print("\n--- [STEP 2] Generating assets ---")
     emit_stage("vertical_assets", "正在生成竖屏背景与字幕卡")
@@ -690,11 +740,17 @@ def main():
             print("WARNING: Failed to generate any subtitle cards from the provided JSON.")
     
     print("\n--- [STEP 3] Running FFmpeg to compose final video ---")
-    vertical_plan = load_vertical_plan(vertical_plan_file)
-    run_ffmpeg(background_png, input_video, subtitle_cards, output_video, args.subtitle_offset_y, vertical_plan=vertical_plan)
+    run_ffmpeg(background_png, input_video, subtitle_cards, output_video, args.subtitle_offset_y)
 
     print(f"\n✅ Generation complete: {output_video}")
-    emit_result("竖屏视频生成完成", output_video=str(output_video), subtitle_card_count=len(subtitle_cards), framing_segment_count=len(vertical_plan))
+    # Fixed center-crop mode no longer builds a vertical framing plan, but
+    # downstream callers still expect the result payload shape to stay stable.
+    emit_result(
+        "竖屏视频生成完成",
+        output_video=str(output_video),
+        subtitle_card_count=len(subtitle_cards),
+        framing_segment_count=0,
+    )
 
 if __name__ == "__main__":
     try:

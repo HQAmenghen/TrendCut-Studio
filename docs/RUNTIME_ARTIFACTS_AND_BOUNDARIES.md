@@ -1,152 +1,90 @@
-# 运行产物与源码边界说明
+# 运行产物边界
 
-这份文档用于回答一个常见问题：
+这个仓库当前同时包含源码、构建产物和运行期产物。阅读或维护时，建议先区分它们的边界。
 
-**当前仓库里哪些是工程文件，哪些是运行期产生的文件？**
+## 1. 源码
 
-## 1. 为什么要区分
+这些目录和文件是当前真正需要维护的工程代码：
 
-这个项目不是纯前后端源码仓库，它同时承载了：
-
-- Node 后端源码
-- Vue 前端源码
-- Python 业务脚本
-- 构建产物
-- 任务缓存
-- 视频输出
-- 运行日志
-- 数据库与账号状态
-
-如果不区分这些边界，就很容易出现：
-
-- 误把运行缓存当源码
-- 误统计工程体积
-- 错误提交大文件
-- 调试时找错目录
-
-## 2. 工程源码
-
-下面这些目录或文件应被视为工程源码或工程文档：
-
-- `server/`
+- `server.js`
 - `frontend/`
-- `python/*.py`
+- `server/`
+- `python/`
+  - 其中以 `.py`、`planner/`、`skills/`、`prompt_skills/` 为主
+- `config/`
 - `docs/`
 - `scripts/`
-- `config/`
-- `package.json`
-- `requirements.txt`
-- `Dockerfile`
 - `.env.example`
+- `package.json`
 
-## 3. 构建产物
+## 2. 前端构建产物
 
-### 3.1 `frontend-dist/`
-
-这是前端构建后的静态产物，不是前端源码。
-
-如果前端页面有修改，应以 `frontend/` 为准，而不是直接修改 `frontend-dist/`。
-
-## 4. 运行时数据
-
-### 4.1 `data/`
-
-`data/` 是最核心的运行目录，常见内容包括：
-
-- `data/logs/`
-- `data/uploads/runtime_jobs/`
-- `data/uploads/xai_vertical_queue/`
-
-这些目录属于任务运行中间产物和日志目录。
-
-### 4.2 `public/`
-
-`public/` 当前是混合目录，既有静态资源，也有最终输出产物。
-
-典型运行产物：
-
-- `public/output_final.mp4`
-- `public/standalone_output_vertical.mp4`
-- `public/xai_vertical_queue/...`
-
-因此不要把 `public/` 整体都理解成源码资源目录。
-
-## 5. Python 目录中的非源码文件
-
-虽然 `python/` 主要存脚本，但当前也混入了大量运行文件。
-
-### 5.1 `python/pipeline/`
-
-除了脚本，还可能包含：
-
-- `aiman.mp4`
-- `material.mp4`
-- `output_final.mp4`
-- `standalone_input.mp4`
-- `standalone_output_vertical.mp4`
-- `audio.json`
-- `director.json`
-- `result.json`
-- `subtitles.json`
-- `subtitles.srt`
-- `subtitle_cards/`
-
-这些大多属于运行输入、调试输出和中间产物。
-
-### 5.2 `python/publish/`
-
-除了脚本，还可能包含：
-
-- `publish_jobs.db*`
-- `publish_jobs.json.bak`
-- `temp_qrcode.png`
-- `wechat_channels_tasks/`
-- `data/logs/`
-
-这些属于发布任务状态、临时二维码和运行日志。
-
-### 5.3 `python/xai/`
-
-除了脚本，还可能包含：
-
-- `result.json`
-- `result.partial.json`
-- `run_log.txt`
-- `run_error.log`
-- `xai_top10_cache.json`
-
-这些属于榜单运行结果与缓存。
-
-## 6. 统计工程体积时的推荐排除项
-
-如果要计算“工程本身有多大”，建议至少排除：
-
-- `node_modules/`
-- `.git/`
 - `frontend-dist/`
-- `data/`
-- `public/xai_vertical_queue/`
-- `python/publish/wechat_channels_user_data/`
-- `python/publish/browser_profiles/`
-- `python/publish/wechat_channels_tasks/`
+
+这是前端打包后的静态文件，不是主要开发入口。
+
+## 3. 运行期项目产物
+
+### `projects/`
+
+素材驱动链路的任务目录。
+
+通常包含：
+
+- 输入素材
+- 分析结果
+- 脚本和计划文件
+- 数字人视频
+- 最终成片
+
+### `data/`
+
+Node 侧运行时数据和任务数据库。
+
+通常包含：
+
+- `tasks.db`
+- 上传缓存
+- 队列任务目录
+- 临时运行目录
+
+## 4. Python 侧运行缓存
+
+以下内容通常不应被当作“稳定源码”来理解：
+
 - `python/pipeline/*.mp4`
+- `python/pipeline/*.json`
 - `python/pipeline/subtitle_cards/`
+- `python/publish/*.db`
+- `python/publish/*.png`
+- `python/publish/browser_profiles/`
+- `python/publish/wechat_channels_user_data/`
 - `python/xai/result*.json`
-- `python/xai/run_*.log`
+- `python/xai/run_log.txt`
+- `python/xai/run_error.log`
 
-## 7. 当前推荐的维护原则
+这些文件更多是：
 
-- 修改功能时，以 `server/`、`frontend/`、`python/*.py` 为准。
-- 排障时，优先查看 `data/`、`public/`、`python/*` 里的运行结果。
-- 做代码统计、工程评估或归档时，要先剔除运行产物。
+- 本地测试样例
+- 缓存结果
+- 浏览器用户态数据
+- 执行日志
+- 中间产物
 
-## 8. 后续工程化建议
+## 5. 文档清理原则
 
-如果后续继续治理，建议逐步把运行产物继续从源码目录中剥离：
+以下类型的文档被视为“历史过程文档”，不再作为主文档保留：
 
-- `python/pipeline/` 中的媒体和中间 JSON
-- `python/publish/` 中的数据库和任务文件
-- `python/xai/` 中的结果缓存
-- `public/` 中的批量输出目录
+- `*_COMPLETED.md`
+- `*_SUMMARY.md`
+- `BUGFIX_*.md`
+- `FEATURE_*.md`
+- `R0_*.md`
+- 临时补丁脚本与单次修复说明
 
-这样能明显降低仓库噪音，也更利于协作和备份。
+## 6. 维护建议
+
+- 看功能时，先从 `frontend/`、`server/`、`python/` 的源码入口开始。
+- 看一次任务的执行结果时，再进入 `projects/`。
+- 排查运行时问题时，再查看 `data/` 和 Python 侧数据库/日志。
+- 不要根据演示产物或旧缓存推断当前实现能力。

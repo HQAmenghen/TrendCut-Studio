@@ -75,15 +75,9 @@
                   <label class="field-label">🔗 云端接口地址</label>
                   <input class="input-dark text-sm" :value="gen.serverUrl" @input="$emit('update:gen-field', 'serverUrl', $event.target.value)" />
                 </div>
-                <div class="two-col">
-                  <div>
-                    <label class="field-label">✂️ 尾部裁剪 (秒)</label>
-                    <input type="number" step="0.1" class="input-dark text-center text-sm" :value="gen.trimSeconds" @input="$emit('update:gen-field', 'trimSeconds', Number($event.target.value))" />
-                  </div>
-                  <div>
-                    <label class="field-label">⏱️ 最大时长 (秒，默认 20)</label>
-                    <input type="number" min="1" max="180" class="input-dark text-center text-sm" :value="gen.maxDuration" @input="$emit('update:gen-field', 'maxDuration', Number($event.target.value))" />
-                  </div>
+                <div class="quick-tip-card">
+                  <strong>当前 workflow 只接收最终口播音频</strong>
+                  <p>口播文本会先在本地通过 Qwen3TTS API 复刻音色并合成音频，再把生成好的音频上传给 ComfyUI 驱动数字人。</p>
                 </div>
               </div>
             </details>

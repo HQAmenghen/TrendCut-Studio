@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { resolveAvatarSpeechNodeId } = require('../materialDriven/avatarWorkflow');
 
 function readWorkflow(workflowPath) {
   return JSON.parse(fs.readFileSync(workflowPath, 'utf-8'));
@@ -9,6 +10,7 @@ function writeWorkflow(workflowPath, workflow) {
 }
 
 function extractWorkflowConfig(workflow) {
+  const speechNodeId = resolveAvatarSpeechNodeId(workflow);
   return {
     positivePrompt: workflow['114']?.inputs?.positive_prompt || '',
     negativePrompt: workflow['114']?.inputs?.negative_prompt || '',
@@ -17,7 +19,7 @@ function extractWorkflowConfig(workflow) {
     shift: workflow['27']?.inputs?.shift ?? 11,
     scheduler: workflow['27']?.inputs?.scheduler || 'dpm++_sde',
     seed: workflow['27']?.inputs?.seed ?? 1,
-    audioSpeed: workflow['278']?.inputs?.speed ?? 1,
+    audioSpeed: speechNodeId ? workflow[speechNodeId]?.inputs?.speed ?? 1 : 1,
     scaleLength: workflow['186']?.inputs?.value ?? 1024,
     frameRate: workflow['151']?.inputs?.frame_rate ?? 25,
     outputCrf: workflow['151']?.inputs?.crf ?? 19,
@@ -29,6 +31,7 @@ function extractWorkflowConfig(workflow) {
 }
 
 function applyWorkflowConfig(workflow, config = {}) {
+  const speechNodeId = resolveAvatarSpeechNodeId(workflow);
   if (config.positivePrompt !== undefined) workflow['114'].inputs.positive_prompt = String(config.positivePrompt);
   if (config.negativePrompt !== undefined) workflow['114'].inputs.negative_prompt = String(config.negativePrompt);
   if (config.steps !== undefined) workflow['27'].inputs.steps = Number(config.steps);
@@ -38,9 +41,13 @@ function applyWorkflowConfig(workflow, config = {}) {
   if (config.seed !== undefined) {
     const seed = Number(config.seed);
     workflow['27'].inputs.seed = seed;
-    workflow['278'].inputs.seed = seed;
+    if (speechNodeId && workflow[speechNodeId]?.inputs) {
+      workflow[speechNodeId].inputs.seed = seed;
+    }
   }
-  if (config.audioSpeed !== undefined) workflow['278'].inputs.speed = Number(config.audioSpeed);
+  if (config.audioSpeed !== undefined && speechNodeId && workflow[speechNodeId]?.inputs) {
+    workflow[speechNodeId].inputs.speed = Number(config.audioSpeed);
+  }
   if (config.scaleLength !== undefined) workflow['186'].inputs.value = Number(config.scaleLength);
   if (config.frameRate !== undefined) workflow['151'].inputs.frame_rate = Number(config.frameRate);
   if (config.outputCrf !== undefined) workflow['151'].inputs.crf = Number(config.outputCrf);

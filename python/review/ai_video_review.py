@@ -22,13 +22,18 @@ from llm_client import (
 )
 from qwen_client import describe_qwen_runtime
 from script_protocol import emit_error, emit_result, emit_stage, run_guarded
+from pipeline.skills.prompt_skill_loader import load_prompt_text
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_QWEN_MODEL = "qwen3-vl-flash"
-DEFAULT_QWEN_TEXT_FALLBACK_MODEL = "qwen3.5-plus"
-MIN_PASS_SCORE = 70
+DEFAULT_QWEN_TEXT_FALLBACK_MODEL = "qwen3.6-plus"
+MIN_PASS_SCORE = 60
+CONTENT_REVIEW_PROMPT = load_prompt_text("ai_video_review_skill.md", "Content Prompt")
+SUBTITLE_REVIEW_PROMPT = load_prompt_text("ai_video_review_skill.md", "Subtitle Prompt")
+TITLE_REVIEW_PROMPT = load_prompt_text("ai_video_review_skill.md", "Title Prompt")
+EDITING_REVIEW_PROMPT = load_prompt_text("ai_video_review_skill.md", "Editing Prompt")
 
 
 def get_default_model() -> str:
@@ -50,6 +55,11 @@ def get_qwen_review_fallback_model(primary_model: str) -> str | None:
     return None
 
 
+def is_qwen_multimodal_review_model(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    return any(marker in normalized for marker in ("-vl", "vl-", "vision", "video", "omni"))
+
+
 def is_qwen_access_denied(exc: Exception) -> bool:
     message = str(exc or "").lower()
     return "accessdenied" in message or "access denied" in message
@@ -60,9 +70,13 @@ def generate_review_json(client, *, prompt: str, model: str, video_data: dict | 
     if video_data:
         contents.append(video_data)
 
-    models_to_try = [model]
     fallback_model = get_qwen_review_fallback_model(model)
-    if fallback_model:
+    if not video_data and fallback_model and is_qwen_multimodal_review_model(model):
+        ulog(f"文本审核使用 Qwen 文本模型: {model} -> {fallback_model}")
+        models_to_try = [fallback_model]
+    else:
+        models_to_try = [model]
+    if fallback_model and fallback_model not in models_to_try:
         models_to_try.append(fallback_model)
 
     last_error = None
@@ -149,34 +163,7 @@ def analyze_video_content(client, video_data: dict, metadata: dict, model: str) 
     title = metadata.get('suggestedTitle', metadata.get('title', ''))
     summary = metadata.get('sourceSummary', '')
 
-    prompt = f"""你是专业的视频内容审核专家。请分析这个短视频的内容质量。
-
-视频标题: {title}
-内容摘要: {summary}
-
-请从以下维度评估(0-100分):
-1. 画面清晰度和稳定性 - 画面是否清晰、稳定、无抖动
-2. 内容连贯性和逻辑性 - 内容是否连贯、逻辑清晰
-3. 信息准确性和价值 - 信息是否准确、有价值
-4. 视觉吸引力 - 画面是否吸引人
-
-评分要求：
-- 必须给出真实分数，不要为了稳妥把所有项都打成 85 左右。
-- 各维度要拉开差异，有明显问题就降分，有明显优势就升分。
-- 只有当视频确实整体优秀且各项接近时，才允许多个分数接近。
-- 下面 JSON 里的数字仅用于展示字段格式，不是默认分数，也不能直接照抄。
-
-请严格输出JSON格式:
-{{
-  "score": 0,
-  "clarity": {{"score": 0, "comment": "画面清晰稳定"}},
-  "coherence": {{"score": 0, "comment": "内容连贯"}},
-  "accuracy": {{"score": 0, "comment": "信息准确"}},
-  "appeal": {{"score": 0, "comment": "视觉吸引"}},
-  "issues": ["问题1", "问题2"],
-  "strengths": ["优点1", "优点2"]
-}}
-"""
+    prompt = CONTENT_REVIEW_PROMPT.format(title=title, summary=summary)
 
     try:
         result = generate_review_json(
@@ -223,34 +210,7 @@ def analyze_subtitle_accuracy(client, video_data: dict, subtitles: list, model: 
 
     subtitle_text = "\n".join(subtitle_lines)
 
-    prompt = f"""你是专业的字幕审核专家。请对比视频音频和提供的字幕，评估字幕质量。
-
-字幕内容:
-{subtitle_text}
-
-评估维度(0-100分):
-1. 字幕与音频的同步准确性 - 时间轴是否准确
-2. 文字识别准确率 - 文字是否正确
-3. 标点符号和断句合理性 - 标点和断句是否合理
-4. 字幕时长和可读性 - 显示时长是否合适
-
-评分要求：
-- 必须依据字幕内容真实打分，禁止把示例里的 85 当成固定答案。
-- 如果存在错译、漏译、时间轴偏移、排版拥挤等问题，要明确扣分。
-- 如果字幕质量明显很好，也可以高于 90。
-- 下面 JSON 的数字只是字段占位，不是参考分。
-
-请严格输出JSON格式:
-{{
-  "score": 0,
-  "sync_accuracy": {{"score": 0, "issues": []}},
-  "text_accuracy": {{"score": 0, "errors": ["错误1"]}},
-  "punctuation": {{"score": 0, "suggestions": ["建议1"]}},
-  "readability": {{"score": 0, "timing_issues": []}},
-  "critical_issues": ["严重问题"],
-  "minor_issues": ["轻微问题"]
-}}
-"""
+    prompt = SUBTITLE_REVIEW_PROMPT.format(subtitle_text=subtitle_text)
 
     result = generate_review_json(
         client,
@@ -279,33 +239,7 @@ def analyze_title_appeal(title: str, summary: str, client, model: str) -> dict:
             "alternative_titles": []
         }
 
-    prompt = f"""你是专业的内容运营专家。请评估这个短视频标题的吸引力。
-
-标题: {title}
-内容摘要: {summary}
-
-评估维度(0-100分):
-1. 标题与内容的匹配度 - 标题是否准确反映内容
-2. 标题的吸引力和点击欲望 - 是否能吸引用户点击
-3. 关键词使用效果 - 关键词是否有效
-4. 长度和可读性 - 长度是否合适、易读
-
-评分要求：
-- 请根据标题真实质量打分，不要机械返回 85。
-- 标题很弱时可以打到 40-60，优秀时可以到 90+。
-- 下面 JSON 中的数字仅用于示例格式，不是建议分数。
-
-请严格输出JSON格式:
-{{
-  "score": 0,
-  "relevance": {{"score": 0, "comment": "标题与内容匹配"}},
-  "appeal": {{"score": 0, "comment": "吸引力中等"}},
-  "keywords": {{"score": 0, "comment": "关键词有效"}},
-  "readability": {{"score": 0, "comment": "长度合适"}},
-  "suggestions": ["建议1", "建议2"],
-  "alternative_titles": ["备选标题1", "备选标题2"]
-}}
-"""
+    prompt = TITLE_REVIEW_PROMPT.format(title=title, summary=summary)
 
     result = generate_review_json(
         client,
@@ -321,31 +255,7 @@ def analyze_editing_quality(client, video_data: dict, metadata: dict, model: str
     emit_stage("review.editing", "正在分析剪辑质量")
     ulog("开始分析剪辑质量")
 
-    prompt = f"""你是专业的视频剪辑审核专家。请评估这个短视频的剪辑质量。
-
-评估维度(0-100分):
-1. 转场流畅度 - 画面切换是否流畅自然
-2. 节奏把控 - 视频节奏是否合适
-3. 画面构图 - 构图是否美观
-4. 音频质量 - 音频是否清晰、音量是否合适
-
-评分要求：
-- 请根据剪辑质量真实打分，不要把示例值当默认值。
-- 如果几乎没有剪辑变化、字幕挤压、构图不佳、音频问题明显，要主动拉低分数。
-- 如果节奏、构图、技术执行都很强，也可以明显高于 85。
-- 下面 JSON 中的数字只是格式占位，不代表推荐分数。
-
-请严格输出JSON格式:
-{{
-  "score": 0,
-  "transitions": {{"score": 0, "issues": []}},
-  "pacing": {{"score": 0, "comment": "节奏适中"}},
-  "composition": {{"score": 0, "issues": []}},
-  "audio": {{"score": 0, "issues": []}},
-  "technical_issues": ["技术问题"],
-  "creative_suggestions": ["创意建议"]
-}}
-"""
+    prompt = EDITING_REVIEW_PROMPT
 
     result = generate_review_json(
         client,

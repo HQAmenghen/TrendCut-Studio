@@ -18,7 +18,7 @@
         <div class="hero-stats">
           <div class="module-summary-card">
             <span>主视频</span>
-            <strong>{{ form.videoName ? '已载入' : '待上传' }}</strong>
+            <strong>{{ form.videoName || form.sourceTaskDir ? '已载入' : '待上传' }}</strong>
             <p>支持单条手动合成，也支持从热点榜单批量送入。</p>
           </div>
           <div class="module-summary-card">
@@ -56,7 +56,7 @@
                 <label class="upload-card">
                   <span class="upload-icon">🎞️</span>
                   <span class="upload-title">上传横屏源视频</span>
-                  <span class="upload-name">{{ form.videoName || '点击上传 mp4' }}</span>
+                  <span class="upload-name">{{ form.videoName || (form.sourceTaskDir ? `任务：${form.sourceTaskTitle || form.sourceTaskDir}` : '点击上传 mp4') }}</span>
                   <input type="file" accept="video/mp4,video/*" hidden @change="onFileChange('video', $event)" />
                 </label>
               </div>
@@ -77,6 +77,30 @@
                   <input type="file" accept=".srt" hidden @change="onFileChange('srt', $event)" />
                 </label>
               </div>
+            </div>
+
+            <div class="config-cluster task-import-cluster">
+              <div class="config-cluster-title">按任务导入</div>
+              <div class="task-import-row">
+                <select class="input-dark text-sm" :value="form.sourceTaskDir" @change="$emit('select-material-task', $event.target.value)">
+                  <option value="">不使用任务导入</option>
+                  <option v-for="task in materialTasks" :key="task.id" :value="task.outputDir">
+                    {{ task.title || task.outputDir }}
+                  </option>
+                </select>
+                <button type="button" class="dark-chip" @click="$emit('refresh-material-tasks')" :disabled="materialTasksLoading">
+                  {{ materialTasksLoading ? '刷新中...' : '刷新任务' }}
+                </button>
+              </div>
+              <div v-if="selectedMaterialTask" class="task-summary">
+                <strong>{{ selectedMaterialTask.title || selectedMaterialTask.outputDir }}</strong>
+                <span>{{ selectedMaterialTask.outputDir }}</span>
+                <div class="cluster-metrics">
+                  <div class="cluster-metric">字幕：{{ selectedMaterialTask.hasSubtitles ? `${selectedMaterialTask.subtitleSource} / ${selectedMaterialTask.subtitleCount} 条` : '无结构化字幕，将按设置处理' }}</div>
+                  <div class="cluster-metric">脚本：{{ selectedMaterialTask.scriptPreview || '未找到口播脚本' }}</div>
+                </div>
+              </div>
+              <p v-else class="muted-copy">选择已完成的素材驱动任务后，系统会直接使用该任务的成片和 JSON 信息生成竖屏。</p>
             </div>
 
             <div class="config-cluster">
@@ -332,12 +356,15 @@ const props = defineProps({
   previewSelection: { type: String, default: 'auto' },
   previewOptions: { type: Array, default: () => [] },
   form: { type: Object, required: true },
-  queueStatus: { type: Object, default: null }
+  queueStatus: { type: Object, default: null },
+  materialTasks: { type: Array, default: () => [] },
+  materialTasksLoading: { type: Boolean, default: false }
 });
 
-const emit = defineEmits(['refresh', 'submit', 'cancel-queue-job', 'delete-queue-job', 'update:file', 'update:title', 'update:use-asr', 'update:render-option', 'update:preview-selection']);
+const emit = defineEmits(['refresh', 'submit', 'cancel-queue-job', 'delete-queue-job', 'update:file', 'update:title', 'update:use-asr', 'update:render-option', 'update:preview-selection', 'refresh-material-tasks', 'select-material-task']);
 
 const renderPresetLabel = computed(() => '信息流稳态模板');
+const selectedMaterialTask = computed(() => props.materialTasks.find((task) => task.outputDir === props.form.sourceTaskDir || task.id === props.form.sourceTaskDir) || null);
 const titleMeter = computed(() => clamp((Number(props.form.renderOptions.titleFontSize || 104) - 56) / 84 * 100));
 const subtitleMeter = computed(() => clamp((Number(props.form.renderOptions.subtitleFontSize || 50) - 24) / 48 * 100));
 const offsetMeter = computed(() => clamp((Number(props.form.renderOptions.subtitleOffsetY || 20) + 20) / 100 * 100));
@@ -838,6 +865,30 @@ function formatJobDuration(job) {
   margin-top: 10px;
 }
 
+.task-import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.task-summary {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-summary strong {
+  color: var(--strong-text);
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.task-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .ghost-mini {
   border: 1px solid var(--line-soft);
   background: var(--input-bg);
@@ -967,7 +1018,8 @@ function formatJobDuration(job) {
   .hero-stats,
   .upload-grid,
   .queue-stats,
-  .controls-grid {
+  .controls-grid,
+  .task-import-row {
     grid-template-columns: 1fr;
   }
 }

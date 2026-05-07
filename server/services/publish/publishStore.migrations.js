@@ -33,7 +33,7 @@ function createPublishDatabase(publishJobsPath, readJsonIfExists) {
 
   // 为已存在的表添加 archiveDueAt 列（如果不存在）
   try {
-    db.exec(`ALTER TABLE publish_jobs_v1 ADD COLUMN archiveDueAt TEXT;`);
+    db.exec('ALTER TABLE publish_jobs_v1 ADD COLUMN archiveDueAt TEXT;');
   } catch (err) {
     // 列已存在，忽略错误
   }

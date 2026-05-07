@@ -19,6 +19,14 @@ function createSystemHandlers(deps) {
   } = deps;
 
   const getEnvValue = (values, key, fallback = '') => values[key] ?? process.env[key] ?? fallback;
+  const normalizeProvider = (value, fallback = 'gemini') => {
+    const provider = String(value || '').toLowerCase();
+    return ['gemini', 'qwen', 'vertex'].includes(provider) ? provider : fallback;
+  };
+  const normalizeVertexAuthMode = (value) => {
+    const mode = String(value || '').toLowerCase();
+    return ['api_key', 'apikey', 'key', 'express'].includes(mode) ? 'api_key' : 'adc';
+  };
 
   return {
     getPresets: (_req, res) => {
@@ -229,9 +237,14 @@ function createSystemHandlers(deps) {
     getLlmConfig: (_req, res) => {
       try {
         const { values } = readProjectEnv(baseDir);
-        const provider = String(getEnvValue(values, 'LLM_PROVIDER', 'gemini')).toLowerCase();
+        const provider = normalizeProvider(getEnvValue(values, 'LLM_PROVIDER', 'gemini'));
+        const textProvider = normalizeProvider(
+          getEnvValue(values, 'TEXT_LLM_PROVIDER', getEnvValue(values, 'SCRIPT_LLM_PROVIDER', provider)),
+          provider
+        );
         const config = {
-          provider: provider === 'qwen' ? 'qwen' : 'gemini',
+          provider,
+          textProvider,
           gemini: {
             apiKey: getEnvValue(values, 'GEMINI_API_KEY', ''),
             googleApiKey: getEnvValue(values, 'GOOGLE_API_KEY', ''),
@@ -244,8 +257,14 @@ function createSystemHandlers(deps) {
             apiKey: getEnvValue(values, 'QWEN_API_KEY', getEnvValue(values, 'DASHSCOPE_API_KEY', '')),
             baseUrl: getEnvValue(values, 'QWEN_API_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
             vlModel: getEnvValue(values, 'QWEN_VL_MODEL', 'qwen3-vl-flash'),
-            asrModel: getEnvValue(values, 'QWEN_ASR_MODEL', 'qwen3-asr-flash'),
-            textModel: getEnvValue(values, 'QWEN_TEXT_MODEL', 'qwen3.5-plus')
+            asrModel: getEnvValue(values, 'QWEN_ASR_MODEL', 'qwen3-asr-flash-filetrans'),
+            textModel: getEnvValue(values, 'QWEN_TEXT_MODEL', 'qwen3.6-plus')
+          },
+          vertex: {
+            authMode: normalizeVertexAuthMode(getEnvValue(values, 'VERTEX_AI_AUTH_MODE', 'adc')),
+            apiKey: getEnvValue(values, 'VERTEX_AI_API_KEY', ''),
+            project: getEnvValue(values, 'VERTEX_AI_PROJECT', getEnvValue(values, 'GCP_PROJECT', '')),
+            location: getEnvValue(values, 'VERTEX_AI_LOCATION', 'us-central1')
           }
         };
         res.json({ success: true, config });
@@ -261,11 +280,19 @@ function createSystemHandlers(deps) {
     },
     postLlmConfig: (req, res) => {
       try {
-        const provider = String(req.body?.provider || 'gemini').toLowerCase();
+        const { values } = readProjectEnv(baseDir);
+        const provider = normalizeProvider(req.body?.provider || getEnvValue(values, 'LLM_PROVIDER', 'gemini'));
+        const textProvider = normalizeProvider(
+          req.body?.textProvider || getEnvValue(values, 'TEXT_LLM_PROVIDER', getEnvValue(values, 'SCRIPT_LLM_PROVIDER', provider)),
+          provider
+        );
         const gemini = req.body?.gemini || {};
         const qwen = req.body?.qwen || {};
+        const vertex = req.body?.vertex || {};
         updateProjectEnv(baseDir, {
-          LLM_PROVIDER: provider === 'qwen' ? 'qwen' : 'gemini',
+          LLM_PROVIDER: provider,
+          TEXT_LLM_PROVIDER: textProvider,
+          SCRIPT_LLM_PROVIDER: textProvider,
           GEMINI_API_KEY: gemini.apiKey || '',
           GOOGLE_API_KEY: gemini.googleApiKey || gemini.apiKey || '',
           GEMINI_API_BASE_URL: gemini.baseUrl || '',
@@ -276,8 +303,12 @@ function createSystemHandlers(deps) {
           DASHSCOPE_API_KEY: qwen.apiKey || '',
           QWEN_API_BASE_URL: qwen.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
           QWEN_VL_MODEL: qwen.vlModel || 'qwen3-vl-flash',
-          QWEN_ASR_MODEL: qwen.asrModel || 'qwen3-asr-flash',
-          QWEN_TEXT_MODEL: qwen.textModel || 'qwen3.5-plus'
+          QWEN_ASR_MODEL: qwen.asrModel || 'qwen3-asr-flash-filetrans',
+          QWEN_TEXT_MODEL: qwen.textModel || 'qwen3.6-plus',
+          VERTEX_AI_AUTH_MODE: normalizeVertexAuthMode(vertex.authMode || getEnvValue(values, 'VERTEX_AI_AUTH_MODE', 'adc')),
+          VERTEX_AI_API_KEY: vertex.apiKey || getEnvValue(values, 'VERTEX_AI_API_KEY', ''),
+          VERTEX_AI_PROJECT: vertex.project || getEnvValue(values, 'VERTEX_AI_PROJECT', getEnvValue(values, 'GCP_PROJECT', '')),
+          VERTEX_AI_LOCATION: vertex.location || getEnvValue(values, 'VERTEX_AI_LOCATION', 'us-central1')
         });
 
         res.json({

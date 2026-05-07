@@ -20,6 +20,8 @@ export function useStandalone() {
   const statusText = ref('等待任务...');
   const finalVideoUrl = ref('');
   const queueStatus = ref(null);
+  const materialTasks = ref([]);
+  const materialTasksLoading = ref(false);
   const previewSelection = ref('auto');
   const localRecentLogs = ref([]);
   const localErrorLogs = ref([]);
@@ -32,10 +34,15 @@ export function useStandalone() {
   const form = ref({
     video: null,
     videoName: '',
+    sourceTaskDir: '',
+    sourceTaskTitle: '',
     srt: null,
     srtName: '',
     title: '',
+    context: '',
+    script: '',
     useASR: true,
+    subtitlesPayload: '',
     renderOptions: {
       titleFontSize: 72,
       titleMinFontSize: 52,
@@ -60,6 +67,8 @@ export function useStandalone() {
       if (parsed.form) {
         form.value.title = parsed.form.title || "";
         form.value.useASR = parsed.form.useASR ?? true;
+        form.value.sourceTaskDir = parsed.form.sourceTaskDir || "";
+        form.value.sourceTaskTitle = parsed.form.sourceTaskTitle || "";
         if (parsed.form.renderOptions) {
           form.value.renderOptions = { ...form.value.renderOptions, ...parsed.form.renderOptions };
         }
@@ -76,6 +85,8 @@ export function useStandalone() {
       form: {
         title: form.value.title,
         useASR: form.value.useASR,
+        sourceTaskDir: form.value.sourceTaskDir,
+        sourceTaskTitle: form.value.sourceTaskTitle,
         renderOptions: form.value.renderOptions
       }
     }));
@@ -229,6 +240,39 @@ export function useStandalone() {
     }
   };
 
+  const loadMaterialTasks = async (silent = false) => {
+    materialTasksLoading.value = true;
+    try {
+      const res = await axios.get('/api/vertical/material-tasks');
+      materialTasks.value = Array.isArray(res.data?.tasks) ? res.data.tasks : [];
+      if (!silent) appendLog(`读取可导入素材任务：${materialTasks.value.length} 个`);
+    } catch (err) {
+      const normalized = normalizeApiError(err, '读取素材驱动任务失败');
+      errorState.value = normalized;
+      error.value = normalized.message;
+      if (!silent) appendError(error.value);
+    } finally {
+      materialTasksLoading.value = false;
+    }
+  };
+
+  const selectMaterialTask = (taskDir) => {
+    const normalizedTaskDir = String(taskDir || '').trim();
+    const task = materialTasks.value.find((item) => item.outputDir === normalizedTaskDir || item.id === normalizedTaskDir);
+    form.value.sourceTaskDir = normalizedTaskDir;
+    form.value.sourceTaskTitle = task?.title || normalizedTaskDir;
+    form.value.video = null;
+    form.value.videoName = normalizedTaskDir ? `任务：${form.value.sourceTaskTitle || normalizedTaskDir}` : '';
+    form.value.srt = null;
+    form.value.srtName = '';
+    form.value.subtitlesPayload = '';
+    if (normalizedTaskDir) {
+      form.value.title = '';
+      form.value.useASR = false;
+      appendLog(`已选择素材驱动任务：${form.value.sourceTaskTitle || normalizedTaskDir}`);
+    }
+  };
+
   const cancelQueueJob = async (jobId) => {
     try {
       appendLog(`请求取消竖屏队列任务：${jobId}`);
@@ -252,6 +296,10 @@ export function useStandalone() {
   const handleFile = (type, file) => {
     form.value[type] = file || null;
     form.value[`${type}Name`] = file?.name || '';
+    if (type === 'video' && file) {
+      form.value.sourceTaskDir = '';
+      form.value.sourceTaskTitle = '';
+    }
   };
 
   const createProgressStream = (clientId) => {
@@ -274,8 +322,8 @@ export function useStandalone() {
   };
 
   const submit = async () => {
-    if (!form.value.video) {
-      error.value = '请先上传主视频';
+    if (!form.value.video && !form.value.sourceTaskDir) {
+      error.value = '请先上传主视频或选择素材驱动任务';
       appendError(error.value);
       return;
     }
@@ -289,8 +337,12 @@ export function useStandalone() {
     try {
       const data = new FormData();
       data.append('clientId', clientId);
-      data.append('video', form.value.video);
+      if (form.value.video) data.append('video', form.value.video);
+      if (form.value.sourceTaskDir) data.append('sourceTaskDir', form.value.sourceTaskDir);
       if (form.value.srt) data.append('srt', form.value.srt);
+      if (form.value.subtitlesPayload) data.append('subtitlesPayload', form.value.subtitlesPayload);
+      if (form.value.context) data.append('context', form.value.context);
+      if (form.value.script) data.append('script', form.value.script);
       data.append('title', form.value.title || '');
       data.append('useASR', String(form.value.useASR));
       data.append('renderOptions', JSON.stringify(form.value.renderOptions));
@@ -340,15 +392,19 @@ export function useStandalone() {
     finalVideoUrl,
     previewVideoUrl,
     queueStatus,
+    materialTasks,
+    materialTasksLoading,
     previewSelection,
     previewOptions,
     form,
     loadQueue,
+    loadMaterialTasks,
     startAutoRefresh,
     stopAutoRefresh,
     cancelQueueJob,
     deleteQueueJob,
     setPreviewSelection,
+    selectMaterialTask,
     handleFile,
     submit
   };

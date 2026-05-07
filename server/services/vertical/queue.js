@@ -27,12 +27,12 @@ function createVerticalQueueService(deps) {
     formatElapsedSeconds,
     stopProcessTree,
     removeDirIfExists,
-    buildFallbackTitleFromSubtitles,
-    spawnScript,
+    buildFallbackTitleFromSubtitles: _buildFallbackTitleFromSubtitles,
+    spawnScript: _spawnScript,
     spawnScriptCancellable,
     writeJsonFile,
     runPythonScript,
-    summarizePythonError,
+    summarizePythonError: _summarizePythonError,
     writeMediaMetadata,
     readMediaMetadata,
     triggerAutoReview
@@ -44,10 +44,19 @@ function createVerticalQueueService(deps) {
   let verticalJobConcurrency = 2;
   const verticalQueueLogPath = path.join(baseDir, 'data', 'logs', 'vertical_queue.log');
 
+  function isPublicHttpUrl(value) {
+    try {
+      const parsed = new URL(String(value || '').trim());
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch (_err) {
+      return false;
+    }
+  }
+
   function appendPersistentLine(filePath, line) {
     try {
       ensureDir(path.dirname(filePath));
-      fs.appendFile(filePath, `${line}\n`, 'utf8', (err) => {
+      fs.appendFile(filePath, `${line}\n`, 'utf8', (_err) => {
         // 静默失败
       });
     } catch (_error) {}
@@ -245,6 +254,7 @@ function createVerticalQueueService(deps) {
       }
     };
     const renderOptions = job.renderOptions || {};
+    const asrOptions = renderOptions.asrOptions || {};
     const descriptionSource = String(job.summary || '').trim() ? 'post_summary' : 'none';
 
     if (job.cancelRequested) {
@@ -272,6 +282,19 @@ function createVerticalQueueService(deps) {
       return;
     }
 
+    if (renderOptions.isRegeneration) {
+      const repairProfile = String(renderOptions.repairProfile || 'balanced');
+      const focusText = Array.isArray(renderOptions.repairFocus) && renderOptions.repairFocus.length
+        ? renderOptions.repairFocus.join(', ')
+        : 'general';
+      appendLog(job, `已启用按建议修补模式，策略=${repairProfile}，修补重点=${focusText}`);
+      if (Array.isArray(renderOptions.repairSummary)) {
+        for (const item of renderOptions.repairSummary.slice(0, 4)) {
+          appendLog(job, `修补计划: ${item}`);
+        }
+      }
+    }
+
     updateStage('transcribe', { status: 'transcribing', progress: 35, message: '正在执行 ASR 自动打轴...' }, '进入 ASR 自动打轴阶段');
 
     // 写入任务协议输入（可选，脚本可以选择使用或忽略）
@@ -285,7 +308,30 @@ function createVerticalQueueService(deps) {
       // 任务协议写入失败不影响主流程
     }
 
-    const asrHandle = spawnScriptCancellable(runAsrPath, ['--input', sourceVideoPath, '--allow-no-audio'], {
+    const asrArgs = ['--input', sourceVideoPath, '--allow-no-audio'];
+    if (isPublicHttpUrl(job.videoUrl)) {
+      asrArgs.push('--file-url', String(job.videoUrl).trim());
+    }
+    if (Number.isFinite(Number(asrOptions.maxChunkDuration))) {
+      asrArgs.push('--max-chunk-duration', String(Number(asrOptions.maxChunkDuration)));
+    }
+    if (Number.isFinite(Number(asrOptions.softChunkDuration))) {
+      asrArgs.push('--soft-chunk-duration', String(Number(asrOptions.softChunkDuration)));
+    }
+    if (Number.isFinite(Number(asrOptions.maxVisibleChars))) {
+      asrArgs.push('--max-visible-chars', String(Number(asrOptions.maxVisibleChars)));
+    }
+    if (Number.isFinite(Number(asrOptions.maxWordsPerChunk))) {
+      asrArgs.push('--max-words-per-chunk', String(Number(asrOptions.maxWordsPerChunk)));
+    }
+    if (Number.isFinite(Number(asrOptions.pauseThreshold))) {
+      asrArgs.push('--pause-threshold', String(Number(asrOptions.pauseThreshold)));
+    }
+    if (asrOptions.forceEnglishRescue) {
+      asrArgs.push('--force-english-rescue');
+    }
+
+    const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
       cwd: jobDir,
       onSpawn: (proc) => { job.currentProc = proc; },
       onStdout: pipeProcessLogs('ASR'),
@@ -421,6 +467,15 @@ function createVerticalQueueService(deps) {
       title: finalTitle,
       subtitles: Array.isArray(subtitlesData) ? subtitlesData : [],
       sourceSummary: String(job.summary || '').trim(),
+      regeneration: renderOptions.isRegeneration ? {
+        status: 'completed',
+        sourceReviewId: renderOptions.previousReviewId || '',
+        repairProfile: renderOptions.repairProfile || 'balanced',
+        repairFocus: Array.isArray(renderOptions.repairFocus) ? renderOptions.repairFocus : [],
+        repairSummary: Array.isArray(renderOptions.repairSummary) ? renderOptions.repairSummary : [],
+        appliedSuggestions: Array.isArray(renderOptions.appliedSuggestions) ? renderOptions.appliedSuggestions : [],
+        completedAt: new Date().toISOString()
+      } : undefined,
       updatedAt: new Date().toISOString()
     };
     if (typeof writeMediaMetadata === 'function') {
@@ -432,6 +487,61 @@ function createVerticalQueueService(deps) {
       const reviewResult = await triggerAutoReview(publicOutputPath, job.id);
       if (reviewResult) {
         appendLog(job, `AI 审核完成：${reviewResult.status || 'unknown'}，得分 ${reviewResult.overall_score ?? '-'}`);
+        if (renderOptions.isRegeneration && typeof readMediaMetadata === 'function') {
+          const latestMetadata = readMediaMetadata(publicOutputPath) || {};
+          const previousScore = Number(renderOptions.previousReviewScore);
+          const previousScores = renderOptions.previousReviewScores || {};
+          const currentScores = reviewResult.scores || {};
+          const scoreComparison = {
+            previousOverallScore: Number.isFinite(previousScore) ? previousScore : null,
+            currentOverallScore: Number.isFinite(Number(reviewResult.overall_score)) ? Number(reviewResult.overall_score) : null,
+            overallDelta: Number.isFinite(previousScore) && Number.isFinite(Number(reviewResult.overall_score))
+              ? Number(reviewResult.overall_score) - previousScore
+              : null,
+            previousScores: {
+              content: Number.isFinite(Number(previousScores.content)) ? Number(previousScores.content) : null,
+              subtitle: Number.isFinite(Number(previousScores.subtitle)) ? Number(previousScores.subtitle) : null,
+              title: Number.isFinite(Number(previousScores.title)) ? Number(previousScores.title) : null,
+              editing: Number.isFinite(Number(previousScores.editing)) ? Number(previousScores.editing) : null
+            },
+            currentScores: {
+              content: Number.isFinite(Number(currentScores.content)) ? Number(currentScores.content) : null,
+              subtitle: Number.isFinite(Number(currentScores.subtitle)) ? Number(currentScores.subtitle) : null,
+              title: Number.isFinite(Number(currentScores.title)) ? Number(currentScores.title) : null,
+              editing: Number.isFinite(Number(currentScores.editing)) ? Number(currentScores.editing) : null
+            },
+            deltas: {
+              content: Number.isFinite(Number(previousScores.content)) && Number.isFinite(Number(currentScores.content))
+                ? Number(currentScores.content) - Number(previousScores.content)
+                : null,
+              subtitle: Number.isFinite(Number(previousScores.subtitle)) && Number.isFinite(Number(currentScores.subtitle))
+                ? Number(currentScores.subtitle) - Number(previousScores.subtitle)
+                : null,
+              title: Number.isFinite(Number(previousScores.title)) && Number.isFinite(Number(currentScores.title))
+                ? Number(currentScores.title) - Number(previousScores.title)
+                : null,
+              editing: Number.isFinite(Number(previousScores.editing)) && Number.isFinite(Number(currentScores.editing))
+                ? Number(currentScores.editing) - Number(previousScores.editing)
+                : null
+            },
+            comparedAt: new Date().toISOString()
+          };
+          latestMetadata.regeneration = {
+            ...(latestMetadata.regeneration || {}),
+            status: reviewResult.status === 'passed' ? 'improved_passed' : 'reviewed',
+            sourceReviewId: renderOptions.previousReviewId || '',
+            repairProfile: renderOptions.repairProfile || 'balanced',
+            repairFocus: Array.isArray(renderOptions.repairFocus) ? renderOptions.repairFocus : [],
+            repairSummary: Array.isArray(renderOptions.repairSummary) ? renderOptions.repairSummary : [],
+            appliedSuggestions: Array.isArray(renderOptions.appliedSuggestions) ? renderOptions.appliedSuggestions : [],
+            scoreComparison,
+            completedAt: new Date().toISOString()
+          };
+          writeMediaMetadata(publicOutputPath, latestMetadata);
+          if (Number.isFinite(scoreComparison.overallDelta)) {
+            appendLog(job, `修补前后总分对比：${scoreComparison.previousOverallScore} -> ${scoreComparison.currentOverallScore}（${scoreComparison.overallDelta >= 0 ? '+' : ''}${scoreComparison.overallDelta}）`);
+          }
+        }
       } else {
         appendLog(job, 'AI 审核未返回结果，后续可在审核中心手动处理');
       }

@@ -36,7 +36,7 @@ describe('错误码注册表', () => {
 
   describe('ERROR_CODES', () => {
     test('所有错误码都有 stage 和 message', () => {
-      Object.entries(ERROR_CODES).forEach(([code, template]) => {
+      Object.entries(ERROR_CODES).forEach(([_code, template]) => {
         expect(template).toHaveProperty('stage');
         expect(template).toHaveProperty('message');
         expect(typeof template.stage).toBe('string');

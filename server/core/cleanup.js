@@ -71,6 +71,50 @@ const DEFAULT_CLEANUP_RULES = {
   }
 };
 
+const DEFAULT_TASK_CLEANUP_CONFIG = {
+  enabled: true,
+  retentionDays: 7,
+  invalidGraceHours: 24,
+  scanLimit: 5000,
+  materialDriven: {
+    enabled: true,
+    projectsPath: 'projects'
+  },
+  verticalQueue: {
+    enabled: true,
+    uploadPath: 'data/uploads/xai_vertical_queue',
+    publicPath: 'public/xai_vertical_queue'
+  }
+};
+
+const TERMINAL_TASK_STATUSES = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'interrupted'
+]);
+
+const TASK_AWARE_VERTICAL_RULES = new Set([
+  'verticalQueue',
+  'verticalQueueUploads'
+]);
+
+function parseNonNegativeNumber(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function cloneRule(rule) {
+  return {
+    ...rule,
+    pattern: Array.isArray(rule.pattern) ? [...rule.pattern] : rule.pattern,
+    exclude: Array.isArray(rule.exclude) ? [...rule.exclude] : rule.exclude
+  };
+}
+
 /**
  * 获取清理配置
  */
@@ -80,7 +124,9 @@ function getCleanupConfig() {
   const schedule = process.env.AUTO_CLEANUP_SCHEDULE || '0 3 * * *'; // 默认每天凌晨3点
 
   // 允许通过环境变量覆盖保留天数和启用状态
-  const rules = { ...DEFAULT_CLEANUP_RULES };
+  const rules = Object.fromEntries(
+    Object.entries(DEFAULT_CLEANUP_RULES).map(([key, rule]) => [key, cloneRule(rule)])
+  );
   Object.keys(rules).forEach(key => {
     // 覆盖保留天数
     const retentionEnvKey = `AUTO_CLEANUP_${key.toUpperCase()}_RETENTION_DAYS`;
@@ -101,7 +147,34 @@ function getCleanupConfig() {
     enabled,
     dryRun,
     schedule,
-    rules
+    rules,
+    taskWorkspaces: getTaskCleanupConfig()
+  };
+}
+
+function getTaskCleanupConfig() {
+  return {
+    enabled: process.env.AUTO_CLEANUP_TASK_WORKSPACES_ENABLED !== 'false',
+    retentionDays: parseNonNegativeNumber(
+      process.env.AUTO_CLEANUP_TASK_RETENTION_DAYS,
+      DEFAULT_TASK_CLEANUP_CONFIG.retentionDays
+    ),
+    invalidGraceHours: parseNonNegativeNumber(
+      process.env.AUTO_CLEANUP_INVALID_TASK_GRACE_HOURS,
+      DEFAULT_TASK_CLEANUP_CONFIG.invalidGraceHours
+    ),
+    scanLimit: Math.max(1, Math.floor(parseNonNegativeNumber(
+      process.env.AUTO_CLEANUP_TASK_SCAN_LIMIT,
+      DEFAULT_TASK_CLEANUP_CONFIG.scanLimit
+    ))),
+    materialDriven: {
+      ...DEFAULT_TASK_CLEANUP_CONFIG.materialDriven,
+      enabled: process.env.AUTO_CLEANUP_MATERIAL_TASKS_ENABLED !== 'false'
+    },
+    verticalQueue: {
+      ...DEFAULT_TASK_CLEANUP_CONFIG.verticalQueue,
+      enabled: process.env.AUTO_CLEANUP_VERTICAL_TASKS_ENABLED !== 'false'
+    }
   };
 }
 
@@ -167,6 +240,336 @@ function removeDirectory(dirPath) {
   }
 
   fs.rmdirSync(dirPath);
+}
+
+function isUsableFile(filePath) {
+  try {
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile() && fs.statSync(filePath).size > 0;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function getNewestMtimeMs(targetPath) {
+  try {
+    if (!targetPath || !fs.existsSync(targetPath)) {
+      return 0;
+    }
+
+    const stats = fs.statSync(targetPath);
+    let newest = stats.mtime.getTime();
+    if (!stats.isDirectory()) {
+      return newest;
+    }
+
+    for (const item of fs.readdirSync(targetPath)) {
+      newest = Math.max(newest, getNewestMtimeMs(path.join(targetPath, item)));
+    }
+    return newest;
+  } catch (_err) {
+    return 0;
+  }
+}
+
+function dateToMs(value) {
+  const timestamp = new Date(value || '').getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getAgeHours(nowMs, timestampMs) {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return 0;
+  }
+  return Math.max(0, (nowMs - timestampMs) / (1000 * 60 * 60));
+}
+
+function listChildDirectories(rootPath) {
+  try {
+    if (!fs.existsSync(rootPath)) return [];
+    return fs.readdirSync(rootPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch (_err) {
+    return [];
+  }
+}
+
+function resolveSafeChild(rootPath, childName) {
+  const name = String(childName || '').trim();
+  if (!name || name !== path.basename(name)) {
+    return null;
+  }
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, name);
+  if (!resolved.startsWith(`${root}${path.sep}`)) {
+    return null;
+  }
+  return resolved;
+}
+
+function createTaskCleanupSummary(config) {
+  return {
+    startedAt: new Date().toISOString(),
+    dryRun: Boolean(config.dryRun),
+    retentionDays: config.retentionDays,
+    invalidGraceHours: config.invalidGraceHours,
+    materialDriven: {
+      scanned: 0,
+      dirsRemoved: 0,
+      bytesFreed: 0,
+      removed: [],
+      errors: []
+    },
+    verticalQueue: {
+      scanned: 0,
+      dirsRemoved: 0,
+      taskRecordsRemoved: 0,
+      bytesFreed: 0,
+      removed: [],
+      errors: []
+    },
+    totalDirsRemoved: 0,
+    totalTaskRecordsRemoved: 0,
+    totalBytesFreed: 0,
+    totalErrors: 0
+  };
+}
+
+function recordDirRemoval(summary, sectionName, dirPath, item) {
+  const section = summary[sectionName];
+  if (!dirPath || !fs.existsSync(dirPath)) {
+    return;
+  }
+
+  try {
+    const bytesFreed = getDirectorySize(dirPath);
+    if (!summary.dryRun) {
+      removeDirectory(dirPath);
+    }
+    section.dirsRemoved += 1;
+    section.bytesFreed += bytesFreed;
+    section.removed.push({
+      ...item,
+      path: dirPath,
+      bytesFreed
+    });
+    summary.totalDirsRemoved += 1;
+    summary.totalBytesFreed += bytesFreed;
+  } catch (err) {
+    section.errors.push({
+      path: dirPath,
+      error: err.message
+    });
+    summary.totalErrors += 1;
+  }
+}
+
+function cleanupMaterialDrivenWorkspaces(baseDir, config, summary) {
+  if (!config.materialDriven?.enabled) {
+    return;
+  }
+
+  const projectsDir = path.join(baseDir, config.materialDriven.projectsPath || 'projects');
+  for (const taskDir of listChildDirectories(projectsDir)) {
+    if (!/^material_[A-Za-z0-9_.-]+$/.test(taskDir)) {
+      continue;
+    }
+
+    const taskPath = resolveSafeChild(projectsDir, taskDir);
+    if (!taskPath) {
+      continue;
+    }
+
+    summary.materialDriven.scanned += 1;
+    const ageHours = getAgeHours(config.nowMs, getNewestMtimeMs(taskPath));
+    const isStale = ageHours / 24 > config.retentionDays;
+    const isInvalid = !isUsableFile(path.join(taskPath, 'output_final.mp4')) && ageHours > config.invalidGraceHours;
+    const reason = isStale ? 'stale' : (isInvalid ? 'invalid' : '');
+    if (!reason) {
+      continue;
+    }
+
+    recordDirRemoval(summary, 'materialDriven', taskPath, {
+      id: taskDir,
+      reason
+    });
+  }
+}
+
+function listTaskStoreVerticalTasks(taskStore, scanLimit) {
+  if (!taskStore) {
+    return [];
+  }
+  if (taskStore.db && typeof taskStore.db.prepare === 'function') {
+    const rows = taskStore.db.prepare(`
+      SELECT * FROM tasks
+      WHERE type = ?
+      ORDER BY updatedAt ASC
+      LIMIT ?
+    `).all('vertical_queue', scanLimit);
+    return rows.map((row) => ({
+      ...row,
+      logs: JSON.parse(row.logs || '[]'),
+      metadata: JSON.parse(row.metadata || '{}')
+    }));
+  }
+  if (typeof taskStore.listTasks !== 'function') {
+    return [];
+  }
+  return taskStore.listTasks('vertical_queue', scanLimit);
+}
+
+function addVerticalCandidate(candidates, id, patch = {}) {
+  const normalizedId = String(id || '').trim();
+  if (!normalizedId) {
+    return;
+  }
+  const current = candidates.get(normalizedId) || { id: normalizedId };
+  candidates.set(normalizedId, { ...current, ...patch });
+}
+
+function isActiveMemoryJob(verticalQueueService, jobId) {
+  if (!verticalQueueService || typeof verticalQueueService.getJob !== 'function') {
+    return false;
+  }
+  try {
+    const job = verticalQueueService.getJob(jobId);
+    return Boolean(job && !TERMINAL_TASK_STATUSES.has(String(job.status || '')));
+  } catch (_err) {
+    return false;
+  }
+}
+
+function maxPastTimestampMs(nowMs, values) {
+  return values
+    .filter((value) => Number.isFinite(value) && value > 0 && value <= nowMs)
+    .reduce((max, value) => Math.max(max, value), 0);
+}
+
+function getVerticalCandidateMtimeMs(candidate, nowMs) {
+  const task = candidate.task || {};
+  return maxPastTimestampMs(nowMs, [
+    dateToMs(task.completedAt),
+    dateToMs(task.updatedAt),
+    dateToMs(task.createdAt),
+    getNewestMtimeMs(candidate.uploadDir),
+    getNewestMtimeMs(candidate.publicDir)
+  ]);
+}
+
+function cleanupVerticalQueueWorkspaces(baseDir, config, summary) {
+  if (!config.verticalQueue?.enabled) {
+    return;
+  }
+
+  const uploadRoot = path.join(baseDir, config.verticalQueue.uploadPath || 'data/uploads/xai_vertical_queue');
+  const publicRoot = path.join(baseDir, config.verticalQueue.publicPath || 'public/xai_vertical_queue');
+  const candidates = new Map();
+
+  try {
+    for (const task of listTaskStoreVerticalTasks(config.taskStore, config.scanLimit)) {
+      addVerticalCandidate(candidates, task.id, { task });
+    }
+  } catch (err) {
+    summary.verticalQueue.errors.push({
+      path: 'taskStore',
+      error: err.message
+    });
+    summary.totalErrors += 1;
+  }
+
+  for (const dirName of listChildDirectories(uploadRoot)) {
+    const uploadDir = resolveSafeChild(uploadRoot, dirName);
+    addVerticalCandidate(candidates, dirName, { uploadDir });
+  }
+  for (const dirName of listChildDirectories(publicRoot)) {
+    const publicDir = resolveSafeChild(publicRoot, dirName);
+    addVerticalCandidate(candidates, dirName, { publicDir });
+  }
+
+  for (const candidate of candidates.values()) {
+    const uploadDir = candidate.uploadDir || resolveSafeChild(uploadRoot, candidate.id);
+    const publicDir = candidate.publicDir || resolveSafeChild(publicRoot, candidate.id);
+    if (!uploadDir && !publicDir) {
+      continue;
+    }
+
+    summary.verticalQueue.scanned += 1;
+    if (isActiveMemoryJob(config.verticalQueueService, candidate.id)) {
+      continue;
+    }
+
+    const status = String(candidate.task?.status || '').trim();
+    const terminalOrOrphan = !candidate.task || TERMINAL_TASK_STATUSES.has(status);
+    const hasPublicOutput = publicDir ? isUsableFile(path.join(publicDir, 'vertical_output.mp4')) : false;
+    const ageHours = getAgeHours(config.nowMs, getVerticalCandidateMtimeMs({
+      ...candidate,
+      uploadDir,
+      publicDir
+    }, config.nowMs));
+    const isStale = ageHours / 24 > config.retentionDays;
+    const isInvalid = !hasPublicOutput && terminalOrOrphan && ageHours > config.invalidGraceHours;
+    const reason = isStale ? 'stale' : (isInvalid ? 'invalid' : '');
+    if (!reason) {
+      continue;
+    }
+
+    recordDirRemoval(summary, 'verticalQueue', uploadDir, {
+      id: candidate.id,
+      reason,
+      area: 'upload'
+    });
+    recordDirRemoval(summary, 'verticalQueue', publicDir, {
+      id: candidate.id,
+      reason,
+      area: 'public'
+    });
+
+    if (candidate.task && config.taskStore && typeof config.taskStore.deleteTask === 'function') {
+      summary.verticalQueue.taskRecordsRemoved += 1;
+      summary.totalTaskRecordsRemoved += 1;
+      if (!summary.dryRun) {
+        try {
+          config.taskStore.deleteTask(candidate.id);
+        } catch (err) {
+          summary.verticalQueue.errors.push({
+            path: `taskStore:${candidate.id}`,
+            error: err.message
+          });
+          summary.totalErrors += 1;
+        }
+      }
+    }
+  }
+}
+
+function cleanupTaskWorkspaces(baseDir, options = {}) {
+  const defaults = getTaskCleanupConfig();
+  const now = options.now ? new Date(options.now) : new Date();
+  const config = {
+    ...defaults,
+    ...options,
+    retentionDays: parseNonNegativeNumber(options.retentionDays, defaults.retentionDays),
+    invalidGraceHours: parseNonNegativeNumber(options.invalidGraceHours, defaults.invalidGraceHours),
+    scanLimit: Math.max(1, Math.floor(parseNonNegativeNumber(options.scanLimit, defaults.scanLimit))),
+    dryRun: Boolean(options.dryRun),
+    nowMs: Number.isFinite(now.getTime()) ? now.getTime() : Date.now(),
+    materialDriven: {
+      ...defaults.materialDriven,
+      ...(options.materialDriven || {})
+    },
+    verticalQueue: {
+      ...defaults.verticalQueue,
+      ...(options.verticalQueue || {})
+    }
+  };
+  const summary = createTaskCleanupSummary(config);
+
+  cleanupMaterialDrivenWorkspaces(baseDir, config, summary);
+  cleanupVerticalQueueWorkspaces(baseDir, config, summary);
+
+  summary.completedAt = new Date().toISOString();
+  return summary;
 }
 
 /**
@@ -288,6 +691,11 @@ function formatBytes(bytes) {
 function runCleanup(baseDir, options = {}) {
   const config = getCleanupConfig();
   const dryRun = options.dryRun !== undefined ? options.dryRun : config.dryRun;
+  const taskCleanupConfig = {
+    ...config.taskWorkspaces,
+    taskStore: options.taskStore,
+    verticalQueueService: options.verticalQueueService
+  };
 
   const summary = {
     startedAt: new Date().toISOString(),
@@ -295,6 +703,7 @@ function runCleanup(baseDir, options = {}) {
     results: [],
     totalFilesRemoved: 0,
     totalDirsRemoved: 0,
+    totalTaskRecordsRemoved: 0,
     totalBytesFreed: 0,
     totalErrors: 0
   };
@@ -303,6 +712,9 @@ function runCleanup(baseDir, options = {}) {
 
   for (const [key, rule] of Object.entries(config.rules)) {
     if (!rule.enabled) {
+      continue;
+    }
+    if (taskCleanupConfig.enabled && TASK_AWARE_VERTICAL_RULES.has(key)) {
       continue;
     }
 
@@ -328,11 +740,45 @@ function runCleanup(baseDir, options = {}) {
     }
   }
 
+  if (taskCleanupConfig.enabled) {
+    console.log(
+      `[Cleanup] 清理规则: AI剪辑/竖屏任务工作区 (保留 ${taskCleanupConfig.retentionDays} 天, 残缺宽限 ${taskCleanupConfig.invalidGraceHours} 小时)`
+    );
+    const taskSummary = cleanupTaskWorkspaces(baseDir, {
+      ...taskCleanupConfig,
+      dryRun
+    });
+    summary.taskWorkspaces = taskSummary;
+    summary.results.push({
+      rule: 'AI剪辑/竖屏任务工作区',
+      path: 'projects/material_* + xai_vertical_queue',
+      filesRemoved: 0,
+      dirsRemoved: taskSummary.totalDirsRemoved,
+      taskRecordsRemoved: taskSummary.totalTaskRecordsRemoved,
+      bytesFreed: taskSummary.totalBytesFreed,
+      errors: [
+        ...taskSummary.materialDriven.errors,
+        ...taskSummary.verticalQueue.errors
+      ]
+    });
+    summary.totalDirsRemoved += taskSummary.totalDirsRemoved;
+    summary.totalTaskRecordsRemoved += taskSummary.totalTaskRecordsRemoved;
+    summary.totalBytesFreed += taskSummary.totalBytesFreed;
+    summary.totalErrors += taskSummary.totalErrors;
+
+    if (taskSummary.totalDirsRemoved > 0 || taskSummary.totalTaskRecordsRemoved > 0) {
+      console.log(
+        `[Cleanup]   已清理任务工作区: ${taskSummary.totalDirsRemoved} 目录, ${taskSummary.totalTaskRecordsRemoved} 记录, ${formatBytes(taskSummary.totalBytesFreed)}`
+      );
+    }
+  }
+
   summary.completedAt = new Date().toISOString();
 
-  console.log(`[Cleanup] 清理完成:`);
+  console.log('[Cleanup] 清理完成:');
   console.log(`[Cleanup]   文件: ${summary.totalFilesRemoved}`);
   console.log(`[Cleanup]   目录: ${summary.totalDirsRemoved}`);
+  console.log(`[Cleanup]   任务记录: ${summary.totalTaskRecordsRemoved}`);
   console.log(`[Cleanup]   释放空间: ${formatBytes(summary.totalBytesFreed)}`);
   console.log(`[Cleanup]   错误: ${summary.totalErrors}`);
 
@@ -351,7 +797,7 @@ function getCleanupStats(baseDir) {
     totalExpiredBytes: 0
   };
 
-  for (const [key, rule] of Object.entries(config.rules)) {
+  for (const rule of Object.values(config.rules)) {
     if (!rule.enabled) {
       continue;
     }
@@ -415,8 +861,11 @@ function getCleanupStats(baseDir) {
 
 module.exports = {
   getCleanupConfig,
+  getTaskCleanupConfig,
   runCleanup,
+  cleanupTaskWorkspaces,
   getCleanupStats,
   formatBytes,
-  DEFAULT_CLEANUP_RULES
+  DEFAULT_CLEANUP_RULES,
+  DEFAULT_TASK_CLEANUP_CONFIG
 };

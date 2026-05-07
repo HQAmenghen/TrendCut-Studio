@@ -13,18 +13,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from llm_client import create_llm_client, generate_content, get_llm_provider
+from llm_client import create_llm_client, generate_content, get_text_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
+from pipeline.skills.prompt_skill_loader import load_prompt_text
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+DEFAULT_QWEN_MODEL = "qwen3.6-plus"
 
-def get_publish_model():
+def get_publish_model(provider=None):
     """获取发布描述生成模型"""
-    provider = get_llm_provider()
-    if provider == "qwen":
+    provider = provider or get_text_llm_provider()
+    if provider == "deepseek":
+        return os.getenv("DEEPSEEK_TEXT_MODEL", "deepseek-v4-pro")
+    elif provider == "qwen":
         return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
     else:
         return os.getenv(
@@ -33,6 +36,9 @@ def get_publish_model():
         )
 
 GEMINI_MODEL = get_publish_model()
+PUBLISH_PROMPT_TEMPLATE = load_prompt_text("publish_description_skill.md")
+NO_TAGS_INSTRUCTION = load_prompt_text("publish_description_skill.md", "No Tags Instruction")
+WITH_TAGS_INSTRUCTION = load_prompt_text("publish_description_skill.md", "With Tags Instruction")
 def normalize_output(text: str, strip_tags: bool = True) -> str:
     cleaned = str(text or "").strip()
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
@@ -59,48 +65,22 @@ def main() -> None:
         print("")
         return
 
-    client = create_llm_client()
-    tag_instruction = """
-10. 不要输出任何 #话题标签，标签由系统单独追加。
-11. 只输出最终文案，不要解释，不要换行。
-""".strip()
+    provider = get_text_llm_provider()
+    client = create_llm_client(provider=provider)
+    tag_instruction = NO_TAGS_INSTRUCTION
     if args.include_tags:
-        tag_instruction = """
-10. 结尾补 3 到 5 个和内容强相关的话题标签，格式示例：#能源#石油#国际财经。
-11. 标签必须严格来自原文语义，不能蹭加密货币、区块链、Web3、比特币等无关概念。
-12. 只输出最终文案，不要解释，不要换行。
-""".strip()
+        tag_instruction = WITH_TAGS_INSTRUCTION
 
-    prompt = f"""
-你是一个擅长写时政、财经、产业、科技热点短视频发布文案的中文编辑。
-
-请根据下面的视频内容，写一段适合微信视频号发布的描述文案。
-
-要求：
-1. 风格参考财经快讯、人物观点摘录、热点总结，像在转述一条有信息量的市场观点。
-2. 核心结构优先写成：人物/机构/主体 + 冒号 + 核心观点总结。
-3. 文案要有信息密度，像“谁说了什么、意味着什么”，不要写成生活化闲聊，也不要写成广告。
-4. 不要重复标题，不要把标题原样抄进去。
-5. 不要输出英文，不要带来源账号、原始链接、emoji、序号。
-6. 控制在35到90字，尽量一段写完。
-7. 如果内容里有人物、机构、公司、品牌，优先点名主体。
-8. 如果给了标题，请把标题视为主题锚点，优先围绕标题中的核心主题词写，但不要原样重复标题。
-9. 标题可以帮助你确定主题方向；摘要负责提供可写的事实细节。两者冲突时，以摘要事实为准，不要硬编。
-10. 如果标题里有石油、油气、能源、地缘、关税、科技公司等明确主题词，且摘要不冲突，文案里应自然体现这些主题词。
-11. 只能依据提供的标题和摘要写，不能脑补未出现的行业、概念、资产、立场或结论。
-12. 如果标题和摘要里都没有明确提到加密货币、比特币、区块链、Web3、美股等概念，绝对不要自行加入。
-{tag_instruction}
-
-标题：
-{title or "（未提供）"}
-
-视频内容：
-{source_text}
-"""
+    prompt = PUBLISH_PROMPT_TEMPLATE.format(
+        tag_instruction=tag_instruction,
+        title=title or "（未提供）",
+        source_text=source_text,
+    )
     response = generate_content(
         client,
-        model=GEMINI_MODEL,
+        model=get_publish_model(provider),
         contents=prompt,
+        provider=provider,
     )
     description = normalize_output(response.text, strip_tags=not args.include_tags)
     emit_result("发布描述生成完成", description=description)

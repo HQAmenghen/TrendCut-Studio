@@ -5,14 +5,33 @@
 import os
 import time
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import dashscope
-from dashscope import MultiModalConversation
+from dashscope import MultiModalConversation, MultiModalEmbedding, Generation, TextEmbedding, TextReRank
+import threading
+import itertools
+
+PYTHON_ROOT = Path(__file__).resolve().parent
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from pipeline.skills.prompt_skill_loader import load_prompt_text
 
 
-DEFAULT_GENERATE_RETRIES = 3
+DEFAULT_GENERATE_RETRIES = 4
+DEFAULT_QWEN_TEXT_REQUEST_TIMEOUT_SECONDS = int(
+    os.getenv("QWEN_TEXT_REQUEST_TIMEOUT_SECONDS", "120") or 120
+)
+DEFAULT_QWEN_MULTIMODAL_REQUEST_TIMEOUT_SECONDS = int(
+    os.getenv("QWEN_MULTIMODAL_REQUEST_TIMEOUT_SECONDS", "180") or 180
+)
+DEFAULT_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
+DEFAULT_QWEN_MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-flash-2026-03-06"
+DEFAULT_QWEN_RERANK_MODEL = "gte-rerank-v2"
 RETRYABLE_ERROR_MARKERS = (
     "server disconnected without sending a response",
     "connection reset",
@@ -23,23 +42,88 @@ RETRYABLE_ERROR_MARKERS = (
     "503",
     "504",
     "throttling",
+    "there are no suitable clusters",
+    "internalerror.algo",
+    "balanceerror",
+    "proxyerror",
+    "unable to connect to proxy",
+    "remote end closed connection without response",
+    "max retries exceeded",
+    "connection aborted",
 )
+QWEN_ASR_SYSTEM_PROMPT = load_prompt_text("qwen_client_skill.md", "ASR System Prompt")
 
 
-@dataclass
+class KeyRotator:
+    """线程安全的 Key 轮询器"""
+    def __init__(self, keys: list[str]):
+        self.keys = [k.strip() for k in keys if k.strip()]
+        if not self.keys:
+            raise ValueError("API Key 列表不能为空")
+        self.cycle = itertools.cycle(self.keys)
+        self.lock = threading.Lock()
+        self.count = len(self.keys)
+
+    def next(self) -> str:
+        with self.lock:
+            return next(self.cycle)
+
+
 class QwenClient:
-    api_key: str
-    base_url: str
+    def __init__(self, api_keys: list[str], base_url: str):
+        self.api_keys = api_keys
+        self.base_url = base_url
+        self.rotator = KeyRotator(api_keys)
+
+    @property
+    def api_key(self) -> str:
+        """动态获取下一个 API Key"""
+        return self.rotator.next()
+
+    @property
+    def key_count(self) -> int:
+        return self.rotator.count
 
 
-def get_qwen_api_key() -> str:
-    """获取千问 API Key"""
-    api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-    if not api_key:
+TEXT_MODEL_ALIASES = {
+    "qwen3.5-plus": "qwen-plus",
+    "qwen-3.5-plus": "qwen-plus",
+    "qwen3.5-turbo": "qwen-turbo",
+    "qwen-3.5-turbo": "qwen-turbo",
+    "qwen3.5-max": "qwen-max",
+    "qwen-3.5-max": "qwen-max",
+    "qwen3.6-plus": "qwen3.6-plus",
+    "qwen-3.6-plus": "qwen3.6-plus",
+}
+
+
+def use_multimodal_text_api(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    if not normalized:
+        return False
+    return (
+        normalized.startswith("qwen3.")
+        or normalized.startswith("qwen-3.")
+    )
+
+
+def get_qwen_api_keys() -> list[str]:
+    """获取千问 API Key 列表，支持分号分隔"""
+    raw_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    if not raw_key:
         raise RuntimeError(
             "Missing Qwen API key. Set QWEN_API_KEY or DASHSCOPE_API_KEY in your environment or .env file."
         )
-    return api_key
+    
+    # 支持分号或逗号分隔
+    if ";" in raw_key:
+        keys = [k.strip() for k in raw_key.split(";") if k.strip()]
+    elif "," in raw_key:
+        keys = [k.strip() for k in raw_key.split(",") if k.strip()]
+    else:
+        keys = [raw_key.strip()]
+        
+    return keys
 
 
 def get_qwen_base_url() -> str:
@@ -59,14 +143,51 @@ def _normalize_native_base_url(base_url: str) -> str:
     return normalized
 
 
+def _should_use_sdk_default_base_url(base_url: str) -> bool:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return True
+    return normalized.startswith("https://dashscope.aliyuncs.com")
+
+
+def _ensure_no_proxy_for_dashscope(base_url: str) -> None:
+    host = urlparse((base_url or "").strip() or "https://dashscope.aliyuncs.com/api/v1").hostname
+    if not host:
+        return
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = str(os.getenv(key) or "").strip()
+        items = [item.strip() for item in existing.split(",") if item.strip()]
+        lowered = {item.lower() for item in items}
+        if host.lower() not in lowered:
+            items.append(host)
+            os.environ[key] = ",".join(items)
+
+
+def _retry_wait_seconds(exc: Exception, attempt: int) -> int:
+    message = str(exc or "").lower()
+    if "there are no suitable clusters" in message or "internalerror.algo" in message:
+        return min(20, 8 * attempt)
+    if "timed out" in message or "timeout" in message:
+        return min(15, 3 * attempt + 2)
+    if "proxyerror" in message or "unable to connect to proxy" in message or "remote end closed connection without response" in message:
+        return min(10, 3 * attempt)
+    return min(8, attempt * 2)
+
+
 def create_qwen_client() -> QwenClient:
     """创建千问原生客户端"""
-    base_url = _normalize_native_base_url(get_qwen_base_url())
-    api_key = get_qwen_api_key()
-    dashscope.base_http_api_url = base_url
+    configured_base_url = get_qwen_base_url()
+    base_url = _normalize_native_base_url(configured_base_url)
+    api_keys = get_qwen_api_keys()
+    _ensure_no_proxy_for_dashscope(base_url)
+    if _should_use_sdk_default_base_url(configured_base_url):
+        client_base_url = "sdk_default"
+    else:
+        dashscope.base_http_api_url = base_url
+        client_base_url = base_url
     return QwenClient(
-        api_key=api_key,
-        base_url=base_url,
+        api_keys=api_keys,
+        base_url=client_base_url,
     )
 
 
@@ -146,6 +267,57 @@ def _convert_contents_to_messages(contents):
     return [{"role": "user", "content": [_build_content_part(contents)]}]
 
 
+def _contents_are_text_only(contents) -> bool:
+    if isinstance(contents, str):
+        return True
+    if isinstance(contents, dict):
+        return "text" in contents and len(contents.keys()) == 1
+    if not isinstance(contents, list):
+        return True
+    for item in contents:
+        if isinstance(item, str):
+            continue
+        if not isinstance(item, dict):
+            continue
+        if "text" in item and len(item.keys()) == 1:
+            continue
+        return False
+    return True
+
+
+def _convert_contents_to_text_prompt(contents) -> str:
+    if isinstance(contents, str):
+        return contents
+    if isinstance(contents, dict):
+        if "text" in contents:
+            return str(contents.get("text") or "")
+        return json.dumps(contents, ensure_ascii=False)
+    if not isinstance(contents, list):
+        return str(contents)
+    parts = []
+    for item in contents:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict) and "text" in item:
+            parts.append(str(item.get("text") or ""))
+        else:
+            parts.append(json.dumps(item, ensure_ascii=False))
+    return "\n".join(part for part in parts if part)
+
+
+def _resolve_request_timeout(contents, request_timeout: int | None) -> int:
+    if request_timeout is not None:
+        try:
+            resolved = int(request_timeout)
+            if resolved > 0:
+                return resolved
+        except Exception:
+            pass
+    if _contents_are_text_only(contents):
+        return DEFAULT_QWEN_TEXT_REQUEST_TIMEOUT_SECONDS
+    return DEFAULT_QWEN_MULTIMODAL_REQUEST_TIMEOUT_SECONDS
+
+
 class ResponseWrapper:
     def __init__(self, response):
         self._response = response
@@ -153,16 +325,48 @@ class ResponseWrapper:
     @property
     def text(self):
         try:
-            choices = self._response.output["choices"]
-            content = choices[0]["message"]["content"]
-            text_chunks = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("text")]
-            return "\n".join(chunk for chunk in text_chunks if chunk)
+            output = getattr(self._response, "output", None)
+            if isinstance(output, dict):
+                if "text" in output and output.get("text"):
+                    return str(output.get("text"))
+                if "choices" in output:
+                    choices = output["choices"]
+                    content = choices[0]["message"]["content"]
+                    if isinstance(content, str):
+                        return content
+                    text_chunks = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("text")]
+                    return "\n".join(chunk for chunk in text_chunks if chunk)
         except Exception:
-            return ""
+            pass
+        try:
+            if hasattr(self._response, "output") and hasattr(self._response.output, "text"):
+                return str(self._response.output.text or "")
+        except Exception:
+            pass
+        return ""
 
     @property
     def raw_response(self):
         return self._response
+
+
+def normalize_qwen_text_model(model: str) -> str:
+    normalized = str(model or "").strip()
+    if not normalized:
+        return normalized
+    return TEXT_MODEL_ALIASES.get(normalized.lower(), normalized)
+
+
+def get_qwen_embedding_model() -> str:
+    return os.getenv("QWEN_EMBEDDING_MODEL", DEFAULT_QWEN_EMBEDDING_MODEL).strip() or DEFAULT_QWEN_EMBEDDING_MODEL
+
+
+def get_qwen_multimodal_embedding_model() -> str:
+    return os.getenv("QWEN_MULTIMODAL_EMBEDDING_MODEL", DEFAULT_QWEN_MULTIMODAL_EMBEDDING_MODEL).strip() or DEFAULT_QWEN_MULTIMODAL_EMBEDDING_MODEL
+
+
+def get_qwen_rerank_model() -> str:
+    return os.getenv("QWEN_RERANK_MODEL", DEFAULT_QWEN_RERANK_MODEL).strip() or DEFAULT_QWEN_RERANK_MODEL
 
 
 def _raise_for_response_error(response):
@@ -183,6 +387,7 @@ def generate_content(
     contents,
     response_mime_type: str | None = None,
     retries: int = DEFAULT_GENERATE_RETRIES,
+    request_timeout: int | None = None,
 ):
     """
     使用 DashScope 原生多模态接口生成内容。
@@ -190,15 +395,42 @@ def generate_content(
     """
     messages = _convert_contents_to_messages(contents)
     attempts = max(1, int(retries or 1))
+    resolved_timeout = _resolve_request_timeout(contents, request_timeout)
     last_error = None
 
     for attempt in range(1, attempts + 1):
         try:
-            response = MultiModalConversation.call(
-                api_key=client.api_key,
-                model=model,
-                messages=messages,
-            )
+            if _contents_are_text_only(contents):
+                if use_multimodal_text_api(model):
+                    response = MultiModalConversation.call(
+                        api_key=client.api_key,
+                        model=model,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [{"text": _convert_contents_to_text_prompt(contents)}],
+                            }
+                        ],
+                        request_timeout=resolved_timeout,
+                    )
+                else:
+                    model = normalize_qwen_text_model(model)
+                    response = Generation.call(
+                        api_key=client.api_key,
+                        model=model,
+                        messages=[
+                            {"role": "user", "content": _convert_contents_to_text_prompt(contents)}
+                        ],
+                        result_format="message",
+                        request_timeout=resolved_timeout,
+                    )
+            else:
+                response = MultiModalConversation.call(
+                    api_key=client.api_key,
+                    model=model,
+                    messages=messages,
+                    request_timeout=resolved_timeout,
+                )
             _raise_for_response_error(response)
             return ResponseWrapper(response)
         except Exception as exc:
@@ -206,9 +438,9 @@ def generate_content(
             should_retry = attempt < attempts and _is_retryable_error(exc)
             if not should_retry:
                 raise
-            wait_seconds = min(6, attempt * 2)
+            wait_seconds = _retry_wait_seconds(exc, attempt)
             print(
-                f"[qwen_client] native generate_content attempt {attempt}/{attempts} failed, retrying in {wait_seconds}s: {exc}",
+                f"[qwen_client] native generate_content attempt {attempt}/{attempts} failed, retrying in {wait_seconds}s (timeout={resolved_timeout}s): {exc}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -218,11 +450,119 @@ def generate_content(
         raise last_error
 
 
+def generate_embeddings(
+    client: QwenClient,
+    *,
+    texts,
+    model: str | None = None,
+):
+    embedding_model = str(model or get_qwen_embedding_model()).strip() or get_qwen_embedding_model()
+    inputs = texts
+    if isinstance(texts, tuple):
+        inputs = list(texts)
+    if isinstance(inputs, str):
+        inputs = [inputs]
+    if not isinstance(inputs, list):
+        inputs = list(inputs or [])
+
+    batch_size = max(1, min(10, int(os.getenv("QWEN_EMBEDDING_BATCH_SIZE", "10") or 10)))
+    embeddings = []
+    for offset in range(0, len(inputs), batch_size):
+        batch = inputs[offset:offset + batch_size]
+        response = TextEmbedding.call(
+            model=embedding_model,
+            input=batch,
+            api_key=client.api_key,
+        )
+        _raise_for_response_error(response)
+        output = getattr(response, "output", None) or {}
+        batch_embeddings = []
+        if isinstance(output, dict):
+            if isinstance(output.get("embeddings"), list):
+                batch_embeddings = output.get("embeddings") or []
+            elif isinstance(output.get("data"), list):
+                batch_embeddings = output.get("data") or []
+        if not batch_embeddings and isinstance(response, dict):
+            batch_embeddings = response.get("output", {}).get("embeddings") or response.get("output", {}).get("data") or []
+        embeddings.extend(batch_embeddings)
+    vectors = []
+    for item in embeddings:
+        if isinstance(item, dict):
+            vector = item.get("embedding") or item.get("vector") or item.get("embeddings")
+            if isinstance(vector, list):
+                vectors.append(vector)
+    return vectors
+
+
+def generate_multimodal_embeddings(
+    client: QwenClient,
+    *,
+    inputs: list,
+    model: str | None = None,
+):
+    """
+    使用多模态向量模型生成嵌入。
+    inputs: [{"text": "..."}, {"image": "url_or_path"}, ...] 每个元素单独生成一个向量
+    """
+    embedding_model = str(model or get_qwen_multimodal_embedding_model()).strip() or get_qwen_multimodal_embedding_model()
+    vectors = []
+    for item in inputs:
+        if isinstance(item, str):
+            item = {"text": item}
+        response = MultiModalEmbedding.call(
+            model=embedding_model,
+            input=[item],
+            api_key=client.api_key,
+        )
+        _raise_for_response_error(response)
+        output = getattr(response, "output", None) or {}
+        embedding = None
+        if isinstance(output, dict):
+            emb_list = output.get("embeddings") or output.get("data") or []
+            if emb_list and isinstance(emb_list, list):
+                first = emb_list[0]
+                if isinstance(first, dict):
+                    embedding = first.get("embedding") or first.get("vector")
+                elif isinstance(first, list):
+                    embedding = first
+        if embedding and isinstance(embedding, list):
+            vectors.append(embedding)
+    return vectors
+
+
+def rerank_documents(
+    client: QwenClient,
+    *,
+    query: str,
+    documents,
+    model: str | None = None,
+    top_n: int | None = None,
+    return_documents: bool = True,
+):
+    rerank_model = str(model or get_qwen_rerank_model()).strip() or get_qwen_rerank_model()
+    response = TextReRank.call(
+        model=rerank_model,
+        query=query,
+        documents=list(documents or []),
+        top_n=top_n,
+        return_documents=return_documents,
+        api_key=client.api_key,
+    )
+    _raise_for_response_error(response)
+    output = getattr(response, "output", None) or {}
+    results = []
+    if isinstance(output, dict):
+        results = output.get("results") or output.get("data") or []
+    if not results and isinstance(response, dict):
+        results = response.get("output", {}).get("results") or response.get("output", {}).get("data") or []
+    return results
+
+
 def transcribe_audio(client: QwenClient, audio_path: str, model: str = "qwen3-asr-flash", language: str = "zh") -> str:
     """
     使用千问原生多模态接口进行语音识别。
     """
-    system_prompt = f"请将音频转写为文字。语言: {language}"
+    system_prompt = QWEN_ASR_SYSTEM_PROMPT.format(language=language)
     response = MultiModalConversation.call(
         api_key=client.api_key,
         model=model,

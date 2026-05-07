@@ -1,26 +1,12 @@
 {
   "6": {
     "inputs": {
-      "audio": "test_[cut_9sec].wav",
+      "audio": "a.wav",
       "audioUI": ""
     },
     "class_type": "LoadAudio",
     "_meta": {
       "title": "Load Audio"
-    }
-  },
-  "7": {
-    "inputs": {
-      "start_time": "0:00",
-      "end_time": "0:10",
-      "audio": [
-        "278",
-        0
-      ]
-    },
-    "class_type": "AudioCrop",
-    "_meta": {
-      "title": "🎵 音频裁剪"
     }
   },
   "9": {
@@ -29,7 +15,7 @@
       "chunk_length": 10,
       "chunk_overlap": 0.1,
       "audio": [
-        "7",
+        "6",
         0
       ]
     },
@@ -112,7 +98,7 @@
       "steps": 4,
       "cfg": 1,
       "shift": 11,
-      "seed": 953714801674314,
+      "seed": 502736448397021,
       "force_offload": true,
       "scheduler": "dpm++_sde",
       "riflex_freq_index": 0,
@@ -190,7 +176,7 @@
   "129": {
     "inputs": {
       "audio": [
-        "7",
+        "6",
         0
       ]
     },
@@ -241,7 +227,7 @@
     "inputs": {
       "audioUI": "",
       "audio": [
-        "7",
+        "6",
         0
       ]
     },
@@ -298,7 +284,7 @@
         0
       ],
       "audio": [
-        "7",
+        "6",
         0
       ]
     },
@@ -368,7 +354,7 @@
   },
   "180": {
     "inputs": {
-      "image": "test.jpg"
+      "image": "a.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -425,7 +411,7 @@
   },
   "246": {
     "inputs": {
-      "text": "250",
+      "text": "1052",
       "anything": [
         "131",
         2
@@ -499,39 +485,6 @@
     "class_type": "DownloadAndLoadWav2VecModel",
     "_meta": {
       "title": "(Down)load Wav2Vec Model"
-    }
-  },
-  "277": {
-    "inputs": {
-      "model_version": "Fun-CosyVoice3-0.5B",
-      "download_source": "ModelScope",
-      "device": "auto",
-      "force_redownload": false,
-      "force_reload": false
-    },
-    "class_type": "FL_CosyVoice3_ModelLoader",
-    "_meta": {
-      "title": "FL CosyVoice3 Model Loader"
-    }
-  },
-  "278": {
-    "inputs": {
-      "text": "哈喽大家好！你现在听到的声音，是一条完全由人工智能自动生成的测试音频。从声音到口型，全都是用 ComfyUI 一键搞定的！",
-      "speed": 1,
-      "seed": 919117951,
-      "text_frontend": true,
-      "model": [
-        "277",
-        0
-      ],
-      "reference_audio": [
-        "6",
-        0
-      ]
-    },
-    "class_type": "FL_CosyVoice3_ZeroShot",
-    "_meta": {
-      "title": "FL CosyVoice3 Zero-Shot Clone"
     }
   }
 }

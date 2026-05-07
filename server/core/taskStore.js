@@ -1,5 +1,4 @@
 const Database = require('better-sqlite3');
-const path = require('path');
 
 class TaskStore {
   constructor(dbPath) {
@@ -129,11 +128,11 @@ class TaskStore {
 
     if (type) {
       // 如果指定了 type，只查询该类型的活跃任务
-      query = `SELECT * FROM tasks WHERE type = ? AND status IN ('queued', 'running') ORDER BY createdAt ASC`;
+      query = 'SELECT * FROM tasks WHERE type = ? AND status IN (\'queued\', \'running\') ORDER BY createdAt ASC';
       params = [type];
     } else {
       // 如果没有指定 type，查询所有活跃任务
-      query = `SELECT * FROM tasks WHERE status IN ('queued', 'running') ORDER BY createdAt ASC`;
+      query = 'SELECT * FROM tasks WHERE status IN (\'queued\', \'running\') ORDER BY createdAt ASC';
       params = [];
     }
 

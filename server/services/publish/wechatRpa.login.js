@@ -37,7 +37,7 @@ function createWechatLoginService(deps) {
   /**
    * 结束登录检查会话
    */
-  function finalizeLoginCheckSession(accountId, options = {}) {
+  function finalizeLoginCheckSession(accountId, _options = {}) {
     const session = loginCheckSessions.get(accountId);
     if (!session) return;
     if (session.cleanupTimer) {

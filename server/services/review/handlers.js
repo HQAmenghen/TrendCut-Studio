@@ -458,7 +458,7 @@ function createReviewHandlers(deps) {
     // 根据审核建议重新生成视频
     regenerateVideo: async (req, res) => {
       try {
-        const { videoPath, assetId } = req.body;
+        const { videoPath } = req.body;
 
         if (!videoPath) {
           return sendError(res, {
@@ -506,7 +506,10 @@ function createReviewHandlers(deps) {
             titleChanged: adjustments.needsNewTitle,
             newTitle: adjustments.suggestedTitle,
             subtitlesRegenerated: adjustments.needsSubtitleRegeneration,
-            appliedSuggestionsCount: adjustments.highPrioritySuggestions.length
+            appliedSuggestionsCount: adjustments.highPrioritySuggestions.length,
+            repairProfile: adjustments.repairProfile,
+            repairFocus: adjustments.repairFocus,
+            repairSummary: adjustments.repairSummary
           },
           message: '视频已加入重新生成队列'
         });

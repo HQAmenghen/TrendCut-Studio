@@ -108,7 +108,9 @@ function createPublishConfigService(deps) {
         autoPilotAccountIds: [],
         autoPilotUseCurrentRanking: false,
         autoArchiveEnabled: true,
-        autoArchiveDelayMinutes: 30
+        autoArchiveDelayMinutes: 30,
+        pipelineMode: 'vertical',
+        avatarPipelineConfig: {}
       },
       wechatChannels: { enabled: false, accounts: [] },
       douyin: { enabled: false, displayName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
@@ -130,6 +132,10 @@ function createPublishConfigService(deps) {
       next.global.autoPilotUseCurrentRanking = Boolean(incomingGlobal.autoPilotUseCurrentRanking);
       next.global.autoArchiveEnabled = incomingGlobal.autoArchiveEnabled !== undefined ? Boolean(incomingGlobal.autoArchiveEnabled) : true;
       next.global.autoArchiveDelayMinutes = Math.max(0, parseInt(incomingGlobal.autoArchiveDelayMinutes || 30, 10));
+      next.global.pipelineMode = String(incomingGlobal.pipelineMode || 'vertical').trim() || 'vertical';
+      if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
+        next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
+      }
     }
 
     for (const platform of ['douyin', 'xiaohongshu', 'x', 'youtube']) {
@@ -267,6 +273,12 @@ function createPublishConfigService(deps) {
       next.global.autoPilotUseCurrentRanking = Boolean(incomingGlobal.autoPilotUseCurrentRanking);
       next.global.autoArchiveEnabled = incomingGlobal.autoArchiveEnabled !== undefined ? Boolean(incomingGlobal.autoArchiveEnabled) : next.global.autoArchiveEnabled;
       next.global.autoArchiveDelayMinutes = incomingGlobal.autoArchiveDelayMinutes !== undefined ? Math.max(0, parseInt(incomingGlobal.autoArchiveDelayMinutes, 10)) : next.global.autoArchiveDelayMinutes;
+      if (incomingGlobal.pipelineMode !== undefined) {
+        next.global.pipelineMode = String(incomingGlobal.pipelineMode || 'vertical').trim() || 'vertical';
+      }
+      if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
+        next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
+      }
     }
     for (const platform of Object.keys(next)) {
       if (platform === 'global') continue;

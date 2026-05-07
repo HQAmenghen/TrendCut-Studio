@@ -1,5 +1,8 @@
 const fs = require('fs');
 
+const TRANSLATE_TIMEOUT_MS = 300000;
+const TRANSLATE_RETRY_COOLDOWN_MS = 120000;
+
 function sanitizeAccounts(accounts) {
   if (!Array.isArray(accounts)) return [];
   const seen = new Set();
@@ -30,11 +33,15 @@ function createXaiService(deps) {
     tailLines,
     getProgressClient,
     sendProgressEvent,
-    runPythonScript,
-    runPythonScriptSync
+    runPythonScript
   } = deps;
 
   let xaiTop10Running = false;
+  let translationRunning = false;
+  let translationLastError = '';
+  let translationLastStartedAt = null;
+  let translationLastFinishedAt = null;
+  let translationNextAttemptAt = 0;
 
   function mergeAccounts(accounts) {
     return sanitizeAccounts([...(fixedAccounts || []), ...(Array.isArray(accounts) ? accounts : [])]);
@@ -49,9 +56,63 @@ function createXaiService(deps) {
       partial,
       hasResult,
       resultUpdatedAt: hasResult ? fs.statSync(resultPath).mtime.toISOString() : null,
+      translation: {
+        running: translationRunning,
+        lastError: translationLastError || null,
+        lastStartedAt: translationLastStartedAt,
+        lastFinishedAt: translationLastFinishedAt,
+        nextAttemptAt: translationNextAttemptAt ? new Date(translationNextAttemptAt).toISOString() : null
+      },
       logTail: tailLines(readTextIfExists(logPath)),
       errorTail: tailLines(readTextIfExists(errorLogPath))
     };
+  }
+
+  function needsTranslation(item) {
+    const sourceText = item?.author_summary || item?.summary;
+    const translatedText = item?.author_summary_zh;
+    return Boolean(sourceText && (!translatedText || translatedText === sourceText));
+  }
+
+  function startBackgroundTranslation() {
+    if (translationRunning || !fs.existsSync(translateScriptPath)) return;
+
+    const now = Date.now();
+    if (translationNextAttemptAt && now < translationNextAttemptAt) return;
+
+    translationRunning = true;
+    translationLastError = '';
+    translationLastStartedAt = new Date(now).toISOString();
+    translationLastFinishedAt = null;
+
+    let translationPromise;
+    try {
+      translationPromise = runPythonScript(translateScriptPath, ['--result', resultPath], {
+        cwd: scriptCwd,
+        timeout: TRANSLATE_TIMEOUT_MS
+      });
+    } catch (error) {
+      translationRunning = false;
+      translationLastFinishedAt = new Date().toISOString();
+      translationLastError = error.details || error.message;
+      translationNextAttemptAt = Date.now() + TRANSLATE_RETRY_COOLDOWN_MS;
+      console.warn('translate xai result failed:', translationLastError);
+      return;
+    }
+
+    Promise.resolve(translationPromise)
+      .then(() => {
+        translationRunning = false;
+        translationLastFinishedAt = new Date().toISOString();
+        translationNextAttemptAt = 0;
+      })
+      .catch((error) => {
+        translationRunning = false;
+        translationLastFinishedAt = new Date().toISOString();
+        translationLastError = error.details || error.message;
+        translationNextAttemptAt = Date.now() + TRANSLATE_RETRY_COOLDOWN_MS;
+        console.warn('translate xai result failed:', translationLastError);
+      });
   }
 
   function ensureTranslatedResult() {
@@ -60,19 +121,8 @@ function createXaiService(deps) {
     }
     const payload = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
     const items = Array.isArray(payload?.items) ? payload.items : [];
-    const needsTranslation = items.some((item) => (item?.author_summary || item?.summary) && !item?.author_summary_zh);
-    if (!needsTranslation) return payload;
-    if (!fs.existsSync(translateScriptPath)) return payload;
-
-    try {
-      runPythonScriptSync(translateScriptPath, ['--result', resultPath], {
-        cwd: scriptCwd
-      });
-    } catch (error) {
-      console.warn('translate xai result failed:', error.details || error.message);
-      return payload;
-    }
-    return JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
+    if (items.some(needsTranslation)) startBackgroundTranslation();
+    return payload;
   }
 
   function readConfig() {

@@ -321,7 +321,7 @@ class FeishuNotificationService {
     }
 
     const text =
-      `🔔 最新登录二维码已刷新\n` +
+      '🔔 最新登录二维码已刷新\n' +
       `账号: ${accountLabel}\n` +
       `时间: ${timestamp}\n` +
       (details.loginUrl ? `登录地址: ${details.loginUrl}` : '');

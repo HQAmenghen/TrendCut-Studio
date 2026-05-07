@@ -1,0 +1,427 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-10",
+  "default_rules": {
+    "preferred_topics": [
+      "finance",
+      "business",
+      "technology",
+      "crypto",
+      "ai"
+    ],
+    "preferred_vocal_style": "instrumental_only",
+    "default_ducking_db": -20,
+    "default_fade_in_sec": 0.6,
+    "default_fade_out_sec": 1.0,
+    "default_target_bpm_range": [
+      90,
+      115
+    ],
+    "default_music_start_policy": "prefer_intro_then_bed",
+    "default_loop_policy": "loop_bed_segment",
+    "default_transition_policy": "short_equal_power_fade"
+  },
+  "tracks": [
+    {
+      "id": "pixabay_tech_385665",
+      "title": "Corporate Technology Background Music",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/beats-corporate-technology-background-music-385665/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "technology",
+        "ai",
+        "business"
+      ],
+      "moods": [
+        "clean",
+        "modern",
+        "rational",
+        "forward"
+      ],
+      "use_cases": [
+        "intro",
+        "main_narration",
+        "summary"
+      ],
+      "energy": "medium",
+      "bpm_estimate": 104,
+      "brightness": "medium",
+      "rhythm_density": "medium",
+      "vocal_presence": "none",
+      "narration_friendliness": 9,
+      "crypto_fit": 7,
+      "ai_fit": 9,
+      "finance_fit": 8,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 6.0,
+        "short_form_entry": 8.0,
+        "bed_start": 6.0,
+        "bed_end": 38.0,
+        "lift_start": 38.0,
+        "lift_end": 52.0,
+        "outro_start": 52.0,
+        "outro_end": 68.0
+      },
+      "mix_profile": {
+        "ducking_db": -20,
+        "target_gain_db": -2,
+        "sidechain_strength": "medium"
+      },
+      "notes": "科技与商业通用型底乐，适合作为默认候选。"
+    },
+    {
+      "id": "pixabay_tech_303079",
+      "title": "Corporate Technology Background Music",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/beats-corporate-technology-background-music-303079/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "finance",
+        "business",
+        "technology"
+      ],
+      "moods": [
+        "stable",
+        "credible",
+        "neutral",
+        "modern"
+      ],
+      "use_cases": [
+        "main_narration",
+        "analysis",
+        "summary"
+      ],
+      "energy": "low_medium",
+      "bpm_estimate": 96,
+      "brightness": "medium_low",
+      "rhythm_density": "low",
+      "vocal_presence": "none",
+      "narration_friendliness": 10,
+      "crypto_fit": 6,
+      "ai_fit": 7,
+      "finance_fit": 10,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 8.0,
+        "bed_start": 8.0,
+        "bed_end": 42.0,
+        "lift_start": 42.0,
+        "lift_end": 54.0,
+        "outro_start": 54.0,
+        "outro_end": 72.0
+      },
+      "mix_profile": {
+        "ducking_db": -19,
+        "target_gain_db": -3,
+        "sidechain_strength": "light"
+      },
+      "notes": "财经和商业分析最稳，适合长口播。"
+    },
+    {
+      "id": "pixabay_tech_439804",
+      "title": "Technology Background Music",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/corporate-corporate-technology-background-music-439804/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "technology",
+        "ai",
+        "business"
+      ],
+      "moods": [
+        "precise",
+        "digital",
+        "rational",
+        "light_future"
+      ],
+      "use_cases": [
+        "intro",
+        "main_narration",
+        "transition"
+      ],
+      "energy": "medium",
+      "bpm_estimate": 108,
+      "brightness": "medium",
+      "rhythm_density": "medium",
+      "vocal_presence": "none",
+      "narration_friendliness": 8,
+      "crypto_fit": 7,
+      "ai_fit": 9,
+      "finance_fit": 7,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 5.5,
+        "bed_start": 5.5,
+        "bed_end": 34.0,
+        "lift_start": 34.0,
+        "lift_end": 48.0,
+        "outro_start": 48.0,
+        "outro_end": 64.0
+      },
+      "mix_profile": {
+        "ducking_db": -20,
+        "target_gain_db": -2,
+        "sidechain_strength": "medium"
+      },
+      "notes": "AI 与科技行业分析适配度高，前奏干净。"
+    },
+    {
+      "id": "pixabay_tech_194843",
+      "title": "Tech Corporate",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/corporate-tech-corporate-194843/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "business",
+        "finance",
+        "technology"
+      ],
+      "moods": [
+        "professional",
+        "reliable",
+        "modern",
+        "steady"
+      ],
+      "use_cases": [
+        "main_narration",
+        "business_commentary",
+        "closing"
+      ],
+      "energy": "medium",
+      "bpm_estimate": 100,
+      "brightness": "medium",
+      "rhythm_density": "low_medium",
+      "vocal_presence": "none",
+      "narration_friendliness": 9,
+      "crypto_fit": 6,
+      "ai_fit": 8,
+      "finance_fit": 9,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 7.0,
+        "bed_start": 7.0,
+        "bed_end": 40.0,
+        "lift_start": 40.0,
+        "lift_end": 53.0,
+        "outro_start": 53.0,
+        "outro_end": 70.0
+      },
+      "mix_profile": {
+        "ducking_db": -19,
+        "target_gain_db": -3,
+        "sidechain_strength": "light"
+      },
+      "notes": "偏企业科技与商业分析，不抢解说。"
+    },
+    {
+      "id": "pixabay_ambient_467337",
+      "title": "Ambient Technology (Futuristic Hi-Tech)",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/corporate-ambient-technology-futuristic-hi-tech-467337/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "ai",
+        "technology",
+        "crypto"
+      ],
+      "moods": [
+        "futuristic",
+        "minimal",
+        "clean",
+        "innovative"
+      ],
+      "use_cases": [
+        "intro",
+        "main_narration",
+        "product_demo"
+      ],
+      "energy": "low_medium",
+      "bpm_estimate": 92,
+      "brightness": "medium_high",
+      "rhythm_density": "low",
+      "vocal_presence": "none",
+      "narration_friendliness": 9,
+      "crypto_fit": 8,
+      "ai_fit": 10,
+      "finance_fit": 6,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 9.0,
+        "bed_start": 9.0,
+        "bed_end": 41.0,
+        "lift_start": 41.0,
+        "lift_end": 56.0,
+        "outro_start": 56.0,
+        "outro_end": 74.0
+      },
+      "mix_profile": {
+        "ducking_db": -21,
+        "target_gain_db": -2,
+        "sidechain_strength": "light"
+      },
+      "notes": "很适合 AI、芯片、模型能力、技术趋势内容。"
+    },
+    {
+      "id": "pixabay_future_231901",
+      "title": "Futuristic Technology",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/corporate-futuristic-technology-231901/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "crypto",
+        "technology",
+        "ai"
+      ],
+      "moods": [
+        "forward",
+        "strategic",
+        "digital",
+        "slightly_tense"
+      ],
+      "use_cases": [
+        "intro",
+        "trend_analysis",
+        "turning_point"
+      ],
+      "energy": "medium",
+      "bpm_estimate": 110,
+      "brightness": "medium",
+      "rhythm_density": "medium",
+      "vocal_presence": "none",
+      "narration_friendliness": 8,
+      "crypto_fit": 10,
+      "ai_fit": 8,
+      "finance_fit": 7,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 5.0,
+        "bed_start": 5.0,
+        "bed_end": 32.0,
+        "lift_start": 32.0,
+        "lift_end": 46.0,
+        "outro_start": 46.0,
+        "outro_end": 61.0
+      },
+      "mix_profile": {
+        "ducking_db": -20,
+        "target_gain_db": -2,
+        "sidechain_strength": "medium"
+      },
+      "notes": "加密货币、趋势判断、前沿话题优先。"
+    },
+    {
+      "id": "pixabay_digital_478824",
+      "title": "Digital Technology Corporate Background",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/corporate-digital-technology-corporate-background-478824/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "business",
+        "technology",
+        "finance"
+      ],
+      "moods": [
+        "efficient",
+        "digital",
+        "clean",
+        "news_like"
+      ],
+      "use_cases": [
+        "news_commentary",
+        "main_narration",
+        "transition"
+      ],
+      "energy": "medium",
+      "bpm_estimate": 106,
+      "brightness": "medium_high",
+      "rhythm_density": "medium",
+      "vocal_presence": "none",
+      "narration_friendliness": 8,
+      "crypto_fit": 7,
+      "ai_fit": 8,
+      "finance_fit": 8,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 6.0,
+        "bed_start": 6.0,
+        "bed_end": 36.0,
+        "lift_start": 36.0,
+        "lift_end": 50.0,
+        "outro_start": 50.0,
+        "outro_end": 66.0
+      },
+      "mix_profile": {
+        "ducking_db": -20,
+        "target_gain_db": -3,
+        "sidechain_strength": "medium"
+      },
+      "notes": "适合资讯型和快评型内容。"
+    },
+    {
+      "id": "pixabay_ambient_274043",
+      "title": "Ambient Technology Corporate Inspiring",
+      "provider": "Pixabay",
+      "source_url": "https://pixabay.com/music/upbeat-ambient-technology-corporate-inspiring-274043/",
+      "local_file": null,
+      "license_type": "pixabay_content_license",
+      "content_id_risk": "check_before_publish",
+      "topics": [
+        "business",
+        "technology",
+        "ai"
+      ],
+      "moods": [
+        "uplifting",
+        "clean",
+        "optimistic",
+        "modern"
+      ],
+      "use_cases": [
+        "summary",
+        "closing",
+        "vision_statement"
+      ],
+      "energy": "medium",
+      "bpm_estimate": 98,
+      "brightness": "high",
+      "rhythm_density": "low_medium",
+      "vocal_presence": "none",
+      "narration_friendliness": 8,
+      "crypto_fit": 6,
+      "ai_fit": 8,
+      "finance_fit": 8,
+      "segments": {
+        "intro_start": 0.0,
+        "intro_end": 7.5,
+        "bed_start": 7.5,
+        "bed_end": 39.0,
+        "lift_start": 39.0,
+        "lift_end": 54.0,
+        "outro_start": 54.0,
+        "outro_end": 72.0
+      },
+      "mix_profile": {
+        "ducking_db": -20,
+        "target_gain_db": -3,
+        "sidechain_strength": "light"
+      },
+      "notes": "适合结尾、升华和长期价值判断。"
+    }
+  ]
+}

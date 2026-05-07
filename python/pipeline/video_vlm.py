@@ -14,12 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from load_env import load_project_env
 from llm_client import create_llm_client, delete_file, generate_content, upload_file, wait_for_file_ready, get_llm_provider
 from script_protocol import emit_error, emit_result, emit_stage, run_guarded
+from pipeline.skills.prompt_skill_loader import load_prompt_text
 
 load_project_env(__file__)
 
 VIDEO_PATH = "material.mp4"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_QWEN_MODEL = "qwen3-vl-flash"
+VIDEO_VLM_PROMPT = load_prompt_text("video_vlm_skill.md")
 
 def get_vl_model():
     """获取视觉语言模型"""
@@ -93,22 +95,7 @@ def main():
 
     # 定义我们要用的模型
     # 明确告诉模型我们要什么，并要求输出 JSON (增加音频识别)
-    prompt = """
-    你是一个专业的视频与音频分析引擎。请仔细观看并聆听这段空镜头素材视频。
-    请严格输出 JSON 格式，不要包含任何 markdown 标记。
-    
-    需要的 JSON 结构示例：
-    {
-      "summary": "一句话概括视频内容",
-      "visual_timeline": [
-        {"time": "00:00-00:05", "action": "画面显示水花飞溅"},
-        {"time": "00:05-00:20", "action": "画面显示钛金属特写"}
-      ],
-      "audio_transcript": [
-        {"time": "00:00-00:03", "text": "素材里的人物原声说话内容（如果没有说话，请留空或写'无明显人声'）"}
-      ]
-    }
-    """
+    prompt = VIDEO_VLM_PROMPT
 
     print("3. 开始请求模型进行分析...")
     # generation_config 强制要求模型只返回 application/json 格式

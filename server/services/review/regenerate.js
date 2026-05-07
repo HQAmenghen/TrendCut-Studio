@@ -4,7 +4,11 @@ function buildRegenerationAdjustments(fixSuggestions = []) {
     suggestedTitle: null,
     needsSubtitleRegeneration: false,
     needsContentReview: false,
-    highPrioritySuggestions: []
+    highPrioritySuggestions: [],
+    repairProfile: 'balanced',
+    repairFocus: [],
+    renderOptions: {},
+    repairSummary: []
   };
 
   for (const suggestion of Array.isArray(fixSuggestions) ? fixSuggestions : []) {
@@ -32,6 +36,99 @@ function buildRegenerationAdjustments(fixSuggestions = []) {
   }
 
   return adjustments;
+}
+
+function normalizeScore(value) {
+  const score = Number(value);
+  return Number.isFinite(score) ? score : 0;
+}
+
+function extractReviewScores(aiReview = {}) {
+  const scores = aiReview?.scores || {};
+  return {
+    content: normalizeScore(scores.content ?? scores.contentQuality),
+    subtitle: normalizeScore(scores.subtitle ?? scores.subtitleAccuracy),
+    title: normalizeScore(scores.title ?? scores.titleAppeal),
+    editing: normalizeScore(scores.editing ?? scores.editingQuality)
+  };
+}
+
+function textHasAnyKeyword(text, keywords) {
+  const normalized = String(text || '').toLowerCase();
+  return keywords.some((keyword) => normalized.includes(String(keyword).toLowerCase()));
+}
+
+function buildRepairPlan(aiReview = {}, adjustments = {}) {
+  const scores = extractReviewScores(aiReview);
+  const highPrioritySuggestions = Array.isArray(adjustments.highPrioritySuggestions)
+    ? adjustments.highPrioritySuggestions
+    : [];
+  const issueTexts = highPrioritySuggestions.map((item) => `${item?.issue || ''} ${item?.suggestion || ''}`);
+
+  const subtitleIssueDetected = adjustments.needsSubtitleRegeneration
+    || scores.subtitle < 82
+    || issueTexts.some((text) => textHasAnyKeyword(text, [
+      '字幕', '时间轴', '同步', '断句', '漏字', '漏译', '错译', '双语', '英文', '挤', '不完整', '可读'
+    ]));
+
+  const editingIssueDetected = adjustments.needsContentReview
+    || scores.editing < 78
+    || issueTexts.some((text) => textHasAnyKeyword(text, [
+      '剪辑', '节奏', '构图', '转场', '音频', '字幕挤压', '排版', '画面'
+    ]));
+
+  const titleIssueDetected = adjustments.needsNewTitle || scores.title < 72;
+  const contentIssueDetected = scores.content < 72;
+
+  const repairFocus = [];
+  if (subtitleIssueDetected) repairFocus.push('subtitle');
+  if (editingIssueDetected) repairFocus.push('editing');
+  if (titleIssueDetected) repairFocus.push('title');
+  if (contentIssueDetected) repairFocus.push('content');
+
+  const aggressiveRepair = subtitleIssueDetected && (scores.subtitle < 75 || editingIssueDetected);
+  const renderOptions = {
+    titleFontSize: titleIssueDetected ? 96 : 104,
+    titleMinSize: titleIssueDetected ? 46 : 52,
+    titleMaxLines: titleIssueDetected ? 3 : 2,
+    subtitleFontSize: aggressiveRepair ? 44 : 48,
+    subtitleMinSize: aggressiveRepair ? 22 : 26,
+    subtitleMaxLines: aggressiveRepair ? 3 : 2,
+    subtitleOffsetY: aggressiveRepair ? 0 : 12,
+    englishFontSize: aggressiveRepair ? 46 : 50,
+    englishMinSize: aggressiveRepair ? 24 : 28,
+    englishMaxLines: aggressiveRepair ? 3 : 2,
+    asrOptions: {
+      maxChunkDuration: aggressiveRepair ? 2.2 : 2.8,
+      softChunkDuration: aggressiveRepair ? 1.6 : 2.2,
+      maxVisibleChars: aggressiveRepair ? 18 : 22,
+      maxWordsPerChunk: aggressiveRepair ? 6 : 8,
+      pauseThreshold: aggressiveRepair ? 0.28 : 0.36,
+      forceEnglishRescue: subtitleIssueDetected
+    }
+  };
+
+  const repairSummary = [];
+  if (subtitleIssueDetected) {
+    repairSummary.push('重跑更激进的 ASR 切分，并放宽双语字幕排版');
+  }
+  if (editingIssueDetected) {
+    repairSummary.push('压缩标题与字幕占位，降低因排版造成的剪辑扣分');
+  }
+  if (titleIssueDetected) {
+    repairSummary.push('应用更强标题修复策略');
+  }
+  if (contentIssueDetected) {
+    repairSummary.push('保留内容低分标记，但当前流水线只能做有限修补');
+  }
+
+  return {
+    repairProfile: aggressiveRepair ? 'aggressive' : 'balanced',
+    repairFocus,
+    renderOptions,
+    repairSummary,
+    scores
+  };
 }
 
 function enqueueRegenerationFromReview({
@@ -76,6 +173,7 @@ function enqueueRegenerationFromReview({
   }
 
   const adjustments = buildRegenerationAdjustments(aiReview.fixSuggestions);
+  const repairPlan = buildRepairPlan(aiReview, adjustments);
 
   // 查找源视频路径
   let sourceVideoPath = null;
@@ -104,11 +202,17 @@ function enqueueRegenerationFromReview({
     postId: metadata.postId || '',
     postUrl: metadata.postUrl || metadata.sourceUrl || '',
     renderOptions: {
+      ...repairPlan.renderOptions,
       regenerateSubtitles: adjustments.needsSubtitleRegeneration,
       originalVideoPath: sourceVideoPath,
       isRegeneration: true,
       previousReviewId: aiReview.reviewId,
-      appliedSuggestions: adjustments.highPrioritySuggestions.map((s) => s.issue)
+      previousReviewScore: normalizeScore(aiReview.overallScore ?? aiReview.overall_score),
+      previousReviewScores: extractReviewScores(aiReview),
+      appliedSuggestions: adjustments.highPrioritySuggestions.map((s) => s.issue),
+      repairProfile: repairPlan.repairProfile,
+      repairFocus: repairPlan.repairFocus,
+      repairSummary: repairPlan.repairSummary
     }
   };
 
@@ -125,9 +229,17 @@ function enqueueRegenerationFromReview({
       category: s.category,
       issue: s.issue
     })),
+    repairProfile: repairPlan.repairProfile,
+    repairFocus: repairPlan.repairFocus,
+    repairSummary: repairPlan.repairSummary,
     attemptCount: previousAttemptCount + 1,
     startedAt: new Date().toISOString()
   };
+
+  adjustments.repairProfile = repairPlan.repairProfile;
+  adjustments.repairFocus = repairPlan.repairFocus;
+  adjustments.renderOptions = repairPlan.renderOptions;
+  adjustments.repairSummary = repairPlan.repairSummary;
 
   writeMediaMetadata(videoPath, metadata);
 

@@ -9,31 +9,526 @@ import os
 import subprocess
 import argparse
 import re
+import uuid
 from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from llm_client import create_llm_client, generate_content, get_llm_provider
+from llm_client import get_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
 
 load_project_env(__file__)
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+class MockWord:
+    def __init__(self, start, end, word):
+        self.start = float(start)
+        self.end = float(end)
+        self.word = word
 
-def get_text_model():
-    """获取文本生成模型"""
-    provider = get_llm_provider()
-    if provider == "qwen":
-        return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
+class MockSegment:
+    def __init__(self, start, end, text, words):
+        self.start = float(start)
+        self.end = float(end)
+        self.text = text
+        self.words = words
+
+def _get_audio_duration(audio_file):
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_file],
+            capture_output=True, text=True, timeout=15,
+        )
+        return float((probe.stdout or "").strip() or 0.0)
+    except Exception:
+        return 0.0
+
+
+DEFAULT_QWEN_ASR_MODEL = "qwen3-asr-flash-filetrans"
+LEGACY_QWEN_ASR_MODEL = "qwen3-asr-flash"
+QWEN_FILETRANS_TASK_TIMEOUT_SECONDS = 900
+QWEN_FILETRANS_POLL_SECONDS = 5
+ALIYUN_ASR_MAX_SIZE = 8 * 1024 * 1024
+ALIYUN_ASR_CHUNK_SEC = 300
+
+
+def get_qwen_asr_model():
+    return os.getenv("QWEN_ASR_MODEL", DEFAULT_QWEN_ASR_MODEL).strip() or DEFAULT_QWEN_ASR_MODEL
+
+
+def get_qwen_asr_api_base_url():
+    return os.getenv("QWEN_ASR_API_BASE_URL", os.getenv("DASHSCOPE_API_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")).rstrip("/")
+
+
+def is_public_http_url(value):
+    parsed = urlparse(str(value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def is_truthy_env(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_oss_prefix(prefix):
+    normalized = str(prefix or "").strip().lstrip("/")
+    if normalized and not normalized.endswith("/"):
+        normalized += "/"
+    return normalized
+
+
+def get_oss_signed_url_expires_seconds():
+    try:
+        return max(60, int(float(os.getenv("ALIYUN_OSS_SIGNED_URL_EXPIRES_SECONDS", "86400"))))
+    except (TypeError, ValueError):
+        return 86400
+
+
+def get_oss_filetrans_config():
+    if not is_truthy_env("ALIYUN_OSS_ENABLED"):
+        return None
+
+    config = {
+        "bucket": os.getenv("ALIYUN_OSS_BUCKET", "").strip(),
+        "endpoint": os.getenv("ALIYUN_OSS_ENDPOINT", "").strip(),
+        "access_key_id": os.getenv("ALIYUN_OSS_ACCESS_KEY_ID", "").strip(),
+        "access_key_secret": os.getenv("ALIYUN_OSS_ACCESS_KEY_SECRET", "").strip(),
+        "prefix": normalize_oss_prefix(os.getenv("ALIYUN_OSS_PREFIX", "comfy-panel/asr/")),
+        "expires_seconds": get_oss_signed_url_expires_seconds(),
+    }
+    missing = [key for key in ("bucket", "endpoint", "access_key_id", "access_key_secret") if not config[key]]
+    if missing:
+        print(f"   ⚠️ 已启用 OSS ASR 上传但缺少配置: {', '.join(missing)}，将降级使用 qwen3-asr-flash。")
+        return None
+    return config
+
+
+def make_oss_object_key(local_file, prefix=""):
+    path = Path(local_file)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem).strip("._-") or "audio"
+    suffix = path.suffix or ".mp3"
+    unique = uuid.uuid4().hex[:12]
+    return f"{normalize_oss_prefix(prefix)}{int(time.time())}_{unique}_{stem}{suffix}"
+
+
+def create_oss_bucket(config):
+    try:
+        import oss2
+    except ImportError as exc:
+        raise RuntimeError("未安装 oss2，无法将本地音频上传到阿里云 OSS。请先安装 requirements.txt。") from exc
+
+    auth = oss2.Auth(config["access_key_id"], config["access_key_secret"])
+    return oss2.Bucket(auth, config["endpoint"], config["bucket"])
+
+
+def upload_filetrans_audio_to_oss(local_file):
+    config = get_oss_filetrans_config()
+    if not config:
+        return "", None
+    if not os.path.exists(local_file):
+        raise FileNotFoundError(f"待上传的 ASR 音频不存在: {local_file}")
+
+    object_key = make_oss_object_key(local_file, prefix=config["prefix"])
+    bucket = create_oss_bucket(config)
+    bucket.put_object_from_file(object_key, local_file)
+    signed_url = bucket.sign_url("GET", object_key, config["expires_seconds"])
+    if not is_public_http_url(signed_url):
+        raise RuntimeError("OSS 未返回可用于 Filetrans 的公网签名 URL。")
+
+    print(f"   -> 已上传 ASR 音频到 OSS: oss://{config['bucket']}/{object_key}")
+    return signed_url, object_key
+
+
+def resolve_filetrans_file_url(local_file, file_url=""):
+    if is_public_http_url(file_url):
+        return file_url, None
+    return upload_filetrans_audio_to_oss(local_file)
+
+
+def parse_seconds(value, *, milliseconds=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if milliseconds or abs(number) >= 1000:
+        number = number / 1000.0
+    return round(number, 2)
+
+
+def infer_language_from_text(text):
+    if has_cjk(text):
+        return "zh"
+    if is_english_like(text):
+        return "en"
+    return ""
+
+
+def collect_transcripts(payload):
+    transcripts = []
+    if isinstance(payload, dict):
+        candidate = payload.get("transcripts")
+        if isinstance(candidate, list):
+            transcripts.extend(item for item in candidate if isinstance(item, dict))
+        for value in payload.values():
+            transcripts.extend(collect_transcripts(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            transcripts.extend(collect_transcripts(item))
+    return transcripts
+
+
+def sentence_time_range(sentence):
+    if "begin_time" in sentence:
+        start = parse_seconds(sentence.get("begin_time"), milliseconds=True)
+        end = parse_seconds(sentence.get("end_time", sentence.get("end")), milliseconds=True)
     else:
-        return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+        start = parse_seconds(sentence.get("start_time", sentence.get("start")), milliseconds=False)
+        end = parse_seconds(sentence.get("end_time", sentence.get("end")), milliseconds=False)
+    if start is None or end is None or end <= start:
+        return None
+    return start, end
 
-GEMINI_MODEL = get_text_model()
+
+def sentence_text(sentence):
+    text = str(sentence.get("text") or sentence.get("sentence") or sentence.get("sentence_text") or "").strip()
+    if text:
+        return apply_domain_corrections(text)
+    words = sentence.get("words")
+    if isinstance(words, list):
+        joined = "".join(str(word.get("text") or word.get("word") or "") for word in words if isinstance(word, dict))
+        return apply_domain_corrections(joined.strip())
+    return ""
+
+
+def parse_filetrans_result_segments(payload):
+    raw_segments = []
+    detected_language = ""
+    transcript_text_parts = []
+
+    for transcript in collect_transcripts(payload):
+        language = str(
+            transcript.get("language")
+            or transcript.get("language_code")
+            or transcript.get("detected_language")
+            or ""
+        ).strip().lower()
+        if language and not detected_language:
+            detected_language = language
+        transcript_text = str(transcript.get("text") or "").strip()
+        if transcript_text:
+            transcript_text_parts.append(transcript_text)
+        sentences = transcript.get("sentences") or transcript.get("sentence")
+        if not isinstance(sentences, list):
+            continue
+        for sentence in sentences:
+            if not isinstance(sentence, dict):
+                continue
+            time_range = sentence_time_range(sentence)
+            text = sentence_text(sentence)
+            if not time_range or not text:
+                continue
+            raw_segments.append({
+                "start": time_range[0],
+                "end": time_range[1],
+                "text": text
+            })
+            if not detected_language:
+                detected_language = str(sentence.get("language") or sentence.get("language_code") or "").strip().lower()
+
+    raw_segments.sort(key=lambda item: (item["start"], item["end"]))
+    if not detected_language:
+        sample_text = "".join(item["text"] for item in raw_segments) or "".join(transcript_text_parts)
+        detected_language = infer_language_from_text(sample_text) or "zh"
+    return raw_segments, detected_language
+
+
+def fetch_json(url, headers=None):
+    response = requests.get(url, headers=headers or {}, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def expand_filetrans_transcription_urls(payload, headers=None):
+    if isinstance(payload, dict):
+        url = payload.get("transcription_url")
+        if is_public_http_url(url):
+            try:
+                payload["transcription"] = fetch_json(url)
+            except Exception as err:
+                response = getattr(err, "response", None)
+                status_code = getattr(response, "status_code", None)
+                status_text = f" status={status_code}" if status_code else ""
+                print(f"   ⚠️ 获取 Filetrans 转写结果失败: {err.__class__.__name__}{status_text}")
+        for value in payload.values():
+            expand_filetrans_transcription_urls(value, headers=headers)
+    elif isinstance(payload, list):
+        for item in payload:
+            expand_filetrans_transcription_urls(item, headers=headers)
+    return payload
+
+
+def submit_qwen_filetrans_task(file_url, model):
+    from qwen_client import get_qwen_api_keys
+
+    api_key = get_qwen_api_keys()[0]
+    base_url = get_qwen_asr_api_base_url()
+    submit_url = f"{base_url}/services/audio/asr/transcription"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+    }
+    payload = {
+        "model": model,
+        "input": {
+            "file_url": file_url,
+        },
+        "parameters": {
+            "enable_itn": True,
+            "enable_words": True,
+        },
+    }
+    response = requests.post(submit_url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    result = response.json()
+    task_id = ((result.get("output") or {}).get("task_id") or result.get("task_id") or "").strip()
+    if not task_id:
+        raise RuntimeError(f"Filetrans 未返回 task_id: {result}")
+    return task_id, headers
+
+
+def wait_qwen_filetrans_task(task_id, headers):
+    base_url = get_qwen_asr_api_base_url()
+    task_url = f"{base_url}/tasks/{task_id}"
+    timeout_seconds = max(30, int(float(os.getenv("QWEN_ASR_FILETRANS_TIMEOUT_SECONDS", QWEN_FILETRANS_TASK_TIMEOUT_SECONDS))))
+    poll_seconds = max(1.0, float(os.getenv("QWEN_ASR_FILETRANS_POLL_SECONDS", QWEN_FILETRANS_POLL_SECONDS)))
+    deadline = time.time() + timeout_seconds
+
+    while True:
+        response = requests.get(task_url, headers=headers, timeout=60)
+        response.raise_for_status()
+        payload = response.json()
+        output = payload.get("output") if isinstance(payload, dict) else {}
+        status = str((output or {}).get("task_status") or payload.get("task_status") or "").upper()
+        if status in {"SUCCEEDED", "SUCCESS", "COMPLETED"}:
+            return payload
+        if status in {"FAILED", "CANCELED", "CANCELLED"}:
+            message = (output or {}).get("message") or (output or {}).get("error") or payload
+            raise RuntimeError(f"Filetrans 任务失败: {message}")
+        if time.time() >= deadline:
+            raise TimeoutError(f"Filetrans 任务超时: {task_id}")
+        time.sleep(poll_seconds)
+
+
+def _compress_audio_for_asr(audio_file):
+    compressed = os.path.splitext(audio_file)[0] + "_asr_tmp.mp3"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", audio_file, "-ac", "1", "-ar", "16000", "-b:a", "48k", compressed],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if os.path.exists(compressed) and os.path.getsize(compressed) > 0:
+        return compressed
+    return None
+
+
+def _split_audio_chunks(audio_file, chunk_sec=ALIYUN_ASR_CHUNK_SEC):
+    duration = _get_audio_duration(audio_file)
+    if duration <= 0:
+        return [(audio_file, 0.0)], duration
+    if duration <= chunk_sec:
+        return [(audio_file, 0.0)], duration
+    chunks = []
+    base = os.path.splitext(audio_file)[0]
+    offset = 0.0
+    idx = 0
+    while offset < duration:
+        chunk_path = f"{base}_chunk{idx}.mp3"
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(offset), "-t", str(chunk_sec),
+             "-i", audio_file, "-ac", "1", "-ar", "16000", "-b:a", "48k", chunk_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
+            chunks.append((chunk_path, offset))
+        offset += chunk_sec
+        idx += 1
+    return chunks, duration
+
+
+def _call_aliyun_asr(dashscope_module, audio_path, model=None):
+    messages = [
+        {"role": "user", "content": [{"audio": audio_path}]}
+    ]
+    return dashscope_module.MultiModalConversation.call(
+        api_key=dashscope_module.api_key,
+        model=model or LEGACY_QWEN_ASR_MODEL,
+        messages=messages,
+        result_format="message",
+        asr_options={"enable_itn": True},
+    )
+
+
+def build_raw_segments_filetrans(file_url, model=None):
+    model = model or get_qwen_asr_model()
+    emit_stage("asr", "正在进行阿里云 Qwen3-ASR Filetrans 句级识别")
+    print(f"1. 正在提交阿里云 {model} 文件转写任务...")
+    task_id, headers = submit_qwen_filetrans_task(file_url, model)
+    print(f"   -> Filetrans task_id: {task_id}")
+    payload = wait_qwen_filetrans_task(task_id, headers)
+    payload = expand_filetrans_transcription_urls(payload, headers=headers)
+    raw_segments, detected_language = parse_filetrans_result_segments(payload)
+    if not raw_segments:
+        print("   ℹ️ Filetrans 调用成功但未解析到句级时间戳")
+        return [], detected_language or "zh"
+
+    print(f"   ✅ Filetrans 识别完成，语种: {detected_language}，句子数: {len(raw_segments)}")
+    for item in raw_segments:
+        print(f"   [ASR filetrans]: {item['text']}")
+    return raw_segments, detected_language
+
+
+def build_raw_segments_qwen_flash(audio_file, split_config=None, model=None):
+    import dashscope
+    from qwen_client import get_qwen_api_keys
+    dashscope.api_key = get_qwen_api_keys()[0]
+    model = model or LEGACY_QWEN_ASR_MODEL
+
+    emit_stage("asr", "正在进行阿里云 Qwen3-ASR 识别")
+    print(f"1. 正在调用阿里云 {model} 进行语音识别...")
+
+    actual_file = audio_file
+    compressed_file = None
+    file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else 0
+    if file_size > ALIYUN_ASR_MAX_SIZE:
+        print(f"   音频文件 {file_size / 1024 / 1024:.1f}MB 超过大小限制，压缩中...")
+        compressed_file = _compress_audio_for_asr(audio_file)
+        if compressed_file:
+            new_size = os.path.getsize(compressed_file)
+            print(f"   压缩完成: {new_size / 1024 / 1024:.1f}MB")
+            actual_file = compressed_file
+        else:
+            print("   ⚠️ 压缩失败，尝试使用原始文件")
+
+    audio_duration = _get_audio_duration(actual_file)
+    need_chunking = audio_duration > ALIYUN_ASR_CHUNK_SEC
+    chunks_to_clean = []
+
+    if need_chunking:
+        print(f"   音频时长 {audio_duration:.0f}s 超过限制，分段处理（每段 {ALIYUN_ASR_CHUNK_SEC}s）...")
+        chunk_list, audio_duration = _split_audio_chunks(actual_file, ALIYUN_ASR_CHUNK_SEC)
+        chunks_to_clean = [p for p, _ in chunk_list if p != actual_file]
+    else:
+        chunk_list = [(actual_file, 0.0)]
+
+    all_text_parts = []
+    detected_language = "zh"
+
+    try:
+        for chunk_idx, (chunk_path, chunk_offset) in enumerate(chunk_list):
+            if need_chunking:
+                print(f"   识别分段 {chunk_idx + 1}/{len(chunk_list)}...")
+            resolved_path = str(Path(chunk_path).resolve())
+            response = _call_aliyun_asr(dashscope, resolved_path, model=model)
+
+            status_code = getattr(response, "status_code", None)
+            if status_code != 200:
+                print(f"   ⚠️ 阿里云 ASR 返回异常: status_code={status_code}, "
+                      f"code={getattr(response, 'code', '?')}, message={getattr(response, 'message', '?')}")
+                return [], "zh"
+
+            choices = (response.output or {}).get("choices") or []
+            if not choices:
+                continue
+
+            message = choices[0].get("message", {})
+            content_list = message.get("content") or []
+            chunk_text = ""
+            for item in content_list:
+                if isinstance(item, dict) and item.get("text"):
+                    chunk_text += item["text"]
+
+            annotations = message.get("annotations") or []
+            for ann in annotations:
+                if isinstance(ann, dict) and ann.get("language"):
+                    detected_language = ann["language"]
+                    break
+
+            if chunk_text.strip():
+                all_text_parts.append((chunk_text.strip(), chunk_offset, _get_audio_duration(chunk_path)))
+    finally:
+        for path in chunks_to_clean:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        if compressed_file and os.path.exists(compressed_file):
+            try:
+                os.remove(compressed_file)
+            except Exception:
+                pass
+
+    if not all_text_parts:
+        print("   ℹ️ 阿里云 ASR 调用成功但未识别到语音内容")
+        return [], detected_language
+
+    full_text = " ".join(t for t, _, _ in all_text_parts)
+    print(f"   ✅ 阿里云 ASR 识别完成，语种: {detected_language}，全文长度: {len(full_text)}")
+
+    if audio_duration <= 0:
+        audio_duration = max(10.0, len(full_text) / 4.0)
+
+    raw_segments = []
+    for part_text, part_offset, part_duration in all_text_parts:
+        if part_duration <= 0:
+            part_duration = max(1.0, len(part_text) / 4.0)
+        sentence_delimiters = r'(?<=[.!?。！？;；])\s*'
+        sentence_texts = [s.strip() for s in re.split(sentence_delimiters, part_text) if s.strip()]
+        if not sentence_texts:
+            sentence_texts = [part_text.strip()]
+
+        total_chars = sum(len(s) for s in sentence_texts)
+        cursor = part_offset
+        for text in sentence_texts:
+            ratio = len(text) / total_chars if total_chars > 0 else 1.0 / len(sentence_texts)
+            duration = part_duration * ratio
+            seg_start = round(cursor, 2)
+            seg_end = round(cursor + duration, 2)
+            seg = MockSegment(seg_start, seg_end, text, [])
+            sub_segments = split_segment_words(seg, split_config=split_config)
+            for item in sub_segments:
+                raw_segments.append(item)
+                print(f"   [ASR qwen3]: {item['text']}")
+            cursor = seg_end
+
+    return raw_segments, detected_language
+
+
+def build_raw_segments_aliyun(audio_file, split_config=None, file_url=""):
+    model = get_qwen_asr_model()
+    if model == DEFAULT_QWEN_ASR_MODEL:
+        resolved_file_url, _object_key = resolve_filetrans_file_url(audio_file, file_url)
+        if resolved_file_url:
+            return build_raw_segments_filetrans(resolved_file_url, model=model)
+        print("   ⚠️ Qwen Filetrans 需要公网 file_url 或可用 OSS 上传配置，当前将降级使用 qwen3-asr-flash。")
+        return build_raw_segments_qwen_flash(audio_file, split_config=split_config, model=LEGACY_QWEN_ASR_MODEL)
+    return build_raw_segments_qwen_flash(audio_file, split_config=split_config, model=model)
+
 GLOSSARY_PATH = os.path.join(os.path.dirname(__file__), "glossary.json")
+DEFAULT_SPLIT_CONFIG = {
+    "max_chunk_duration": 4.2,
+    "soft_chunk_duration": 2.8,
+    "max_visible_chars": 26,
+    "max_words_per_chunk": 10,
+    "pause_threshold": 0.42,
+}
 
 def visible_text(text: str) -> str:
     return re.sub(r"[\s，。！？；：、“”‘’,.!?;:()\[\]{}\"'…·-]", "", text or "")
@@ -62,12 +557,6 @@ def is_chinese_language(language: str) -> bool:
 
 def is_english_language(language: str) -> bool:
     return str(language or "").lower().startswith("en")
-
-
-def is_supported_bilingual_subtitle(subtitle: dict) -> bool:
-    zh_text = str(subtitle.get("zh", "")).strip()
-    en_text = str(subtitle.get("en", "")).strip()
-    return bool(zh_text and has_cjk(zh_text) and en_text and is_english_like(en_text))
 
 
 def load_domain_corrections():
@@ -128,7 +617,28 @@ def flush_word_chunk(chunks, words, start_time, end_time):
     })
 
 
-def split_segment_words(segment):
+def resolve_split_config(raw_config=None):
+    config = dict(DEFAULT_SPLIT_CONFIG)
+    if isinstance(raw_config, dict):
+        for key in config:
+            value = raw_config.get(key)
+            if value is None:
+                continue
+            try:
+                config[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+
+    config["max_chunk_duration"] = max(1.6, float(config["max_chunk_duration"]))
+    config["soft_chunk_duration"] = max(1.0, min(float(config["soft_chunk_duration"]), config["max_chunk_duration"]))
+    config["max_visible_chars"] = max(8, int(round(float(config["max_visible_chars"]))))
+    config["max_words_per_chunk"] = max(3, int(round(float(config["max_words_per_chunk"]))))
+    config["pause_threshold"] = max(0.12, float(config["pause_threshold"]))
+    return config
+
+
+def split_segment_words(segment, split_config=None):
+    split_config = resolve_split_config(split_config)
     words = list(getattr(segment, "words", None) or [])
     if not words:
         text = apply_domain_corrections(str(getattr(segment, "text", "")).strip())
@@ -181,19 +691,19 @@ def split_segment_words(segment):
         duration = max(0.0, chunk_end - chunk_start)
         visible_len = len(visible_text(joined_text))
         sentence_break = contains_sentence_break(token)
-        long_enough = duration >= 2.8
-        too_long = duration >= 4.2 or visible_len >= 26
-        enough_words = len(current_words) >= 10
+        long_enough = duration >= split_config["soft_chunk_duration"]
+        too_long = duration >= split_config["max_chunk_duration"] or visible_len >= split_config["max_visible_chars"]
+        enough_words = len(current_words) >= split_config["max_words_per_chunk"]
         next_gap = (next_start - token_end) if next_start is not None else 0.0
-        natural_pause = next_gap >= 0.42
+        natural_pause = next_gap >= split_config["pause_threshold"]
 
         should_flush = False
         if sentence_break and duration >= 1.0:
-          should_flush = True
+            should_flush = True
         elif too_long:
-          should_flush = True
+            should_flush = True
         elif long_enough and (enough_words or natural_pause):
-          should_flush = True
+            should_flush = True
 
         if should_flush:
             flush_word_chunk(chunks, current_words, chunk_start, chunk_end)
@@ -203,146 +713,6 @@ def split_segment_words(segment):
 
     flush_word_chunk(chunks, current_words, chunk_start, chunk_end)
     return chunks
-
-
-def backfill_chinese_translations(raw_segments, normalized_subtitles):
-    targets = []
-    for index, subtitle in enumerate(normalized_subtitles):
-        original_text = str(raw_segments[index]["text"]).strip()
-        zh_text = str(subtitle.get("zh", "")).strip()
-        if is_english_like(original_text) and not has_cjk(zh_text):
-            targets.append({
-                "index": index,
-                "text": original_text
-            })
-
-    if not targets:
-        return normalized_subtitles
-
-    client = create_llm_client()
-    payload = json.dumps(targets, ensure_ascii=False)
-    prompt = f"""
-你是一名专业字幕翻译，请把下面英文口播字幕翻译成简洁、自然、适合视频字幕展示的中文。
-
-要求：
-1. 保留数组中的 index 不变。
-2. 每条只输出中文翻译，不要解释。
-3. 翻译要完整，不要漏词，不要概括。
-4. 用自然中文，不要保留英文在 zh 字段。
-5. 严格输出 JSON 数组，不要输出 markdown。
-
-输入：
-{payload}
-
-输出格式：
-[
-  {{
-    "index": 0,
-    "zh": "对应的中文字幕"
-  }}
-]
-"""
-    response = generate_content(
-        client,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        response_mime_type="application/json",
-    )
-    result = json.loads(response.text)
-    if not isinstance(result, list):
-        return normalized_subtitles
-
-    for item in result:
-        try:
-            idx = int(item.get("index"))
-        except Exception:
-            continue
-        zh_text = apply_domain_corrections(str(item.get("zh", "")).strip())
-        if 0 <= idx < len(normalized_subtitles) and zh_text and has_cjk(zh_text):
-            normalized_subtitles[idx]["zh"] = zh_text
-
-    return normalized_subtitles
-
-
-def backfill_bilingual_translations(raw_segments, normalized_subtitles, source_language=""):
-    targets = []
-    for index, subtitle in enumerate(normalized_subtitles):
-        if is_supported_bilingual_subtitle(subtitle):
-            continue
-        original_text = str(raw_segments[index]["text"]).strip()
-        if not original_text:
-            continue
-        targets.append({
-            "index": index,
-            "text": original_text
-        })
-
-    if not targets:
-        return normalized_subtitles
-
-    client = create_llm_client()
-    payload = json.dumps(targets, ensure_ascii=False)
-    prompt = f"""
-你是一名专业字幕翻译，请把下面原始字幕统一补齐为中英双语字幕。
-
-源语言提示：{source_language or "unknown"}
-
-要求：
-1. 保留数组中的 index 不变。
-2. 无论原始语言是什么，zh 必须是自然、完整的简体中文字幕。
-3. 无论原始语言是什么，en 必须是自然、完整的英文字幕。
-4. 严禁把日文、韩文、阿拉伯文、俄文等原文直接写进 zh 字段。
-5. 严禁把除英文外的原文直接写进 en 字段。
-6. 严格输出 JSON 数组，不要输出 markdown。
-
-输入：
-{payload}
-
-输出格式：
-[
-  {{
-    "index": 0,
-    "zh": "对应的中文字幕",
-    "en": "Corresponding English subtitle"
-  }}
-]
-"""
-    response = generate_content(
-        client,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        response_mime_type="application/json",
-    )
-    result = json.loads(response.text)
-    if not isinstance(result, list):
-        return normalized_subtitles
-
-    for item in result:
-        try:
-            idx = int(item.get("index"))
-        except Exception:
-            continue
-        if not (0 <= idx < len(normalized_subtitles)):
-            continue
-        zh_text = apply_domain_corrections(str(item.get("zh", "")).strip())
-        en_text = str(item.get("en", "")).strip()
-        if zh_text and has_cjk(zh_text):
-            normalized_subtitles[idx]["zh"] = zh_text
-        if en_text and is_english_like(en_text):
-            normalized_subtitles[idx]["en"] = en_text
-
-    return normalized_subtitles
-
-
-def load_optional_visual_context():
-    result_path = Path("result.json")
-    if not result_path.exists():
-        return None
-    try:
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else None
-    except Exception:
-        return None
 
 
 def build_default_speaker_scene(subtitles):
@@ -388,221 +758,23 @@ def build_default_speaker_scene(subtitles):
         }
     }
 
-
-def analyze_speaker_scene(subtitles, visual_context):
-    fallback = build_default_speaker_scene(subtitles)
-    if not subtitles:
-        return fallback
-
-    client = create_llm_client()
-    subtitle_payload = json.dumps(subtitles, ensure_ascii=False)
-    visual_payload = json.dumps(visual_context or {}, ensure_ascii=False)
-    prompt = f"""
-你是一名短视频导播分析师。请根据字幕时间轴和可选视觉轴，输出一份供 AI 导演使用的人物关系与 9:16 取景分析 JSON。
-
-输入一：
-字幕时间轴（subtitles）
-{subtitle_payload}
-
-输入二：
-视觉轴（visual_context，可为空）
-{visual_payload}
-
-你的任务：
-1. 判断这段视频大约有几位主要参与者（participant_count）。
-2. 给出参与者关系摘要，例如”主播 + 嘉宾””主持人 + 两位连线嘉宾””单人解说””多人圆桌讨论”。
-3. 为每个参与者生成稳定 ID，例如 speaker_1 / speaker_2。
-4. 结合字幕和视觉轴，给出时间线级别的主讲人与竖屏取景建议。
-5. 如果视觉轴明确提到人物位置或多人分屏，请据此决定：
-   a. crop_anchor（粗粒度）：left / center / right
-   b. crop_x_ratio（精细位置，0.0~1.0 浮点数，**必填**）：
-      - 人物在画面左 1/3 → 0.2~0.3
-      - 人物在画面左半 → 0.3~0.45
-      - 居中或不确定 → 0.5
-      - 人物在画面右半 → 0.55~0.7
-      - 人物在画面右 1/3 → 0.7~0.8
-      - 多人/图表/PPT 需保留全局信息 → 0.5
-      - 请根据视觉轴的实际描述认真估算，不要全部填 0.5。
-6. vertical_mode 仅允许：
-   - follow_speaker
-   - center_safe
-   - preserve_context
-7. shot_type 仅允许：
-   - single
-   - two_shot
-   - group
-   - graphic
-8. 不要编造过细的事实；不确定时保持保守，优先 center_safe。
-9. timeline 尽量覆盖字幕时间轴中的主要段落，但不要求逐字逐句一一对应。
-10. 严格输出 JSON 对象，不要输出 markdown。
-
-输出格式：
-{{
-  “participant_count”: 2,
-  “relationship_summary”: “主持人和嘉宾对谈”,
-  “participants”: [
-    {{
-      “speaker_id”: “speaker_1”,
-      “label”: “主持人”,
-      “role”: “提问者/主持”,
-      “visual_hint”: “left”,
-      “confidence”: 0.82
-    }}
-  ],
-  “timeline”: [
-    {{
-      “start”: 0.0,
-      “end”: 5.2,
-      “active_speakers”: [“speaker_1”],
-      “speaker_count”: 1,
-      “relationship_hint”: “主持人开场”,
-      “focus_target”: “speaker_1”,
-      “shot_type”: “single”,
-      “vertical_mode”: “follow_speaker”,
-      “crop_anchor”: “left”,
-      “crop_x_ratio”: 0.28,
-      “reason”: “主持人发言，视觉轴描述其在画面左侧约 1/4 处，crop_x_ratio 取 0.28。”
-    }}
-  ],
-  “global_guidance”: {{
-    “default_vertical_mode”: “center_safe”,
-    “default_crop_anchor”: “center”,
-    “default_crop_x_ratio”: 0.5,
-    “notes”: [“补充说明”]
-  }}
-}}
-"""
-    try:
-        response = generate_content(
-            client,
-            model=GEMINI_MODEL,
-            contents=prompt,
-            response_mime_type="application/json",
-        )
-        result = json.loads(response.text)
-        if not isinstance(result, dict):
-            return fallback
-        if not isinstance(result.get("timeline"), list) or not result.get("timeline"):
-            result["timeline"] = fallback["timeline"]
-        if not isinstance(result.get("participants"), list) or not result.get("participants"):
-            result["participants"] = fallback["participants"]
-        if not result.get("participant_count"):
-            result["participant_count"] = max(1, len(result["participants"]))
-        if not result.get("relationship_summary"):
-            result["relationship_summary"] = fallback["relationship_summary"]
-        if not isinstance(result.get("global_guidance"), dict):
-            result["global_guidance"] = fallback["global_guidance"]
-        return result
-    except Exception as err:
-        print(f"   ⚠️ 人物关系分析失败，回退默认单人方案: {err}")
-        return fallback
-
-
-def refine_and_translate(raw_segments, source_language=""):
-    client = create_llm_client()
-    payload = json.dumps(raw_segments, ensure_ascii=False)
-    prompt = f"""
-你是一名顶级加密货币与金融科技领域字幕校对师和专业双语译者。下面是一段短视频口播经过 Whisper 打轴后的初稿，
-时间轴基本可信，但文本中可能存在同音错字、专有名词错误、断句不当、标点缺失、口语冗余等问题。
-
-源语言提示：{source_language or "unknown"}
-
-你的任务：
-1. 严格保留数组条数不变，绝对不得合并、拆分、删除或新增条目。
-2. 严格保留每一条的 start 和 end 原值，绝对不要改时间轴。
-3. 最终必须输出标准 JSON 数组，每条字幕包含：
-   - time: 保持原有时间数组语义不变
-   - zh: 简体中文字幕
-   - en: 自然流畅的英文字幕
-4. zh 与 en 必须逐条一一对应，断句边界尽量一致，不得跨条错位。
-5. 输出必须是纯 JSON 数组，不要包含 markdown、代码块或任何额外说明。
-
-中文处理原则（zh）：
-1. 中文必须流畅、自然、适合短视频字幕展示。
-2. 优先保证语义完整，不得漏词、吞词、随意省略助词。
-3. 允许轻微口语化润色，让表达更顺、更有节奏感。
-4. 可以有轻微网感或轻微幽默感，但仅限措辞层面，严禁改变原意、添加新信息、加入评论腔或过度玩梗。
-5. 如果原句本身严肃，就保持专业，不要强行幽默。
-6. 加密/金融科技专有名词必须准确：
-   - “万事打卡”“万事达卡” -> 万事达卡
-   - “维萨/威萨” -> Visa
-   - “彭国社/彭博社” -> 彭博社
-   - “稳定必/稳定比/稳定币” -> 稳定币
-   - “加密权/加密圈” -> 加密圈（根据语境判断）
-   - “比特比” -> 比特币
-   - “以太防” -> 以太坊
-   - “SEC” 保持英文
-   - “Clarity Act”“Genius Act” 等法案名保持原英文，必要时可补充极简中文说明
-
-英文处理原则（en）：
-1. 提供自然、简洁、专业、适合国际观众的英文字幕。
-2. 修正语法，去掉无意义口头禅和冗余，但保留原意和语气。
-3. 专有名词必须准确，例如 Bitcoin、Ethereum、Mastercard、Visa、SEC、stablecoin。
-4. 不要写得像书面论文，要像真实视频字幕。
-
-其他要求：
-1. 不要扩写，不要总结，不要添加解释或旁白。
-2. 字幕要适合短视频展示：简洁、有力、节奏清楚。
-3. 如果某条很短，只做必要纠错和润色。
-4. 如果原始语言是中文，zh 以校对润色为主，en 负责准确翻译。
-5. 如果原始语言是英文，en 以校对润色为主，zh 负责自然中文翻译。
-6. 如果原始语言既不是中文也不是英文，zh 和 en 都必须分别翻译，严禁把原文直接塞进 zh 或 en。
-
-输入 JSON：
-{payload}
-
-输出 JSON 结构必须为：
-[
-  {{
-    "time": [0.0, 1.2],
-    "zh": "修正后的中文字幕",
-    "en": "Natural English subtitle"
-  }}
-]
-"""
-    response = generate_content(
-        client,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        response_mime_type="application/json",
-    )
-    result = json.loads(response.text)
-    if not isinstance(result, list) or len(result) != len(raw_segments):
-        raise ValueError("Gemini returned invalid subtitle structure.")
-
-    normalized = []
-    for index, item in enumerate(result):
-        original = raw_segments[index]
-        original_text = apply_domain_corrections(str(original["text"]).strip())
-        zh_text = apply_domain_corrections(str(item.get("zh", "")).strip() or original_text)
-        en_text = str(item.get("en", "")).strip()
-
-        original_visible = visible_text(original_text)
-        zh_visible = visible_text(zh_text)
-
-        # 仅中文原语种需要执行中文保真回退；其他语种必须保持 zh 为中文翻译
-        if is_chinese_language(source_language) and zh_visible:
-            too_short = len(zh_visible) < len(original_visible)
-            ratio_bad = len(original_visible) > 0 and (len(zh_visible) / len(original_visible)) < 0.95
-            if too_short or ratio_bad:
-                zh_text = original_text
-
-        if is_english_language(source_language) and not en_text and original_text:
-            en_text = original_text
-
-        normalized.append({
-            "time": [original["start"], original["end"]],
-            "zh": zh_text,
-            "en": en_text
+def build_raw_subtitles(raw_segments, source_language=""):
+    subtitles = []
+    for segment in raw_segments:
+        original_text = apply_domain_corrections(str(segment.get("text", "")).strip())
+        if not original_text:
+            continue
+        en_text = original_text if is_english_language(source_language) else ""
+        subtitles.append({
+            "time": [segment["start"], segment["end"]],
+            "zh": original_text,
+            "en": en_text,
+            "text": original_text,
         })
-    if is_english_language(source_language):
-        normalized = backfill_chinese_translations(raw_segments, normalized)
-    else:
-        normalized = backfill_bilingual_translations(raw_segments, normalized, source_language)
-    return normalized
+    return subtitles
 
 
-def transcribe_raw_segments(model, audio_file, language=None, stage_label="auto"):
+def transcribe_raw_segments(model, audio_file, language=None, stage_label="auto", split_config=None):
     language_kwargs = {"language": language} if language else {}
     print(f"   -> Whisper 转写模式: {stage_label}")
     segments, info = model.transcribe(
@@ -616,7 +788,7 @@ def transcribe_raw_segments(model, audio_file, language=None, stage_label="auto"
     detected_language = str(getattr(info, "language", "") or "").strip().lower()
     raw_segments = []
     for segment in segments:
-        sub_segments = split_segment_words(segment)
+        sub_segments = split_segment_words(segment, split_config=split_config)
         for item in sub_segments:
             raw_segments.append(item)
             print(f"   [ASR {stage_label}]: {item['text']}")
@@ -648,18 +820,30 @@ def merge_rescue_segments(primary_segments, rescue_segments):
     return merged
 
 
-def build_raw_segments(audio_file):
+def build_raw_segments(audio_file, split_config=None, force_english_rescue=False):
     emit_stage("asr", "正在进行 Whisper ASR 识别")
     print("1. 正在加载 Whisper 模型进行 ASR 识别...")
     model = WhisperModel("small", device="cpu", compute_type="int8")
 
     print("2. Whisper 模型加载完毕！开始识别语音...")
-    raw_segments, detected_language = transcribe_raw_segments(model, audio_file, language=None, stage_label="auto")
+    raw_segments, detected_language = transcribe_raw_segments(
+        model,
+        audio_file,
+        language=None,
+        stage_label="auto",
+        split_config=split_config
+    )
 
     # 对“中文主语种但夹杂英文口播”的视频，补做一次英文转写，把主识别漏掉的英语时间段补回来。
-    if is_chinese_language(detected_language):
+    if force_english_rescue or is_chinese_language(detected_language):
         try:
-            english_segments, _ = transcribe_raw_segments(model, audio_file, language="en", stage_label="en-rescue")
+            english_segments, _ = transcribe_raw_segments(
+                model,
+                audio_file,
+                language="en",
+                stage_label="en-rescue",
+                split_config=split_config
+            )
             before_count = len(raw_segments)
             raw_segments = merge_rescue_segments(raw_segments, english_segments)
             rescued_count = len(raw_segments) - before_count
@@ -696,10 +880,17 @@ def video_has_audio_stream(input_video: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="ASR and Translation script.")
     parser.add_argument("--input", default="aiman.mp4", help="Input video file.")
+    parser.add_argument("--file-url", default="", help="Public audio/video URL for DashScope Filetrans ASR.")
     parser.add_argument("--allow-no-audio", action="store_true", help="Allow silent videos and generate empty subtitle files instead of failing.")
     parser.add_argument("--audio-json", default="audio.json", help="Output audio timeline JSON file.")
     parser.add_argument("--subtitles-json", default="subtitles.json", help="Output subtitles JSON file.")
     parser.add_argument("--speaker-scene-json", default="speaker_scene.json", help="Output speaker/scene JSON file.")
+    parser.add_argument("--max-chunk-duration", type=float, default=DEFAULT_SPLIT_CONFIG["max_chunk_duration"], help="Maximum subtitle chunk duration in seconds.")
+    parser.add_argument("--soft-chunk-duration", type=float, default=DEFAULT_SPLIT_CONFIG["soft_chunk_duration"], help="Preferred subtitle chunk duration in seconds.")
+    parser.add_argument("--max-visible-chars", type=int, default=DEFAULT_SPLIT_CONFIG["max_visible_chars"], help="Maximum visible characters before forcing a split.")
+    parser.add_argument("--max-words-per-chunk", type=int, default=DEFAULT_SPLIT_CONFIG["max_words_per_chunk"], help="Maximum token count before forcing a split.")
+    parser.add_argument("--pause-threshold", type=float, default=DEFAULT_SPLIT_CONFIG["pause_threshold"], help="Pause threshold in seconds for natural splits.")
+    parser.add_argument("--force-english-rescue", action="store_true", help="Always run an extra English rescue transcription pass.")
     args = parser.parse_args()
     input_video = args.input
     audio_json_path = args.audio_json
@@ -739,7 +930,50 @@ def main():
         sys.exit(1)
 
     start_time = time.time()
-    raw_segments, detected_language = build_raw_segments(audio_file)
+    split_config = resolve_split_config({
+        "max_chunk_duration": args.max_chunk_duration,
+        "soft_chunk_duration": args.soft_chunk_duration,
+        "max_visible_chars": args.max_visible_chars,
+        "max_words_per_chunk": args.max_words_per_chunk,
+        "pause_threshold": args.pause_threshold,
+    })
+    print(
+        "0.1 使用字幕切分参数: "
+        f"max_chunk_duration={split_config['max_chunk_duration']}, "
+        f"soft_chunk_duration={split_config['soft_chunk_duration']}, "
+        f"max_visible_chars={split_config['max_visible_chars']}, "
+        f"max_words_per_chunk={split_config['max_words_per_chunk']}, "
+        f"pause_threshold={split_config['pause_threshold']}, "
+        f"force_english_rescue={args.force_english_rescue}"
+    )
+    raw_segments = []
+    detected_language = "zh"
+    
+    if get_llm_provider() == "qwen" and (os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("GEMINI_API_KEY")):
+        try:
+            raw_segments, detected_language = build_raw_segments_aliyun(audio_file, split_config, file_url=args.file_url)
+            if raw_segments:
+                print("   ✅ 使用阿里云 ASR 识别完成。")
+            else:
+                print("   ⚠️ 阿里云 ASR 未识别到语音，回退至本地 Whisper")
+                raw_segments, detected_language = build_raw_segments(
+                    audio_file,
+                    split_config=split_config,
+                    force_english_rescue=args.force_english_rescue
+                )
+        except Exception as e:
+            print(f"   ⚠️ 阿里云 ASR 识别失败，将回退至本地 Whisper: {e}")
+            raw_segments, detected_language = build_raw_segments(
+                audio_file,
+                split_config=split_config,
+                force_english_rescue=args.force_english_rescue
+            )
+    else:
+        raw_segments, detected_language = build_raw_segments(
+            audio_file,
+            split_config=split_config,
+            force_english_rescue=args.force_english_rescue
+        )
     if detected_language:
         print(f"   -> Whisper 检测到源语言: {detected_language}")
 
@@ -747,42 +981,17 @@ def main():
         print("Whisper 未能识别出任何有效文本。")
         final_subtitles = []
     else:
-        try:
-            print("   -> 正在调用 Gemini 对 ASR 结果进行纠错、润色并生成英文翻译...")
-            final_subtitles = refine_and_translate(raw_segments, detected_language)
-            print("   ✅ 双语字幕精修完成！")
-        except Exception as err:
-            print(f"   ⚠️ Gemini 精修失败，回退为原始 ASR 文本: {err}")
-            final_subtitles = []
-            for s in raw_segments:
-                original_text = str(s["text"]).strip()
-                fallback_zh = original_text if is_chinese_language(detected_language) else ""
-                fallback_en = original_text if is_english_language(detected_language) else ""
-                final_subtitles.append({
-                    "time": [s["start"], s["end"]],
-                    "zh": fallback_zh,
-                    "en": fallback_en
-                })
-            try:
-                print("   -> 正在尝试补齐中英双语字幕...")
-                if is_english_language(detected_language):
-                    final_subtitles = backfill_chinese_translations(raw_segments, final_subtitles)
-                    final_subtitles = backfill_bilingual_translations(raw_segments, final_subtitles, detected_language)
-                else:
-                    final_subtitles = backfill_bilingual_translations(raw_segments, final_subtitles, detected_language)
-                print("   ✅ 已补齐可恢复的中英双语字幕。")
-            except Exception as translation_err:
-                print(f"   ⚠️ 中英字幕补翻失败，保留当前可用文本: {translation_err}")
+        print("   -> 跳过 LLM 字幕精修与翻译，直接使用 ASR 原始文本。")
+        final_subtitles = build_raw_subtitles(raw_segments, detected_language)
 
-    director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["zh"]} for seg in final_subtitles]
+    director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["text"]} for seg in final_subtitles]
     with open(audio_json_path, "w", encoding="utf-8") as f:
         json.dump(director_data, f, ensure_ascii=False, indent=2)
 
     with open(subtitles_json_path, "w", encoding="utf-8") as f:
         json.dump(final_subtitles, f, ensure_ascii=False, indent=2)
 
-    visual_context = load_optional_visual_context()
-    speaker_scene = analyze_speaker_scene(final_subtitles, visual_context)
+    speaker_scene = build_default_speaker_scene(final_subtitles)
     with open(speaker_scene_json_path, "w", encoding="utf-8") as f:
         json.dump(speaker_scene, f, ensure_ascii=False, indent=2)
 
@@ -809,5 +1018,5 @@ if __name__ == "__main__":
         error_code="ASR_FAILED",
         error_message="ASR 与字幕生成失败",
         error_stage="asr",
-        hint="请检查输入视频、Whisper 依赖、FFmpeg 和 Gemini Key",
+        hint="请检查输入视频、ASR 依赖和 FFmpeg",
     ))

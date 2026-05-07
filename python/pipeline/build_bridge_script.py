@@ -17,18 +17,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from llm_client import create_llm_client, generate_content, get_llm_provider
+from llm_client import create_llm_client, generate_content, get_text_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
+from pipeline.skills.prompt_skill_loader import load_prompt_text
 
 load_project_env(__file__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
-DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+DEFAULT_QWEN_MODEL = "qwen3.6-plus"
 
 
-def get_text_model():
+def get_text_model(provider=None):
     """获取文本生成模型"""
-    provider = get_llm_provider()
+    provider = provider or get_text_llm_provider()
+    if provider == "deepseek":
+        return os.getenv("DEEPSEEK_TEXT_MODEL", "deepseek-v4-pro")
     if provider == "qwen":
         return os.getenv("QWEN_TEXT_MODEL", DEFAULT_QWEN_MODEL)
     return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
@@ -83,74 +86,7 @@ def extract_json_from_response(text):
     raise ValueError("无法从响应中提取有效的 JSON")
 
 
-BRIDGE_SCRIPT_PROMPT = """你是一位短视频文案专家，负责为素材片段生成简短的数字人补位文案。
-
-【核心原则】
-- 数字人只负责串联，不抢素材主线
-- 文案要短、稳、有钩子，但不浮夸
-- 不写长评论，不过度解读
-- 每句话控制在 12-22 字
-- 开场必须像短视频钩子，不能像摘要或会议纪要
-- 转场必须像自然承接，不能像“总结句”
-- 结尾必须短，像收束或抛互动，不要空喊口号
-
-【已选素材片段】
-{selected_segments}
-
-【任务】
-生成以下补位文案：
-
-1. **intro** (开场引入)
-   - 1句话，必须有钩子感
-   - 可以抛变化、冲突、反常识、核心问题
-   - 不要写成“这段分析了…”、“这一段讲了…”
-   - 不要直接照抄素材原话
-   - 12-18字
-
-2. **bridges** (片段间转场)
-   - 每个主体片段之间需要1句转场
-   - 承上启下，不抢戏，像自然补一句
-   - 不要大评论，不要总结腔
-   - 每句 8-14字
-
-3. **outro** (结尾收束)
-   - 1句话，简短收尾
-   - 可以引导互动或留一个判断点
-   - 不要重复前文
-   - 12-18字
-
-【输出格式】
-{{
-  "intro": "开场引入文案",
-  "bridges": [
-    "第一个转场文案",
-    "第二个转场文案"
-  ],
-  "outro": "结尾收束文案"
-}}
-
-【示例】
-素材：关于加密货币监管的讨论
-输出：
-{{
-  "intro": "真正的变化，可能刚刚开始。",
-  "bridges": [
-    "关键分歧，其实已经说透了。"
-  ],
-  "outro": "接下来，就看它会不会真的落地。"
-}}
-
-【注意】
-- 不要写"让我们来看看"、"接下来"这类废话
-- 不要写"非常重要"、"值得深思"这类空洞评价
-- 不要重复素材已经说过的内容
-- 严禁出现“这段分析了”“这一段讲的是”“这说明了”“从中可以看出”
-- 严禁使用书面总结腔、翻译腔、播报稿腔
-- 开场优先使用以下表达方向之一：变化、反差、冲突、疑问、判断
-- 如果素材本身已经很强，数字人只需要轻轻抛一个问题或判断
-
-请直接输出 JSON，不要有其他文字。
-"""
+BRIDGE_SCRIPT_PROMPT = load_prompt_text("build_bridge_script_skill.md")
 
 
 def clean_bridge_line(text, role="bridge"):
@@ -183,7 +119,7 @@ def clean_bridge_line(text, role="bridge"):
     return value
 
 
-def generate_bridge_script(selected_segments, client, model):
+def generate_bridge_script(selected_segments, client, model, provider=None):
     """生成补位文案"""
     # 准备素材摘要
     segments_summary = []
@@ -197,7 +133,7 @@ def generate_bridge_script(selected_segments, client, model):
         selected_segments=json.dumps(segments_summary, ensure_ascii=False, indent=2)
     )
 
-    response = generate_content(client, model=model, contents=prompt)
+    response = generate_content(client, model=model, contents=prompt, provider=provider)
     response_text = response.text
 
     return extract_json_from_response(response_text)
@@ -222,11 +158,12 @@ def main():
 
     print("\n2. 正在调用 LLM 生成补位文案...")
 
-    client = create_llm_client()
-    model = get_text_model()
+    provider = get_text_llm_provider()
+    client = create_llm_client(provider=provider)
+    model = get_text_model(provider)
 
     try:
-        bridge_script = generate_bridge_script(segments, client, model)
+        bridge_script = generate_bridge_script(segments, client, model, provider=provider)
 
         intro = clean_bridge_line(bridge_script.get("intro", ""), "intro")
         bridges = [clean_bridge_line(item, "bridge") for item in bridge_script.get("bridges", []) if str(item or "").strip()]

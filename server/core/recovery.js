@@ -11,8 +11,7 @@
 function createRecoveryService(deps) {
   const {
     taskStore,
-    verticalQueueService,
-    publishStore
+    verticalQueueService
   } = deps;
 
   // 恢复配置

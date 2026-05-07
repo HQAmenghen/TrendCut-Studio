@@ -6,5 +6,6 @@ httpx
 openai
 requests
 requests-oauthlib
+oss2
 playwright
 moviepy

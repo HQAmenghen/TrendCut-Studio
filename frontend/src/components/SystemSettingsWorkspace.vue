@@ -132,7 +132,7 @@
                 <input
                   v-model="llmConfig.qwen.textModel"
                   type="text"
-                  placeholder="qwen3.5-plus"
+                  placeholder="qwen3.6-plus"
                   class="input-text"
                 />
               </div>
@@ -406,7 +406,7 @@ const llmConfig = ref({
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     vlModel: 'qwen3-vl-flash',
     asrModel: 'qwen3-asr-flash',
-    textModel: 'qwen3.5-plus'
+    textModel: 'qwen3.6-plus'
   }
 });
 

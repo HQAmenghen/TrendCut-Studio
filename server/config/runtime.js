@@ -33,7 +33,8 @@ const EDITABLE_JSON_FILES = new Set([
   'workflow_api.json',
   'audio.json',
   'result.json',
-  'director.json'
+  'director.json',
+  'avatar_defaults.json'
 ]);
 
 // WeChat 账号字段

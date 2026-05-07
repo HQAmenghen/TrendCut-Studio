@@ -187,6 +187,22 @@
                     </span>
                   </div>
 
+                  <div v-if="video.regenerationComparison" class="inline-tags">
+                    <span
+                      class="result-chip"
+                      :class="scoreDeltaChipClass(video.regenerationComparison.overallDelta)"
+                    >
+                      {{ formatScoreDeltaLabel(video.regenerationComparison) }}
+                    </span>
+                    <span
+                      v-for="item in buildScoreDeltaTags(video.regenerationComparison)"
+                      :key="`${video.path}-${item.key}`"
+                      class="result-chip neutral"
+                    >
+                      {{ item.label }}
+                    </span>
+                  </div>
+
                   <div v-if="video.reviewStatus && (video.reviewStatus.status === 'passed' || video.reviewStatus.status === 'failed')" class="score-bar">
                     <div class="score-item-mini">
                       <span>内容</span>
@@ -295,7 +311,7 @@ const filter = ref('all');
 const reviewingVideos = ref(new Set());
 const config = ref({
   enabled: true,
-  minPassScore: 70,
+  minPassScore: 65,
   contentWeight: 30,
   subtitleWeight: 25,
   titleWeight: 20,
@@ -341,6 +357,43 @@ function setReviewing(videoPath, enabled) {
   reviewingVideos.value = next;
 }
 
+function scoreDeltaChipClass(delta) {
+  if (!Number.isFinite(Number(delta))) return 'neutral';
+  return Number(delta) >= 0 ? 'passed' : 'failed';
+}
+
+function formatDelta(delta) {
+  if (!Number.isFinite(Number(delta))) return '--';
+  const normalized = Number(delta);
+  return `${normalized >= 0 ? '+' : ''}${normalized}`;
+}
+
+function formatScoreDeltaLabel(comparison) {
+  if (!comparison) return '已重做';
+  const previous = Number(comparison.previousOverallScore);
+  const current = Number(comparison.currentOverallScore);
+  if (!Number.isFinite(previous) || !Number.isFinite(current)) {
+    return '已重做';
+  }
+  return `重做对比 ${previous}→${current} (${formatDelta(comparison.overallDelta)})`;
+}
+
+function buildScoreDeltaTags(comparison) {
+  if (!comparison || typeof comparison !== 'object') return [];
+  const deltas = comparison.deltas || {};
+  return [
+    ['content', '内容', deltas.content],
+    ['subtitle', '字幕', deltas.subtitle],
+    ['title', '标题', deltas.title],
+    ['editing', '剪辑', deltas.editing]
+  ]
+    .filter(([, , delta]) => Number.isFinite(Number(delta)) && Number(delta) !== 0)
+    .map(([key, label, delta]) => ({
+      key,
+      label: `${label}${formatDelta(delta)}`
+    }));
+}
+
 async function refreshList() {
   loading.value = true;
   try {
@@ -376,7 +429,8 @@ async function refreshList() {
             size: asset.sizeBytes || 0,
             mtime: asset.updatedAt || '',
             sourceType: asset.sourceType || '',
-            reviewStatus: normalizedReview
+            reviewStatus: normalizedReview,
+            regenerationComparison: asset?.metadata?.regeneration?.scoreComparison || null
           };
         });
     }
@@ -484,6 +538,18 @@ async function regenerateVideo(video) {
       }
       if (adjustments.appliedSuggestionsCount > 0) {
         message += `✓ 已应用 ${adjustments.appliedSuggestionsCount} 条高优先级建议\n`;
+      }
+      if (adjustments.repairProfile) {
+        message += `✓ 修补策略: ${adjustments.repairProfile}\n`;
+      }
+      if (Array.isArray(adjustments.repairFocus) && adjustments.repairFocus.length) {
+        message += `✓ 修补重点: ${adjustments.repairFocus.join(' / ')}\n`;
+      }
+      if (Array.isArray(adjustments.repairSummary) && adjustments.repairSummary.length) {
+        message += '\n本次修补动作:\n';
+        adjustments.repairSummary.slice(0, 4).forEach((item) => {
+          message += `- ${item}\n`;
+        });
       }
 
       message += `\n任务ID: ${data.jobId}`;

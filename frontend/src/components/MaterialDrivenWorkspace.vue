@@ -6,31 +6,31 @@
         <div class="hero-copy">
           <div class="section-kicker">Material First</div>
           <div>
-            <h3>素材驱动工作流</h3>
-            <p>从素材视频到数字人成片的完整自动化流程。采用OST智能剪辑策略，保留关键原声，优化画面质量，精确控制时长。</p>
+            <h3>热点转视频生产线</h3>
+            <p>把热门素材一键转入，自动完成脚本生成、数字人口播、静音素材插片和成片导出，并无缝衔接发布链路。</p>
           </div>
           <div class="flow-pills">
-            <span class="flow-pill">素材分析</span>
-            <span class="flow-pill">AI规划</span>
-            <span class="flow-pill">生成数字人</span>
-            <span class="flow-pill">智能混剪</span>
+            <span class="flow-pill">热门转入</span>
+            <span class="flow-pill">脚本编排</span>
+            <span class="flow-pill">数字人口播</span>
+            <span class="flow-pill">导出发布</span>
           </div>
         </div>
         <div class="hero-stats">
           <div class="module-summary-card">
             <span>素材状态</span>
-            <strong>{{ jobId ? '已上传' : '待上传' }}</strong>
-            <p>支持MP4格式，建议时长30-120秒。</p>
+            <strong>{{ jobId ? '已接入' : '待接入' }}</strong>
+            <p>支持本地上传，也支持从热门榜单一键转入。</p>
           </div>
           <div class="module-summary-card">
-            <span>剪辑策略</span>
-            <strong>OST智能剪辑</strong>
-            <p>智能分类处理音频，保留关键原声信息。</p>
+            <span>编排核心</span>
+            <strong>规则+AI协作</strong>
+            <p>先定脚本和镜头计划，再执行渲染导出和发布衔接。</p>
           </div>
           <div class="module-summary-card">
-            <span>素材占比</span>
-            <strong>{{ planSummary ? `${planSummary.materialRatio}%` : '70%目标' }}</strong>
-            <p>素材为主，数字人补位，节奏紧凑自然。</p>
+            <span>生产目标</span>
+            <strong>{{ planSummary ? `${planSummary.materialRatio}%素材` : '自动编排' }}</strong>
+            <p>保留热点证据画面，同时让数字人承担解说和IP表达。</p>
           </div>
           <div class="module-summary-card">
             <span>当前进度</span>
@@ -49,7 +49,7 @@
           <h4>7步工作流进度</h4>
         </div>
         <div class="workflow-summary">
-          <span class="workflow-badge">步骤 {{ currentStep }}/7</span>
+        <span class="workflow-badge">{{ currentStep >= 7 || finalVideoUrl ? '已完成' : `步骤 ${currentStep}/7` }}</span>
           <strong>{{ statusText || currentStepInfo.desc }}</strong>
         </div>
       </div>
@@ -80,7 +80,35 @@
             <span class="workflow-stage-state">{{ getStepStateLabel(step.id) }}</span>
           </div>
           <p class="workflow-stage-detail">{{ step.desc }}</p>
+          <div class="workflow-stage-duration" v-if="stepDuration(step.id).hasStarted">
+            <span class="duration-icon">⏱</span>
+            <span class="duration-value">{{ stepDuration(step.id).label }}</span>
+            <span v-if="getStepStatus(step.id) === 'stage-running'" class="duration-live-dot"></span>
+          </div>
         </article>
+      </div>
+      <div class="panel linkage-panel mt-4">
+        <div class="panel-header"><span>🔗 链路联动状态</span></div>
+        <div class="panel-body stack">
+          <div class="mini-status-grid">
+            <div class="mini-status-card">
+              <span>素材来源</span>
+              <strong>{{ sourceBridgeLabel }}</strong>
+            </div>
+            <div class="mini-status-card">
+              <span>脚本单元</span>
+              <strong>{{ scriptUnitCount || '待生成' }}</strong>
+            </div>
+            <div class="mini-status-card">
+              <span>渲染状态</span>
+              <strong>{{ finalVideoUrl ? '已出片' : '待渲染' }}</strong>
+            </div>
+            <div class="mini-status-card">
+              <span>发布衔接</span>
+              <strong>{{ readyForPublish ? '可转发布' : '待出片' }}</strong>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -90,8 +118,8 @@
         <div class="builder-card">
           <div class="builder-card-header">
             <div>
-              <h4>上传素材视频</h4>
-              <p>选择素材视频文件，配置工作流选项，开始自动化制作流程。</p>
+              <h4>接入素材或热点视频</h4>
+              <p>支持本地上传，也支持从热门榜单一键送入，后续直接进入自动生产流程。</p>
             </div>
           </div>
           <div class="builder-card-body stack">
@@ -100,8 +128,8 @@
                 <div class="config-cluster-title">素材视频</div>
                 <label class="upload-card" v-if="!materialUrl">
                   <span class="upload-icon">🎬</span>
-                  <span class="upload-title">{{ selectedFile ? selectedFile.name : '上传素材视频' }}</span>
-                  <span class="upload-sub">支持 MP4 格式，建议 30-120 秒</span>
+                  <span class="upload-title">{{ selectedFile ? selectedFile.name : '上传本地素材' }}</span>
+                  <span class="upload-sub">支持 MP4 格式，或从热门发现模块直接转入</span>
                   <input
                     ref="fileInput"
                     type="file"
@@ -128,26 +156,26 @@
             </div>
 
             <div class="config-cluster">
-              <div class="config-cluster-title">工作流配置</div>
+              <div class="config-cluster-title">生产线配置</div>
               <div class="quick-tip-card">
-                <strong>默认配置已适合直接开始</strong>
-                <p>智能剪辑模式会使用OST策略、硬件加速和智能音频处理。如需手动生成数字人，可关闭自动生成选项。</p>
+                <strong>默认配置已经适合直接量产</strong>
+                <p>系统会优先走热门转入、脚本编排、数字人口播、静音素材插片和自动导出。你仍然可以保留高级参数做精细控制。</p>
               </div>
 
               <div class="config-options">
                 <label class="checkbox-row">
                   <input type="checkbox" v-model="config.useSmartClip" />
                   <div>
-                    <strong>启用智能剪辑</strong>
-                    <p>使用OST策略、硬件加速和智能音频处理（推荐）</p>
+                    <strong>启用自动编排</strong>
+                    <p>按脚本、镜头计划和素材匹配结果自动执行数字人主讲渲染（推荐）</p>
                   </div>
                 </label>
 
                 <label class="checkbox-row">
                   <input type="checkbox" v-model="config.autoGenerate" />
                   <div>
-                    <strong>自动生成数字人</strong>
-                    <p>需要ComfyUI在线。关闭后将在步骤5暂停，等待手动生成</p>
+                    <strong>自动生成整段数字人</strong>
+                    <p>需要 ComfyUI 在线。关闭后会在脚本完成后暂停，等待你手动放入整段数字人视频</p>
                   </div>
                 </label>
 
@@ -211,7 +239,7 @@
 
                 <div>
                   <label class="field-label">口播文案（可选）</label>
-                  <textarea class="input-dark resize-none" rows="3" :value="gen.text" @input="$emit('update:gen-field', 'text', $event.target.value)" placeholder="留空则由 AI 自动从素材生成解说词..."></textarea>
+                  <textarea class="input-dark resize-none" rows="3" :value="gen.text" @input="$emit('update:gen-field', 'text', $event.target.value)" placeholder="留空则由系统根据热点素材自动生成整段口播稿..."></textarea>
                 </div>
 
                 <!-- Web/App details Advanced -->
@@ -221,16 +249,27 @@
                     <div>
                       <label class="field-label">🔗 云端接口地址</label>
                       <input class="input-dark text-sm" :value="gen.serverUrl" @input="$emit('update:gen-field', 'serverUrl', $event.target.value)" />
+                      <div class="inline-tools mt-2">
+                        <button
+                          type="button"
+                          class="ghost-btn helper-btn"
+                          :disabled="comfyTestLoading"
+                          @click="$emit('test-comfy-connection')"
+                        >
+                          {{ comfyTestLoading ? '检测中...' : '测试连通性' }}
+                        </button>
+                        <span
+                          v-if="comfyTestResult?.message"
+                          :class="['inline-result', comfyTestResult?.status === 'success' ? 'result-success' : 'result-error']"
+                        >
+                          {{ comfyTestResult.message }}
+                        </span>
+                      </div>
+                      <p v-if="comfyTestResult?.testedUrl" class="muted-copy">探测地址：{{ comfyTestResult.testedUrl }}</p>
                     </div>
-                    <div class="two-col">
-                      <div>
-                        <label class="field-label">✂️ 尾部裁剪 (秒)</label>
-                        <input type="number" step="0.1" class="input-dark text-center text-sm" :value="gen.trimSeconds" @input="$emit('update:gen-field', 'trimSeconds', Number($event.target.value))" />
-                      </div>
-                      <div>
-                        <label class="field-label">⏱️ 最大时长 (秒，默认35)</label>
-                        <input type="number" min="1" max="180" class="input-dark text-center text-sm" :value="gen.maxDuration" @input="$emit('update:gen-field', 'maxDuration', Number($event.target.value))" />
-                      </div>
+                    <div class="quick-tip-card">
+                      <strong>当前 workflow 只接收最终口播音频</strong>
+                      <p>口播文本会先在本地通过 Qwen3TTS API 复刻音色并合成音频，再把生成好的音频上传给 ComfyUI 驱动数字人。</p>
                     </div>
                   </div>
                 </details>
@@ -242,8 +281,8 @@
                 <label class="checkbox-row">
                   <input type="checkbox" :checked="withSubtitles" @change="$emit('update:with-subtitles', $event.target.checked)" />
                   <div>
-                    <strong>自动烧录 AI 中文精翻字幕</strong>
-                    <p>推荐开启，将会生成精准带效果的字幕</p>
+                    <strong>自动烧录 AI 字幕</strong>
+                    <p>推荐开启，便于后续发布和人工复查</p>
                   </div>
                 </label>
               </div>
@@ -265,7 +304,7 @@
                 @click="startWorkflow"
                 :disabled="uploading"
               >
-                {{ uploading ? '⏳ 上传中...' : '🚀 开始制作' }}
+                {{ uploading ? '⏳ 接入中...' : '🚀 开始自动生产' }}
               </button>
             </div>
           </div>
@@ -276,6 +315,41 @@
     <!-- Progress Section -->
     <div v-else class="workspace-grid">
       <div class="workspace-main">
+        <!-- Persistent Node Config (Always visible when Step 6 or Error) -->
+        <div v-if="currentStep === 6 || error || showManualAvatarPrompt" class="panel node-config-panel highlight-panel">
+          <div class="panel-header"><span>🔗 ComfyUI 渲染节点配置</span></div>
+          <div class="panel-body stack">
+            <div class="config-row">
+              <label class="field-label">接口地址</label>
+              <div class="input-with-tools">
+                <input
+                  class="input-dark text-sm flex-1"
+                  :value="gen.serverUrl"
+                  @input="$emit('update:gen-field', 'serverUrl', $event.target.value)"
+                  placeholder="请输入 ComfyUI API 地址..."
+                />
+                <button
+                  type="button"
+                  class="primary-btn helper-btn"
+                  :disabled="comfyTestLoading"
+                  @click="$emit('test-comfy-connection')"
+                >
+                  {{ comfyTestLoading ? '🔃 检测中' : '📡 测试连通性' }}
+                </button>
+              </div>
+            </div>
+            <div v-if="comfyTestResult?.message" class="test-feedback mt-2">
+               <span :class="['inline-result', comfyTestResult?.status === 'success' ? 'result-success' : 'result-error']">
+                 {{ comfyTestResult.message }}
+               </span>
+               <p v-if="comfyTestResult?.testedUrl" class="muted-copy ml-1">探测地址：{{ comfyTestResult.testedUrl }}</p>
+            </div>
+            <div class="alert-bar mt-2" v-if="currentStep === 6">
+              💡 提示：如果生成失败，请检查上方地址是否正确，或查看 ComfyUI 后台是否有模型报错。
+            </div>
+          </div>
+        </div>
+
         <!-- Plan Summary -->
         <div v-if="planSummary" class="panel">
           <div class="panel-header"><span>📋 导演规划摘要</span></div>
@@ -322,13 +396,45 @@
           </div>
         </div>
 
-        <div v-if="hasDirectorPlan" class="panel">
-          <div class="panel-header"><span>🎬 导演分镜方案</span></div>
+        <div v-if="hasEditPlan || hasExecutionPlan" class="panel">
+          <div class="panel-header"><span>🧠 自动编排状态</span></div>
           <div class="panel-body stack">
             <div class="mini-status-grid">
               <div class="mini-status-card">
-                <span>分镜数</span>
-                <strong>{{ directorPlan.length }}</strong>
+                <span>脚本句数</span>
+                <strong>{{ scriptUnitCount || 0 }}</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>Edit Plan</span>
+                <strong>{{ editPlanBlockCount || '待生成' }}</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>Execution Plan</span>
+                <strong>{{ executionPlanSegmentCount || '待落地' }}</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>模板</span>
+                <strong>{{ editPlan?.meta?.template_id || editPlan?.template_id || 'material_driven_v1' }}</strong>
+              </div>
+            </div>
+            <details v-if="hasEditPlan" class="advanced-block mt-2">
+              <summary>查看 Edit Plan</summary>
+              <pre class="json-block">{{ editPlanPretty }}</pre>
+            </details>
+            <details v-if="hasExecutionPlan" class="advanced-block mt-2">
+              <summary>查看 Execution Plan</summary>
+              <pre class="json-block">{{ executionPlanPretty }}</pre>
+            </details>
+          </div>
+        </div>
+
+        <div v-if="hasDisplayTimelinePlan" class="panel">
+          <div class="panel-header"><span>🎬 时间线方案</span></div>
+          <div class="panel-body stack">
+            <div class="mini-status-grid">
+              <div class="mini-status-card">
+                <span>片段数</span>
+                <strong>{{ displayTimelinePlan.length }}</strong>
               </div>
               <div class="mini-status-card">
                 <span>素材镜头</span>
@@ -337,6 +443,10 @@
               <div class="mini-status-card">
                 <span>数字人镜头</span>
                 <strong>{{ aimanShotCount }}</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>插片镜头</span>
+                <strong>{{ cutawayShotCount }}</strong>
               </div>
             </div>
             <div class="timeline-wrap">
@@ -357,8 +467,8 @@
               </div>
             </div>
             <details class="advanced-block mt-2" open>
-              <summary>查看完整导演 JSON</summary>
-              <pre class="json-block">{{ directorPlanPretty }}</pre>
+              <summary>查看当前时间线 JSON</summary>
+              <pre class="json-block">{{ displayTimelinePretty }}</pre>
             </details>
           </div>
         </div>
@@ -380,7 +490,15 @@
               class="btn-success full-btn"
               @click="continueWorkflow"
             >
-              ✅ 已生成，继续混剪
+              ✅ 已生成，继续渲染
+            </button>
+            <button
+              type="button"
+              class="ghost-btn full-btn"
+              :disabled="rebuildingPlan"
+              @click="rebuildPlan"
+            >
+              {{ rebuildingPlan ? '⏳ 正在重建计划...' : '🧠 重建剪辑计划' }}
             </button>
           </div>
         </div>
@@ -406,16 +524,50 @@
         <div v-if="finalVideoUrl" class="panel success-panel">
           <div class="panel-header"><span>🎉 制作完成</span></div>
           <div class="panel-body stack">
+            <div class="mini-status-grid">
+              <div class="mini-status-card">
+                <span>成片状态</span>
+                <strong>已完成</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>发布状态</span>
+                <strong>{{ readyForPublish ? '可转发布' : '待出片' }}</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>脚本句数</span>
+                <strong>{{ scriptUnitCount || 0 }}</strong>
+              </div>
+              <div class="mini-status-card">
+                <span>执行片段</span>
+                <strong>{{ executionPlanSegmentCount || '待生成' }}</strong>
+              </div>
+            </div>
             <video :src="finalVideoUrl" controls class="result-video"></video>
             <div class="action-buttons">
               <a :href="finalVideoUrl" download class="primary-btn shrink-none">
                 📥 下载视频
               </a>
+              <button
+                type="button"
+                class="ghost-btn shrink-none"
+                :disabled="rebuildingPlan"
+                @click="rebuildPlan"
+              >
+                {{ rebuildingPlan ? '⏳ 重建中...' : '🧠 重建剪辑计划' }}
+              </button>
+              <button
+                type="button"
+                class="ghost-btn shrink-none"
+                :disabled="rerenderingVideo"
+                @click="rerenderVideo"
+              >
+                {{ rerenderingVideo ? '⏳ 渲染中...' : '🎞️ 重新渲染成片' }}
+              </button>
               <button type="button" class="ghost-btn shrink-none" @click="$emit('to-vertical')">
                 📱 导入竖屏合成 (9:16)
               </button>
               <button type="button" class="ghost-btn shrink-none" @click="$emit('to-publish')">
-                🚀 候选至一键发布 (16:9)
+                {{ readyForPublish ? '🚀 进入一键发布 (16:9)' : '🚀 转到一键发布 (16:9)' }}
               </button>
               <button type="button" class="ghost-btn shrink-none" @click="resetWorkflow">
                 🔄 制作新视频
@@ -455,44 +607,54 @@ const props = defineProps({
   planSummary: Object,
   narrationSummary: Object,
   narrationFullText: String,
-  directorPlan: Array,
+  scriptUnits: Array,
+  editPlan: Object,
+  executionPlan: Object,
   finalVideoUrl: String,
   error: String,
   recentLogs: Array,
   uploading: Boolean,
+  rebuildingPlan: Boolean,
+  rerenderingVideo: Boolean,
   outputPath: String,
   audioMode: String,
   imageMode: String,
   presets: Object,
   gen: Object,
   withSubtitles: Boolean,
+  comfyTestLoading: Boolean,
+  comfyTestResult: Object,
   activeDurationLabel: String,
   lastDurationLabel: String,
   materialUrl: String,
-  materialSourceLabel: String
+  materialSourceLabel: String,
+  stepDurationMap: Object
 });
 
 const emit = defineEmits([
   'start-workflow',
   'continue-workflow',
+  'rebuild-plan',
+  'rerender-video',
   'retry-step',
   'reset-workflow',
   'update:audio-mode',
   'update:image-mode',
   'update:gen-field',
   'update:with-subtitles',
+  'test-comfy-connection',
   'to-publish',
   'to-vertical'
 ]);
 
 const steps = [
-  { id: 1, title: '准备素材', desc: '复制到工作目录' },
-  { id: 2, title: '分析素材', desc: 'ASR + VLM' },
-  { id: 3, title: '素材切片', desc: '切片+评分+选择' },
-  { id: 4, title: '导演规划', desc: '规划素材70%+数字人30%' },
-  { id: 5, title: '生成解说词', desc: '精确时长的解说词' },
-  { id: 6, title: '生成数字人', desc: '通过ComfyUI生成' },
-  { id: 7, title: '智能混剪', desc: 'OST策略+硬件加速' }
+  { id: 1, title: '接入素材', desc: '本地上传或热门转入' },
+  { id: 2, title: '理解内容', desc: 'ASR + OCR + 重点分析' },
+  { id: 3, title: '匹配素材', desc: '切片、评分和镜头候选' },
+  { id: 4, title: '生成计划', desc: '脚本、edit plan、execution plan' },
+  { id: 5, title: '口播成稿', desc: '生成整段数字人口播稿' },
+  { id: 6, title: '数字人生成', desc: '生成整段数字人视频' },
+  { id: 7, title: '渲染导出', desc: '自动渲染并输出最终成片' }
 ];
 
 const fileInput = ref(null);
@@ -504,6 +666,9 @@ const config = ref({
 });
 
 const currentStepInfo = computed(() => {
+  if (props.currentStep >= 7 || props.finalVideoUrl) {
+    return { id: 8, title: '制作完成', desc: '成片已输出，可直接转入发布链路' };
+  }
   return steps.find(s => s.id === props.currentStep) || steps[0];
 });
 
@@ -511,44 +676,71 @@ const narrationTextToShow = computed(() => {
   return String(props.narrationFullText || props.narrationSummary?.fullText || '').trim();
 });
 
-const hasDirectorPlan = computed(() => Array.isArray(props.directorPlan) && props.directorPlan.length > 0);
+const scriptUnitCount = computed(() => Array.isArray(props.scriptUnits) ? props.scriptUnits.length : 0);
+const hasEditPlan = computed(() => !!props.editPlan && Array.isArray(props.editPlan?.blocks));
+const hasExecutionPlan = computed(() => !!props.executionPlan && Array.isArray(props.executionPlan?.segments));
+const editPlanBlockCount = computed(() => hasEditPlan.value ? props.editPlan.blocks.length : 0);
+const executionPlanSegmentCount = computed(() => hasExecutionPlan.value ? props.executionPlan.segments.length : 0);
+const readyForPublish = computed(() => Boolean(props.finalVideoUrl));
+const editPlanPretty = computed(() => hasEditPlan.value ? JSON.stringify(props.editPlan, null, 2) : '{}');
+const executionPlanPretty = computed(() => hasExecutionPlan.value ? JSON.stringify(props.executionPlan, null, 2) : '{}');
+const sourceBridgeLabel = computed(() => {
+  if (!props.materialUrl) return '本地上传';
+  return props.materialSourceLabel ? `热门转入：${props.materialSourceLabel}` : '热门素材直送';
+});
+
+const displayTimelinePlan = computed(() => {
+  if (Array.isArray(props.executionPlan) && props.executionPlan.length) return props.executionPlan;
+  return [];
+});
+const hasDisplayTimelinePlan = computed(() => displayTimelinePlan.value.length > 0);
 const materialShotCount = computed(() =>
-  Array.isArray(props.directorPlan)
-    ? props.directorPlan.filter((x) => String(x?.video_source || '').includes('material')).length
+  displayTimelinePlan.value.length
+    ? displayTimelinePlan.value.filter((x) => String(x?.video_source || '').includes('material')).length
     : 0
 );
 const aimanShotCount = computed(() =>
-  Array.isArray(props.directorPlan)
-    ? props.directorPlan.filter((x) => String(x?.video_source || '').includes('aiman')).length
+  displayTimelinePlan.value.length
+    ? displayTimelinePlan.value.filter((x) => String(x?.video_source || '').includes('aiman')).length
     : 0
 );
-const directorPlanPretty = computed(() =>
-  hasDirectorPlan.value ? JSON.stringify(props.directorPlan, null, 2) : '[]'
+const cutawayShotCount = computed(() =>
+  displayTimelinePlan.value.length
+    ? displayTimelinePlan.value.filter((x) => String(x?.type || '') === 'material_cutaway').length
+    : 0
+);
+const displayTimelinePretty = computed(() =>
+  hasDisplayTimelinePlan.value ? JSON.stringify(displayTimelinePlan.value, null, 2) : '[]'
 );
 const timelineTotalDuration = computed(() => {
-  if (!hasDirectorPlan.value) return 0;
+  if (!hasDisplayTimelinePlan.value) return 0;
   const maxEnd = Math.max(
-    ...props.directorPlan.map((seg) => Number(seg?.end_time ?? seg?.end ?? 0) || 0),
+    ...displayTimelinePlan.value.map((seg) => Number(seg?.end_time ?? seg?.end ?? 0) || 0),
     0
   );
   return maxEnd;
 });
 const timelineRows = computed(() => {
-  if (!hasDirectorPlan.value) return [];
-  return props.directorPlan.map((seg) => {
+  if (!hasDisplayTimelinePlan.value) return [];
+  return displayTimelinePlan.value.map((seg) => {
     const start = Number(seg?.start_time ?? seg?.start ?? 0) || 0;
     const end = Number(seg?.end_time ?? seg?.end ?? start) || start;
     const duration = Math.max(0, end - start);
     const videoSource = String(seg?.video_source || '');
     const audioSource = String(seg?.audio_source || '');
+    const isCutaway = String(seg?.type || '') === 'material_cutaway';
     return {
       start,
       end,
       duration,
-      videoSourceLabel: videoSource.includes('material') ? '素材画面' : '数字人画面',
-      videoSourceClass: videoSource.includes('material') ? 'source-material' : 'source-aiman',
-      audioSourceLabel: audioSource === 'b_roll' ? '素材原声' : '数字人口播',
-      audioSourceClass: audioSource === 'b_roll' ? 'source-broll' : 'source-main'
+      videoSourceLabel: isCutaway
+        ? '静音素材插片'
+        : (videoSource.includes('material') ? '素材画面' : '数字人画面'),
+      videoSourceClass: isCutaway
+        ? 'source-pip'
+        : (videoSource.includes('material') ? 'source-material' : 'source-aiman'),
+      audioSourceLabel: '数字人口播',
+      audioSourceClass: 'source-main'
     };
   });
 });
@@ -567,15 +759,30 @@ const showManualAvatarPrompt = computed(() => {
 });
 
 const getStepStatus = (stepId) => {
+  if (props.currentStep >= 7) return 'stage-completed';
   if (stepId < props.currentStep) return 'stage-completed';
   if (stepId === props.currentStep) return 'stage-running';
   return 'stage-pending';
 };
 
 const getStepStateLabel = (stepId) => {
+  if (props.currentStep >= 7) return '已完成';
   if (stepId < props.currentStep) return '已完成';
   if (stepId === props.currentStep) return '进行中';
   return '待执行';
+};
+
+const stepDuration = (stepId) => {
+  const map = props.stepDurationMap;
+  if (!map || !map[stepId]) {
+    return { hasStarted: false, label: '', detail: '' };
+  }
+  const entry = map[stepId];
+  return {
+    hasStarted: entry.seconds > 0 || entry.label !== '未开始',
+    label: entry.label === '未开始' ? '' : entry.label,
+    detail: entry.detail || ''
+  };
 };
 
 const handleFileSelect = (event) => {
@@ -598,12 +805,21 @@ const startWorkflow = () => {
 
   emit('start-workflow', {
     file: selectedFile.value,
-    config: config.value
+    config: config.value,
+    manualScript: props.gen.text
   });
 };
 
 const continueWorkflow = () => {
   emit('continue-workflow');
+};
+
+const rebuildPlan = () => {
+  emit('rebuild-plan');
+};
+
+const rerenderVideo = () => {
+  emit('rerender-video');
 };
 
 const retryCurrentStep = () => {
@@ -911,6 +1127,26 @@ const resetWorkflow = () => {
   font-size: 12px;
 }
 
+.inline-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inline-result {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.result-success {
+  color: #22c55e;
+}
+
+.result-error {
+  color: #ef4444;
+}
+
 /* Button Styles */
 .primary-btn, .btn-success {
   background: linear-gradient(135deg, var(--brand-a), var(--brand-b));
@@ -979,6 +1215,10 @@ const resetWorkflow = () => {
   padding: 24px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   box-shadow: var(--shadow);
+}
+
+.linkage-panel {
+  margin-top: 18px;
 }
 
 .workflow-head {
@@ -1066,6 +1306,52 @@ const resetWorkflow = () => {
   color: #8ed1ff;
   background: rgba(142, 209, 255, 0.1);
   font-weight: 700;
+}
+
+/* Step duration badge */
+.workflow-stage-duration {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.stage-completed .workflow-stage-duration {
+  color: #22c55e;
+}
+
+.stage-running .workflow-stage-duration {
+  color: #8ed1ff;
+}
+
+.duration-icon {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.duration-value {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+.duration-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8ed1ff;
+  margin-left: 2px;
+  animation: live-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.6); }
 }
 
 /* Premium Upload Card */
@@ -1338,6 +1624,10 @@ const resetWorkflow = () => {
   font-size: 14px;
 }
 
+.compact-card {
+  gap: 8px;
+}
+
 .json-block {
   margin: 0;
   padding: 14px;
@@ -1434,6 +1724,12 @@ const resetWorkflow = () => {
   border-color: rgba(124, 58, 237, 0.25);
 }
 
+.source-pip {
+  color: #0f766e;
+  background: rgba(20, 184, 166, 0.14);
+  border-color: rgba(20, 184, 166, 0.25);
+}
+
 .result-video {
   width: 100%;
   max-width: 800px;
@@ -1449,6 +1745,7 @@ const resetWorkflow = () => {
   gap: 16px;
   justify-content: center;
   margin-top: 24px;
+  flex-wrap: wrap;
 }
 
 .error-message {
@@ -1578,5 +1875,47 @@ const resetWorkflow = () => {
 .mt-2 { margin-top: 8px; }
 .mt-4 { margin-top: 16px; }
 .shrink-none { flex-shrink: 0; }
+
+/* New Persistent Node Config Styles */
+.node-config-panel {
+  border: 1px solid var(--line-soft);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.highlight-panel {
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  background: rgba(168, 85, 247, 0.03);
+}
+
+.config-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-with-tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.alert-bar {
+  padding: 10px 14px;
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  border-left: 3px solid var(--brand-a);
+}
+
+.test-feedback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.ml-1 { margin-left: 4px; }
 
 </style>

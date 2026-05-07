@@ -1,324 +1,147 @@
-# 素材驱动的数字人视频制作流程
-
-## 🎯 工作流概述
-
-**素材驱动** = 先分析素材 → 规划剪辑 → 生成数字人 → 智能混剪
-
-```
-素材视频 (material.mp4)
-    ↓
-1. 分析素材（ASR + VLM）
-    ↓ 提取音频和视觉信息
-2. 素材切片和评分
-    ↓ 切成语义段并评分
-3. AI导演规划 ⭐ 核心
-    ↓ 规划素材70% + 数字人30%
-    ↓ 确定数字人说什么、说多久
-4. 生成解说词
-    ↓ 根据规划生成精确时长的解说词
-5. 生成数字人 (ComfyUI)
-    ↓ 根据解说词生成数字人视频
-6. 智能混剪 🚀
-    ↓ 硬件加速 + 智能音频
-最终视频 (output_final.mp4)
-```
-
-## 🚀 快速开始
-
-### 一键执行完整流程
+# 素材驱动工作流
 
-```bash
-python python/pipeline/run_material_driven.py material.mp4 --output-dir ./output
-```
-
-### 使用智能剪辑（推荐）
-
-```bash
-python python/pipeline/run_material_driven.py material.mp4 \
-    --output-dir ./output
-```
+## 主入口
 
-### 禁用智能剪辑
-
-```bash
-python python/pipeline/run_material_driven.py material.mp4 \
-    --output-dir ./output \
-    --no-smart-clip
-```
+当前主入口：
 
-## 📋 分步执行
+- 前端：`frontend/src/components/MaterialDrivenWorkspace.vue`
+- 前端状态：`frontend/src/composables/useMaterialDriven.js`
+- 后端：`server/routes/materialDriven.js`
+- Python 主控：`python/pipeline/run_material_driven.py`
 
-如果需要分步执行或从某个步骤继续：
+## 工作流目标
 
-### 步骤1-5: 准备到生成解说词
-
-```bash
-python python/pipeline/run_material_driven.py material.mp4 \
-    --output-dir ./output \
-    --end-at 5
-```
-
-### 步骤6: 生成数字人（需要ComfyUI）
-
-通过Node.js服务调用ComfyUI生成数字人视频
-
-### 步骤7: 从混剪开始
-
-```bash
-python python/pipeline/run_material_driven.py material.mp4 \
-    --output-dir ./output \
-    --start-from 7
-```
-
-## 📊 完整流程详解
-
-### 步骤1: 准备素材
-- 复制素材到工作目录
-- 输出: `material.mp4`
-
-### 步骤2: 分析素材
-- **2.1 音频识别 (ASR)**
-  - 提取音频并识别文字
-  - 输出: `audio.json`
-  
-- **2.2 视觉分析 (VLM)**
-  - 分析视频内容
-  - 输出: `result.json`
-
-### 步骤3: 素材切片
-- **3.1 按语义切片**
-  - 根据字幕和停顿切片
-  - 输出: `segments.json`
-  
-- **3.2 评分素材片段**
-  - 评估每个片段的质量
-  
-- **3.3 选择优质片段**
-  - 选择最佳片段用于混剪
-
-### 步骤4: 导演规划 ⭐ 核心步骤
-
-AI导演会：
-- 分析素材内容和质量
-- 规划素材使用（目标70%）
-- 规划数字人位置（目标30%）
-- 确定数字人需要说什么
-- 确定每个片段的时长
+把一个热点素材视频转成一条可发布的“数字人主讲 + 热点素材插片”成片，并把中间结果完整保存在项目目录中，便于复查、继续执行、重建计划和重渲染。
 
-**输出**: `director_final.json`
+## 输入方式
 
-**规划原则**:
-- 素材内容为主（70%画面时长）
-- 数字人只负责：开场、串联、补充、收尾
-- 优先保留素材原声中的关键信息
-- 避免频繁切镜，保持节奏稳定
+支持两种输入：
 
-### 步骤5: 生成解说词
+- 本地上传素材视频
+- 从 xAI 热点榜单模块一键转入远程视频地址
 
-根据导演规划生成：
-- 精确时长的解说词
-- 符合语速要求（4-5字/秒）
-- 自然流畅的表达
-
-**输出**: `narration.json`
+可选增强能力：
 
-### 步骤6: 生成数字人
+- 自动调用 ComfyUI 生成数字人
+- 选择音频/图片预设，或上传自己的音频/图片
 
-**需要通过Node.js服务调用ComfyUI**
+## 7 步执行流程
 
-1. 确保ComfyUI服务运行
-2. 配置 `COMFYUI_BASE_URL`
-3. 通过前端或API触发生成
-4. 等待生成完成
+### 步骤 1：准备素材
 
-**输出**: `aiman.mp4`
+- 复制或下载素材到任务目录
+- 标准命名为 `material.mp4`
 
-### 步骤7: 智能混剪
+### 步骤 2：分析素材
 
-使用升级后的智能剪辑引擎：
-- 🚀 硬件加速编码（3-5倍提速）
-- 🎵 智能音频处理（响度统一）
-- 🎬 精确的音视频同步
-- 📝 字幕烧录
-
-**输出**: `output_final.mp4`
+- 运行 `run_asr.py`
+- 运行 `video_vlm.py`
 
-## 🎯 工作目录结构
+主要产物：
 
-```
-output/
-├── material.mp4           # 素材视频
-├── audio.json            # 音频识别结果
-├── result.json           # 视觉分析结果
-├── segments.json         # 素材切片
-├── director_final.json   # 导演方案 ⭐
-├── narration.json        # 解说词
-├── aiman.mp4            # 数字人视频
-├── subtitles.srt        # 字幕文件
-└── output_final.mp4     # 最终视频 ✅
-```
+- `audio.json`
+- `result.json`
 
-## 💡 使用技巧
+### 步骤 3：切片、评分、选段
 
-### 1. 查看规划摘要
+- `segment_material.py`
+- `score_material_segments.py`
+- `select_material_segments.py`
 
-脚本会自动显示规划摘要：
-```
-规划摘要:
-  总时长: 45.2秒
-  素材占比: 68.5%
-  数字人占比: 31.5%
-```
+主要产物：
 
-### 2. 查看解说词摘要
+- `material_segments.json`
+- `material_segments_scored.json`
+- `selected_segments.json`
 
-```
-解说词摘要:
-  目标时长: 15秒
-  字数: 68字
-  预计语速: 4.5字/秒
-```
+### 步骤 4：编排规划
 
-### 3. 断点续传
+根据选段结果生成后续脚本和编排输入。
 
-如果某个步骤失败，可以从该步骤重新开始：
+这一阶段不再走旧 `agents/` 流程，而是进入当前的规划与技能模块。
 
-```bash
-# 从步骤4（导演规划）重新开始
-python python/pipeline/run_material_driven.py material.mp4 \
-    --output-dir ./output \
-    --start-from 4
-```
+### 步骤 5：重建脚本与整段口播稿
 
-### 4. 只执行特定步骤
+主控会根据素材大纲和技能模块生成：
 
-```bash
-# 只执行步骤2（分析素材）
-python python/pipeline/run_material_driven.py material.mp4 \
-    --output-dir ./output \
-    --start-from 2 \
-    --end-at 2
-```
+- `script_units.json`
+- `narration.json`
+- `edit_plan.json`
+- `execution_plan.json`
 
-## 🔧 配置说明
+当前实现重点：
 
-### 环境变量
+- 以 `script_units` 为规范口播源
+- 用 `planner/` 与 `skills/` 产出新的镜头和执行计划
+- 支持后续单独“重建剪辑计划”
 
-在 `.env` 文件中配置：
+### 步骤 6：生成数字人
 
-```bash
-# ComfyUI
-COMFYUI_BASE_URL=https://your-comfyui-host:8443
+有两种方式：
 
-# LLM (用于导演规划和解说词生成)
-LLM_PROVIDER=qwen
-QWEN_API_KEY=your_key
-QWEN_TEXT_MODEL=qwen3.5-plus
+- 自动模式
+  - Node 先把流程停在步骤 5
+  - 调用 ComfyUI 生成 `aiman.mp4`
+  - 再从步骤 6 继续
+- 手动模式
+  - 用户自己放入 `aiman.mp4`
+  - 再调用继续执行
 
-# 智能剪辑
-SMART_CLIP_HWACCEL_ENABLED=true
-SMART_CLIP_AUDIO_ENABLED=true
-```
+此阶段还会生成：
 
-## 📊 性能对比
+- `avatar_manifest.json`
+- `avatar_segments.json`
 
-| 环节 | 传统方式 | 素材驱动 + 智能剪辑 |
-|------|---------|-------------------|
-| 素材利用率 | 30-40% | 70% ⬆️ |
-| 时长控制 | 不精确 | 精确 ✅ |
-| 编码速度 | 基准 | 3-5倍 ⬆️ |
-| 音频质量 | 忽大忽小 | 统一响度 ✅ |
-| 工作流 | 手动多步 | 一键自动 ✅ |
+### 步骤 7：渲染成片
 
-## 🎬 完整示例
+由 `smart_video_composer.py` 根据 `execution_plan.json` 合成：
 
-```bash
-# 1. 准备素材
-# 假设你有一个新闻素材视频
+- `output_final.mp4`
 
-# 2. 执行完整流程
-python python/pipeline/run_material_driven.py \
-    /path/to/news_material.mp4 \
-    --output-dir ./projects/news_001
-
-# 3. 等待步骤1-5完成
-# 脚本会在步骤6暂停，提示你生成数字人
-
-# 4. 通过前端或API生成数字人
-# 确保 aiman.mp4 生成在 ./projects/news_001/
-
-# 5. 继续执行混剪
-python python/pipeline/run_material_driven.py \
-    /path/to/news_material.mp4 \
-    --output-dir ./projects/news_001 \
-    --start-from 7
-
-# 6. 完成！
-# 最终视频: ./projects/news_001/output_final.mp4
-```
-
-## 🐛 故障排查
-
-### 问题1: 步骤2失败（分析素材）
-
-**症状**: ASR或VLM失败
-
-**解决**:
-1. 检查素材格式（推荐mp4）
-2. 检查FFmpeg是否安装
-3. 检查LLM API配置
-
-### 问题2: 步骤4失败（导演规划）
-
-**症状**: AI导演规划失败
-
-**解决**:
-1. 检查 `audio.json` 和 `result.json` 是否存在
-2. 检查LLM API Key
-3. 检查网络连接
-
-### 问题3: 步骤6失败（生成数字人）
-
-**症状**: aiman.mp4 未生成
-
-**解决**:
-1. 确认ComfyUI服务运行
-2. 检查 `COMFYUI_BASE_URL` 配置
-3. 通过前端手动触发生成
-
-### 问题4: 步骤7失败（混剪）
-
-**症状**: 混剪失败或质量差
-
-**解决**:
-1. 确认 `aiman.mp4` 和 `material.mp4` 都存在
-2. 确认 `director_final.json` 存在
-3. 尝试禁用硬件加速: `--no-smart-clip`
-
-## 📚 相关文档
-
-- [智能剪辑集成文档](../../docs/SMART_CLIP_INTEGRATION.md)
-- [完整功能文档](../../docs/COMPLETE_FEATURES.md)
-- [素材功能文档](../../docs/MATERIAL_FEATURES.md)
-
-## 🎉 优势总结
-
-### 素材驱动的优势
-
-1. **素材利用率高** - 70%的画面来自素材
-2. **时长精确可控** - 先规划再生成
-3. **内容质量高** - 保留素材原声的关键信息
-4. **节奏更紧凑** - 避免数字人冗长
-
-### 智能剪辑的优势
-
-1. **速度快** - 硬件加速3-5倍提速
-2. **质量好** - 智能音频处理，响度统一
-3. **自动化** - 一键完成，无需手动调整
-4. **兼容性强** - 自动Fallback，保证成功
-
----
-
-**版本**: 1.0.0  
-**日期**: 2026-04-03  
-**状态**: ✅ 可用
+## Node 侧工作流控制
+
+`server/routes/materialDriven.js` 负责：
+
+- 启动任务
+- 测试 ComfyUI 连通性
+- 推送 SSE 实时事件
+- 恢复磁盘上的项目任务
+- 继续执行
+- 重试指定步骤
+- 从步骤 5 重建计划
+- 从步骤 7 重渲染
+
+## SSE 事件
+
+前端会监听这些关键事件：
+
+- `step`
+- `progress`
+- `status`
+- `plan_summary`
+- `narration_summary`
+- `complete`
+- `error_event`
+
+## 典型任务目录
+
+`projects/material_<jobId>/` 下常见文件：
+
+- `material.mp4`
+- `audio.json`
+- `result.json`
+- `selected_segments.json`
+- `narration.json`
+- `script_units.json`
+- `edit_plan.json`
+- `execution_plan.json`
+- `aiman.mp4`
+- `avatar_segments.json`
+- `output_final.mp4`
+
+## 当前实现要点
+
+- 任务状态会保存到前端本地存储，刷新后可恢复。
+- 后端支持根据 `outputPath` 从磁盘恢复任务快照。
+- 生产链路已经默认围绕素材驱动目录 `projects/` 工作。
+- “重建计划”和“重渲染”是当前链路的重要能力，不再需要从头跑完整旧链路。
