@@ -9,6 +9,15 @@ from playwright.sync_api import sync_playwright
 
 
 CREATE_URL = "https://channels.weixin.qq.com/platform/post/create"
+NO_REGION_OPTION_TEXT = "不展示地区"
+NO_REGION_OPTION_TEXTS = [
+    "不展示地区",
+    "不展示位置",
+    "不显示地区",
+    "不显示位置",
+    "不展示",
+    "不显示"
+]
 
 
 def emit(state: str, message: str, **extra) -> None:
@@ -678,6 +687,370 @@ def _find_first_visible(page, selectors: list[str]):
     return None, None, None, None
 
 
+def _click_first_visible_in_contexts(page, selectors: list[str], *, timeout_ms: int = 2000):
+    for context_name, context in get_editor_contexts(page):
+        for selector in selectors:
+            try:
+                locator = context.locator(selector)
+                count = locator.count()
+                if count == 0:
+                    continue
+                for index in range(min(count, 8)):
+                    candidate = locator.nth(index)
+                    try:
+                        candidate.wait_for(timeout=timeout_ms, state="visible")
+                        candidate.click(timeout=timeout_ms)
+                        return context_name, selector, index
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    return None, None, None
+
+
+def _visible_text_exists(page, text: str) -> bool:
+    selector = f'text={text}'
+    for _, context in get_editor_contexts(page):
+        try:
+            locator = context.locator(selector)
+            count = locator.count()
+            for index in range(min(count, 8)):
+                if locator.nth(index).is_visible():
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _visible_no_region_text(page) -> str:
+    for text in NO_REGION_OPTION_TEXTS:
+        if _visible_text_exists(page, text):
+            return text
+    return ""
+
+
+def _try_select_native_region_dropdown(page) -> bool:
+    for context_name, context in get_editor_contexts(page):
+        try:
+            selects = context.locator("select")
+            count = selects.count()
+            for index in range(count):
+                select = selects.nth(index)
+                try:
+                    option_count = select.locator("option").count()
+                    for option_index in range(option_count):
+                        option = select.locator("option").nth(option_index)
+                        option_text = (option.text_content() or "").strip()
+                        if not any(text in option_text for text in NO_REGION_OPTION_TEXTS):
+                            continue
+                        select.select_option(label=option_text, timeout=2000)
+                        log(f"已通过原生 select 选择{option_text}，上下文: {context_name}")
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return False
+
+
+def _open_location_field_by_label(page) -> bool:
+    script = """() => {
+        const visible = (el) => {
+            if (!el || !(el instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.visibility !== 'hidden'
+                && style.display !== 'none'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const textOf = (el) => String(el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
+        const firePointerClick = (target) => {
+            try { target.focus?.(); } catch (_) {}
+            const options = { bubbles: true, cancelable: true, view: window };
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                try { target.dispatchEvent(new MouseEvent(type, options)); } catch (_) {}
+            }
+            try { target.click(); } catch (_) {}
+        };
+        const labels = Array.from(document.querySelectorAll('*'))
+            .filter((el) => visible(el) && textOf(el) === '位置');
+
+        for (const label of labels) {
+            let formItem = label.closest('.form-item');
+            if (!formItem) {
+                let node = label.parentElement;
+                for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+                    if (String(node.className || '').includes('form-item')) {
+                        formItem = node;
+                        break;
+                    }
+                }
+            }
+            if (!formItem || !visible(formItem)) continue;
+
+            const candidates = [
+                'input',
+                'textarea',
+                '[contenteditable="true"]',
+                '.form-item-body input',
+                '.form-item-body [class*="input"]',
+                '.form-item-body',
+                '[role="button"]',
+                '[aria-haspopup]',
+                '.ant-select-selector',
+                '[class*="select"]',
+                '[class*="dropdown"]'
+            ];
+            for (const selector of candidates) {
+                const target = formItem.querySelector(selector);
+                if (!target || !visible(target)) continue;
+                firePointerClick(target);
+                return {
+                    clicked: true,
+                    selector,
+                    text: textOf(target).slice(0, 80),
+                    className: String(target.className || '').slice(0, 120)
+                };
+            }
+
+            firePointerClick(formItem);
+            return {
+                clicked: true,
+                selector: '.form-item',
+                text: textOf(formItem).slice(0, 80),
+                className: String(formItem.className || '').slice(0, 120)
+            };
+        }
+
+        return { clicked: false };
+    }"""
+    for context_name, context in get_editor_contexts(page):
+        try:
+            result = context.evaluate(script)
+            if result and result.get("clicked"):
+                log(
+                    "已通过“位置”标签触发地区下拉框，"
+                    f"上下文: {context_name}，selector={result.get('selector')}，"
+                    f"text={result.get('text')}，class={result.get('className')}"
+                )
+                page.wait_for_timeout(600)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _open_region_dropdown_by_dom(page) -> bool:
+    script = """(optionText) => {
+        const visible = (el) => {
+            if (!el || !(el instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.visibility !== 'hidden'
+                && style.display !== 'none'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const textOf = (el) => String(el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
+        const clickTarget = (el) => {
+            const nested = el.querySelector('[role="button"], button, .ant-select-selector, .weui-desktop-dropdown__switch, [class*="selector"], [class*="dropdown"]');
+            const target = nested && visible(nested) ? nested : el;
+            target.click();
+            return textOf(target).slice(0, 80);
+        };
+        const regionWords = ['地区', '展示地区', '显示地区', '所在地区', '地理位置', '位置'];
+        const selector = [
+            '[role="button"]',
+            'button',
+            '[aria-haspopup]',
+            '.ant-select',
+            '.ant-select-selector',
+            '.weui-desktop-dropdown__wrp',
+            '.weui-desktop-popover__wrp',
+            '[class*="select"]',
+            '[class*="dropdown"]',
+            '[class*="location"]',
+            '[class*="region"]'
+        ].join(',');
+
+        for (const el of Array.from(document.querySelectorAll(selector))) {
+            if (!visible(el)) continue;
+            const text = textOf(el);
+            if (!text || text.length > 80) continue;
+            if (text.includes(optionText)) return { clicked: false, alreadySelected: true, text };
+            if (regionWords.some((word) => text.includes(word))) {
+                return { clicked: true, text: clickTarget(el) || text.slice(0, 80) };
+            }
+        }
+
+        for (const label of Array.from(document.querySelectorAll('*'))) {
+            if (!visible(label)) continue;
+            const text = textOf(label);
+            if (!text || text.length > 40) continue;
+            if (!regionWords.some((word) => text === word || text.includes(word))) continue;
+            let node = label;
+            for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+                const candidate = node.querySelector?.('[role="button"], button, .ant-select-selector, .weui-desktop-dropdown__switch, [class*="select"], [class*="dropdown"]');
+                if (candidate && visible(candidate)) {
+                    candidate.click();
+                    return { clicked: true, text: textOf(candidate).slice(0, 80) || text.slice(0, 80) };
+                }
+            }
+        }
+
+        return { clicked: false, alreadySelected: false, text: '' };
+    }"""
+    for context_name, context in get_editor_contexts(page):
+        try:
+            result = context.evaluate(script, NO_REGION_OPTION_TEXT)
+            if result and result.get("alreadySelected"):
+                log(f"地区下拉框已显示为{NO_REGION_OPTION_TEXT}，上下文: {context_name}")
+                return True
+            if result and result.get("clicked"):
+                log(f"已通过 DOM 触发地区下拉框，上下文: {context_name}，文本: {result.get('text')}")
+                page.wait_for_timeout(600)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _scroll_region_search_area(page, attempt: int) -> bool:
+    distance = 520 if attempt < 4 else -2200
+    script = """(distance) => {
+        const visible = (el) => {
+            if (!el || !(el instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.visibility !== 'hidden'
+                && style.display !== 'none'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        let moved = false;
+        const moveElement = (el) => {
+            if (!el) return;
+            const beforeTop = el.scrollTop || 0;
+            const beforeLeft = el.scrollLeft || 0;
+            try {
+                if (typeof el.scrollBy === 'function') {
+                    el.scrollBy(0, distance);
+                } else {
+                    el.scrollTop = beforeTop + distance;
+                }
+            } catch (_) {
+                el.scrollTop = beforeTop + distance;
+            }
+            if (Math.abs((el.scrollTop || 0) - beforeTop) > 2 || Math.abs((el.scrollLeft || 0) - beforeLeft) > 2) {
+                moved = true;
+            }
+        };
+
+        const beforeY = window.scrollY || window.pageYOffset || 0;
+        window.scrollBy(0, distance);
+        if (Math.abs((window.scrollY || window.pageYOffset || 0) - beforeY) > 2) moved = true;
+
+        const selectors = [
+            '.weui-desktop-layout__main__bd',
+            '.post-create-container',
+            '.post-create-main',
+            '.post-create-form',
+            '[class*="post-create"]',
+            '[class*="scroll"]',
+            '[class*="container"]'
+        ];
+        for (const el of Array.from(document.querySelectorAll(selectors.join(',')))) {
+            if (!visible(el)) continue;
+            if ((el.scrollHeight || 0) <= (el.clientHeight || 0) + 4) continue;
+            moveElement(el);
+        }
+        moveElement(document.scrollingElement || document.documentElement || document.body);
+        return moved;
+    }"""
+    moved = False
+    for context_name, context in get_editor_contexts(page):
+        try:
+            if context.evaluate(script, distance):
+                moved = True
+                log(f"地区查找第 {attempt + 1} 轮后滚动页面，上下文: {context_name}, distance={distance}")
+        except Exception:
+            continue
+    page.wait_for_timeout(500)
+    return moved
+
+
+def select_no_region(page) -> None:
+    emit_progress("editing", f"正在设置地区为{NO_REGION_OPTION_TEXT}", 91)
+    trigger_selectors = [
+        *[f'text={text}' for text in NO_REGION_OPTION_TEXTS],
+        'text=展示地区',
+        'text=显示地区',
+        'text=选择地区',
+        'text=请选择地区',
+        'text=所在地区',
+        'text=地理位置',
+        '.ant-select:has-text("地区")',
+        '.ant-select-selector:has-text("地区")',
+        '.ant-select:has-text("展示")',
+        '.ant-select-selector:has-text("展示")',
+        '.weui-desktop-dropdown__wrp:has-text("地区")',
+        '.weui-desktop-dropdown__wrp:has-text("展示")',
+        '.weui-desktop-popover__wrp:has-text("地区")',
+        '[class*="location"]:has-text("地区")',
+        '[class*="region"]:has-text("地区")',
+        '[class*="select"]:has-text("地区")',
+        '[class*="dropdown"]:has-text("地区")'
+    ]
+    option_selectors = []
+    for text in NO_REGION_OPTION_TEXTS:
+        option_selectors.extend([
+            f'[role="option"]:has-text("{text}")',
+            f'.ant-select-item-option:has-text("{text}")',
+            f'.weui-desktop-dropdown__list-ele:has-text("{text}")',
+            f'.weui-desktop-dropdown__list-item:has-text("{text}")',
+            f'li:has-text("{text}")',
+            f'button:has-text("{text}")',
+            f'text={text}'
+        ])
+
+    for attempt in range(6):
+        visible_text = _visible_no_region_text(page)
+        if visible_text:
+            log(f"页面已显示{visible_text}，跳过地区设置")
+            return
+
+        if _try_select_native_region_dropdown(page):
+            page.wait_for_timeout(600)
+            return
+
+        context_name, selector, index = _click_first_visible_in_contexts(page, trigger_selectors)
+        if selector:
+            log(f"已尝试打开地区下拉框，选择器: {selector}[{index}]，上下文: {context_name}")
+            page.wait_for_timeout(600)
+        elif not _open_region_dropdown_by_dom(page):
+            if not _open_location_field_by_label(page):
+                log(f"地区查找第 {attempt + 1} 轮未找到下拉框")
+                _scroll_region_search_area(page, attempt)
+                continue
+
+        context_name, selector, index = _click_first_visible_in_contexts(page, option_selectors, timeout_ms=2500)
+        if selector:
+            log(f"已选择地区隐藏选项，选择器: {selector}[{index}]，上下文: {context_name}")
+            page.wait_for_timeout(800)
+            return
+
+        visible_text = _visible_no_region_text(page)
+        if visible_text:
+            log(f"已检测到{visible_text}选项可见，但未能自动点击，请人工确认")
+            return
+
+        log(f"地区查找第 {attempt + 1} 轮已打开候选入口，但未找到{NO_REGION_OPTION_TEXT}选项")
+        _scroll_region_search_area(page, attempt)
+
+    log(f"未找到{NO_REGION_OPTION_TEXT}选项，跳过地区设置")
+
+
 def _ensure_checkbox_checked(locator) -> bool:
     checked = _is_checkbox_checked(locator)
     if checked is True:
@@ -952,6 +1325,7 @@ def main() -> int:
                 fill_publish_text(page, final_text)
             if short_title:
                 fill_short_title(page, short_title)
+            select_no_region(page)
             enable_original_declaration(page, original_declaration)
             click_publish(page, publish_mode)
             
