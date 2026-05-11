@@ -95,6 +95,58 @@ function createPublishConfigService(deps) {
     return sanitized;
   }
 
+  function sanitizeAutoPilotPipelineModes(value, fallback = 'vertical') {
+    const allowedModes = new Set(['vertical', 'avatar']);
+    const source = Array.isArray(value) ? value : [fallback];
+    const modes = [];
+    for (const item of source) {
+      const mode = String(item || '').trim();
+      if (allowedModes.has(mode) && !modes.includes(mode)) {
+        modes.push(mode);
+      }
+    }
+    return modes.length ? modes : ['vertical'];
+  }
+
+  function sanitizeAutoPilotSourceRanks(value) {
+    const source = Array.isArray(value) ? value : [];
+    return source.map((rank) => {
+      const parsed = parseInt(rank, 10);
+      if (!Number.isFinite(parsed)) return '';
+      return String(Math.max(1, Math.min(10, parsed)));
+    });
+  }
+
+  function sanitizeAutoPilotModeSchedules(value, fallback = {}) {
+    const source = value && typeof value === 'object' ? value : {};
+    const fallbackSource = fallback && typeof fallback === 'object' ? fallback : {};
+    const schedules = {};
+    for (const mode of ['vertical', 'avatar']) {
+      const item = source[mode] && typeof source[mode] === 'object' ? source[mode] : {};
+      const fallbackItem = fallbackSource[mode] && typeof fallbackSource[mode] === 'object' ? fallbackSource[mode] : {};
+      const schedule = {
+        accountIds: Array.isArray(item.accountIds)
+          ? item.accountIds.map((accountId) => String(accountId || '').trim())
+          : (Array.isArray(fallbackItem.accountIds) ? fallbackItem.accountIds.map((accountId) => String(accountId || '').trim()) : []),
+        times: Array.isArray(item.times)
+          ? item.times.map((time) => String(time || '').trim())
+          : (Array.isArray(fallbackItem.times) ? fallbackItem.times.map((time) => String(time || '').trim()) : []),
+        partitionIds: Array.isArray(item.partitionIds)
+          ? item.partitionIds.map((partitionId) => String(partitionId || '').trim())
+          : (Array.isArray(fallbackItem.partitionIds) ? fallbackItem.partitionIds.map((partitionId) => String(partitionId || '').trim()) : []),
+        sourceRanks: Array.isArray(item.sourceRanks)
+          ? sanitizeAutoPilotSourceRanks(item.sourceRanks)
+          : (Array.isArray(fallbackItem.sourceRanks) ? sanitizeAutoPilotSourceRanks(fallbackItem.sourceRanks) : [])
+      };
+      if (!schedule.sourceRanks.length) {
+        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length);
+        schedule.sourceRanks = Array.from({ length: plannedCount }, () => '1');
+      }
+      schedules[mode] = schedule;
+    }
+    return schedules;
+  }
+
   /**
    * 规范化发布配置
    */
@@ -106,10 +158,17 @@ function createPublishConfigService(deps) {
         autoPilotTime: '08:00',
         autoPilotCount: 1,
         autoPilotAccountIds: [],
+        autoPilotTimes: [],
+        autoPilotModeSchedules: {
+          vertical: { accountIds: [], times: [], partitionIds: [], sourceRanks: [] },
+          avatar: { accountIds: [], times: [], partitionIds: [], sourceRanks: [] }
+        },
         autoPilotUseCurrentRanking: false,
+        autoPilotPartitionId: 'crypto',
         autoArchiveEnabled: true,
         autoArchiveDelayMinutes: 30,
         pipelineMode: 'vertical',
+        autoPilotPipelineModes: ['vertical'],
         avatarPipelineConfig: {}
       },
       wechatChannels: { enabled: false, accounts: [] },
@@ -129,10 +188,28 @@ function createPublishConfigService(deps) {
       next.global.autoPilotCount = Math.max(1, Math.min(10, parseInt(incomingGlobal.autoPilotCount || 1, 10)));
       next.global.autoPilotAccountIds = Array.isArray(incomingGlobal.autoPilotAccountIds) ? incomingGlobal.autoPilotAccountIds.map(s => String(s || '').trim()) : [];
       next.global.autoPilotTimes = Array.isArray(incomingGlobal.autoPilotTimes) ? incomingGlobal.autoPilotTimes.map(s => String(s || '').trim()) : [];
+      next.global.pipelineMode = String(incomingGlobal.pipelineMode || 'vertical').trim() || 'vertical';
+      next.global.autoPilotModeSchedules = sanitizeAutoPilotModeSchedules(incomingGlobal.autoPilotModeSchedules, {
+        vertical: {
+          accountIds: next.global.autoPilotAccountIds,
+          times: next.global.autoPilotTimes,
+          partitionIds: [],
+          sourceRanks: []
+        },
+        avatar: {
+          accountIds: next.global.pipelineMode === 'avatar' ? next.global.autoPilotAccountIds : [],
+          times: next.global.pipelineMode === 'avatar' ? next.global.autoPilotTimes : [],
+          partitionIds: [],
+          sourceRanks: []
+        }
+      });
       next.global.autoPilotUseCurrentRanking = Boolean(incomingGlobal.autoPilotUseCurrentRanking);
+      next.global.autoPilotPartitionId = String(incomingGlobal.autoPilotPartitionId || next.global.autoPilotPartitionId || 'crypto').trim() || 'crypto';
       next.global.autoArchiveEnabled = incomingGlobal.autoArchiveEnabled !== undefined ? Boolean(incomingGlobal.autoArchiveEnabled) : true;
       next.global.autoArchiveDelayMinutes = Math.max(0, parseInt(incomingGlobal.autoArchiveDelayMinutes || 30, 10));
-      next.global.pipelineMode = String(incomingGlobal.pipelineMode || 'vertical').trim() || 'vertical';
+      next.global.autoPilotPipelineModes = incomingGlobal.autoPilotPipelineModes !== undefined
+        ? sanitizeAutoPilotPipelineModes(incomingGlobal.autoPilotPipelineModes, next.global.pipelineMode)
+        : sanitizeAutoPilotPipelineModes(next.global.autoPilotPipelineModes, next.global.pipelineMode);
       if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
         next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
       }
@@ -270,12 +347,17 @@ function createPublishConfigService(deps) {
       next.global.autoPilotTimes = Array.isArray(incomingGlobal.autoPilotTimes)
         ? incomingGlobal.autoPilotTimes.map((item) => String(item || '').trim())
         : [];
+      next.global.autoPilotModeSchedules = sanitizeAutoPilotModeSchedules(incomingGlobal.autoPilotModeSchedules, next.global.autoPilotModeSchedules);
       next.global.autoPilotUseCurrentRanking = Boolean(incomingGlobal.autoPilotUseCurrentRanking);
+      next.global.autoPilotPartitionId = String(incomingGlobal.autoPilotPartitionId || next.global.autoPilotPartitionId || 'crypto').trim() || 'crypto';
       next.global.autoArchiveEnabled = incomingGlobal.autoArchiveEnabled !== undefined ? Boolean(incomingGlobal.autoArchiveEnabled) : next.global.autoArchiveEnabled;
       next.global.autoArchiveDelayMinutes = incomingGlobal.autoArchiveDelayMinutes !== undefined ? Math.max(0, parseInt(incomingGlobal.autoArchiveDelayMinutes, 10)) : next.global.autoArchiveDelayMinutes;
       if (incomingGlobal.pipelineMode !== undefined) {
         next.global.pipelineMode = String(incomingGlobal.pipelineMode || 'vertical').trim() || 'vertical';
       }
+      next.global.autoPilotPipelineModes = incomingGlobal.autoPilotPipelineModes !== undefined
+        ? sanitizeAutoPilotPipelineModes(incomingGlobal.autoPilotPipelineModes, next.global.pipelineMode)
+        : sanitizeAutoPilotPipelineModes(next.global.autoPilotPipelineModes, next.global.pipelineMode);
       if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
         next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
       }

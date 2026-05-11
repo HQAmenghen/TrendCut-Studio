@@ -7,7 +7,9 @@ const { createXaiService } = require('../service');
 function createTempXaiService(overrides = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xai-service-'));
   const resultPath = path.join(tempDir, 'result.json');
+  const scriptPath = path.join(tempDir, 'run_xai_top10.py');
   const translateScriptPath = path.join(tempDir, 'translate_result_summaries.py');
+  fs.writeFileSync(scriptPath, '# test script', 'utf-8');
   fs.writeFileSync(translateScriptPath, '# test script', 'utf-8');
 
   const deps = {
@@ -17,7 +19,7 @@ function createTempXaiService(overrides = {}) {
     logPath: path.join(tempDir, 'run_log.txt'),
     errorLogPath: path.join(tempDir, 'run_error.log'),
     accountsPath: path.join(tempDir, 'xai_accounts.json'),
-    scriptPath: path.join(tempDir, 'run_xai_top10.py'),
+    scriptPath,
     translateScriptPath,
     scriptCwd: tempDir,
     fixedAccounts: [],
@@ -117,5 +119,82 @@ describe('createXaiService', () => {
     const callOptions = deps.runPythonScript.mock.calls[0][2];
     expect(callOptions.timeout).toEqual(expect.any(Number));
     expect(callOptions.timeout).toBeGreaterThan(0);
+  });
+
+  test('readConfig migrates legacy accounts into default partition metadata', () => {
+    const { service } = createTempXaiService({
+      fixedAccounts: ['FixedAccount'],
+      readJsonIfExists: jest.fn(() => ({ accounts: ['CustomAccount'] }))
+    });
+
+    const config = service.readConfig();
+
+    expect(config.activePartitionId).toBe('crypto');
+    expect(config.partitions.map((partition) => partition.id)).toEqual(expect.arrayContaining(['crypto', 'finance', 'tech', 'ai']));
+    expect(config.partitions.find((partition) => partition.id === 'crypto').accounts).toEqual(['FixedAccount', 'CustomAccount']);
+  });
+
+  test('readConfig preserves saved partitions without re-adding defaults', () => {
+    const { service } = createTempXaiService({
+      readJsonIfExists: jest.fn(() => ({
+        activePartitionId: 'news',
+        partitions: [
+          { id: 'news', label: '新闻', description: '新闻账号池', accounts: ['NewsAccount'] }
+        ]
+      }))
+    });
+
+    const config = service.readConfig();
+
+    expect(config.activePartitionId).toBe('news');
+    expect(config.partitions).toHaveLength(1);
+    expect(config.partitions[0]).toEqual(expect.objectContaining({
+      id: 'news',
+      label: '新闻',
+      description: '新闻账号池',
+      accounts: ['NewsAccount']
+    }));
+  });
+
+  test('run passes selected partition and partition-specific files to python script', async () => {
+    const { deps, resultPath, service } = createTempXaiService({
+      readJsonIfExists: jest.fn((file, fallback) => {
+        if (String(file).endsWith('xai_accounts.json')) {
+          return {
+            activePartitionId: 'finance',
+            partitions: [
+              { id: 'finance', label: '金融', accounts: ['MarketWatch'] }
+            ]
+          };
+        }
+        return fallback;
+      }),
+      runPythonScript: jest.fn(async () => {
+        const financeResultPath = resultPath.replace(/result\.json$/, 'result.finance.json');
+        fs.writeFileSync(financeResultPath, JSON.stringify({
+          partition: { id: 'finance', label: '金融' },
+          items: []
+        }), 'utf-8');
+        return { protocol: { result: { message: 'done' } } };
+      })
+    });
+    const res = {
+      headersSent: false,
+      json: jest.fn()
+    };
+
+    await service.run('client-1', res, 'finance');
+
+    expect(deps.runPythonScript).toHaveBeenCalledWith(
+      deps.scriptPath,
+      expect.arrayContaining(['--partition-id', 'finance']),
+      expect.objectContaining({ cwd: deps.scriptCwd })
+    );
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      result: expect.objectContaining({
+        partition: expect.objectContaining({ id: 'finance' })
+      })
+    }));
   });
 });

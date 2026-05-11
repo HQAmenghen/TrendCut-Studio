@@ -106,7 +106,72 @@ describe('vertical queue ASR file URL handoff', () => {
     expect(asrCall).toBeTruthy();
     expect(asrCall.args).toEqual(expect.arrayContaining([
       '--file-url',
-      'https://cdn.example.com/interview.mp4'
+      'https://cdn.example.com/interview.mp4',
+      '--translate-subtitles',
+      '--refine-subtitles'
     ]));
+  });
+
+  test('skips rendering when ASR returns no usable subtitle content', async () => {
+    const calls = [];
+    const runPythonScript = jest.fn(async () => '这条消息可能正在改变支付格局');
+    const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
+      calls.push({ scriptPath, args });
+      const promise = Promise.resolve().then(() => {
+        if (scriptPath.endsWith('run_asr.py')) {
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([]));
+          fs.writeFileSync(path.join(options.cwd, 'audio.json'), JSON.stringify([]));
+          fs.writeFileSync(path.join(options.cwd, 'speaker_scene.json'), JSON.stringify({ timeline: [] }));
+        }
+        if (scriptPath.endsWith('make_vertical_video.py')) {
+          const outputPath = args[args.indexOf('--output') + 1];
+          fs.writeFileSync(outputPath, 'vertical video');
+        }
+      });
+      return {
+        promise,
+        cancel: jest.fn()
+      };
+    });
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_silent',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript,
+      spawnScriptCancellable,
+      writeJsonFile: (filePath, payload) => fs.writeFileSync(filePath, JSON.stringify(payload)),
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata: jest.fn(),
+      taskStore: null,
+      triggerAutoReview: null
+    });
+
+    const originalVideoPath = path.join(tempRoot, 'silent.mp4');
+    fs.writeFileSync(originalVideoPath, 'source video');
+    const job = service.enqueue({
+      title: '',
+      summary: '帖子摘要',
+      videoUrl: 'https://cdn.example.com/silent.mp4',
+      renderOptions: {
+        originalVideoPath
+      }
+    });
+
+    await waitFor(() => job.status === 'skipped');
+
+    expect(runPythonScript).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.scriptPath.endsWith('make_vertical_video.py'))).toBe(false);
+    expect(fs.existsSync(path.join(verticalPublicDir, job.id, 'vertical_output.mp4'))).toBe(false);
+    expect(job.message).toContain('有效口播字幕');
   });
 });

@@ -11,6 +11,7 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT):
     if candidate_str not in sys.path:
         sys.path.insert(0, candidate_str)
 
+from pipeline.skills.partition_prompt_profile import format_partition_addendum, resolve_partition_prompt_profile  # noqa: E402
 from pipeline.skills.script_rewriter_skill import ScriptRewriterSkill  # noqa: E402
 
 
@@ -58,6 +59,23 @@ class ScriptRewriterStyleGuardTest(unittest.TestCase):
 
         self.assertIn("AI 模板化强转折句式", prompt)
         self.assertIn("这可不是市场传闻，而是正式的法律动作", prompt)
+
+    def test_partition_prompt_profile_uses_known_ids_only(self):
+        profile = resolve_partition_prompt_profile({
+            "sourcePartitionId": "finance",
+            "sourcePartitionLabel": "金融",
+        })
+
+        self.assertEqual(profile["profile_key"], "finance")
+        self.assertIn("当前分区是「金融」", format_partition_addendum(profile))
+
+        custom_profile = resolve_partition_prompt_profile({
+            "sourcePartitionId": "health-ai",
+            "sourcePartitionLabel": "医疗AI",
+        })
+
+        self.assertEqual(custom_profile["profile_key"], "custom")
+        self.assertIn("当前分区是「医疗AI」", format_partition_addendum(custom_profile))
 
     def test_is_script_context_compatible_rejects_reused_off_topic_script(self):
         source_post = {

@@ -28,6 +28,8 @@ class TranslateResultSummariesTest(unittest.TestCase):
             "os.environ",
             {
                 "LLM_PROVIDER": "qwen",
+                "TEXT_LLM_PROVIDER": "",
+                "SCRIPT_LLM_PROVIDER": "",
                 "QWEN_TEXT_MODEL": "qwen3.5-plus",
                 "XAI_TOP10_TRANSLATE_MODEL": "",
                 "QWEN_TRANSLATE_MODEL": "",

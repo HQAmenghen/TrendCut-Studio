@@ -61,6 +61,10 @@ function enrichMetadataFromRuntimeFiles(videoPath, metadata) {
     {
       publicPrefix: path.join(projectRoot, 'public', 'runtime_jobs') + path.sep,
       dataRoot: path.join(projectRoot, 'data', 'uploads', 'runtime_jobs')
+    },
+    {
+      publicPrefix: path.join(projectRoot, 'data', 'uploads', 'runtime_jobs') + path.sep,
+      dataRoot: path.join(projectRoot, 'data', 'uploads', 'runtime_jobs')
     }
   ];
 
@@ -111,8 +115,58 @@ function enrichMetadataFromRuntimeFiles(videoPath, metadata) {
   return next;
 }
 
+function buildReviewMetadata(videoPath, savedMetadata) {
+  return {
+    ...buildDefaultMetadata(videoPath),
+    ...enrichMetadataFromRuntimeFiles(videoPath, savedMetadata || {})
+  };
+}
+
+function notifyPublishAssetsChanged(resetPublishAssetsCache) {
+  if (typeof resetPublishAssetsCache === 'function') {
+    resetPublishAssetsCache();
+  }
+}
+
+function writeReviewMetadata(videoPath, metadata, aiReview, writeMediaMetadata, resetPublishAssetsCache) {
+  const nextMetadata = {
+    ...(metadata || buildDefaultMetadata(videoPath)),
+    aiReview
+  };
+  delete nextMetadata.reviewCenterHiddenAt;
+  delete nextMetadata.reviewCenterHiddenReviewId;
+  writeMediaMetadata(videoPath, nextMetadata);
+  notifyPublishAssetsChanged(resetPublishAssetsCache);
+  return nextMetadata;
+}
+
+function hideReviewCenterTask(reviewId, videoPath, readMediaMetadata, writeMediaMetadata, resetPublishAssetsCache) {
+  const normalizedVideoPath = String(videoPath || '').trim();
+  if (!normalizedVideoPath) return false;
+
+  const metadata = readMediaMetadata(normalizedVideoPath);
+  const currentReviewId = String(metadata?.aiReview?.reviewId || '').trim();
+  if (!metadata?.aiReview || (currentReviewId && currentReviewId !== reviewId)) {
+    return false;
+  }
+
+  const nextMetadata = { ...metadata };
+  delete nextMetadata.aiReview;
+  nextMetadata.reviewCenterHiddenAt = new Date().toISOString();
+  nextMetadata.reviewCenterHiddenReviewId = reviewId;
+  writeMediaMetadata(normalizedVideoPath, nextMetadata);
+  notifyPublishAssetsChanged(resetPublishAssetsCache);
+  return true;
+}
+
 function createReviewHandlers(deps) {
-  const { sendError, readMediaMetadata, writeMediaMetadata, verticalQueueService } = deps;
+  const {
+    sendError,
+    readMediaMetadata,
+    writeMediaMetadata,
+    verticalQueueService,
+    resetPublishAssetsCache
+  } = deps;
 
   return {
     // 获取审核配置
@@ -205,15 +259,7 @@ function createReviewHandlers(deps) {
         // 创建审核记录
         const reviewId = makeJobId();
         const metadataPath = `${videoPath}.meta.json`;
-        const metadata = enrichMetadataFromRuntimeFiles(
-          videoPath,
-          readMediaMetadata(videoPath) || buildDefaultMetadata(videoPath)
-        );
-        if (!fs.existsSync(metadataPath)) {
-          writeMediaMetadata(videoPath, metadata);
-        } else {
-          writeMediaMetadata(videoPath, metadata);
-        }
+        const metadata = buildReviewMetadata(videoPath, readMediaMetadata(videoPath));
 
         createReviewRecord({
           id: reviewId,
@@ -222,6 +268,13 @@ function createReviewHandlers(deps) {
           review_status: 'reviewing',
           config_snapshot: config
         });
+
+        writeReviewMetadata(videoPath, metadata, {
+          reviewId,
+          status: 'reviewing',
+          startedAt: new Date().toISOString(),
+          manuallySkipped: false
+        }, writeMediaMetadata, resetPublishAssetsCache);
 
         // 执行审核脚本
         try {
@@ -243,7 +296,7 @@ function createReviewHandlers(deps) {
           });
 
           // 更新元数据
-          metadata.aiReview = {
+          writeReviewMetadata(videoPath, metadata, {
             reviewId,
             status: result.status,
             overallScore: result.overall_score,
@@ -256,8 +309,7 @@ function createReviewHandlers(deps) {
             reviewedAt: new Date().toISOString(),
             fixSuggestions: result.fix_suggestions,
             manuallySkipped: false
-          };
-          writeMediaMetadata(videoPath, metadata);
+          }, writeMediaMetadata, resetPublishAssetsCache);
 
           res.json({
             success: true,
@@ -290,16 +342,24 @@ function createReviewHandlers(deps) {
             }, null, 2)
           });
 
+          writeReviewMetadata(videoPath, metadata, {
+            reviewId,
+            status: 'failed',
+            error: err.message,
+            reviewedAt: new Date().toISOString(),
+            fixSuggestions: [],
+            manuallySkipped: false
+          }, writeMediaMetadata, resetPublishAssetsCache);
+
           if (config.auto_skip_on_error) {
             // 自动跳过
-            metadata.aiReview = {
+            writeReviewMetadata(videoPath, metadata, {
               reviewId,
               status: 'skipped',
               reason: 'auto_skip_on_error',
               error: err.message,
               reviewedAt: new Date().toISOString()
-            };
-            writeMediaMetadata(videoPath, metadata);
+            }, writeMediaMetadata, resetPublishAssetsCache);
 
             return res.json({
               success: true,
@@ -338,15 +398,7 @@ function createReviewHandlers(deps) {
         }
 
         const reviewId = makeJobId();
-        const metadata = enrichMetadataFromRuntimeFiles(
-          videoPath,
-          readMediaMetadata(videoPath) || buildDefaultMetadata(videoPath)
-        );
-        if (!fs.existsSync(`${videoPath}.meta.json`)) {
-          writeMediaMetadata(videoPath, metadata);
-        } else {
-          writeMediaMetadata(videoPath, metadata);
-        }
+        const metadata = buildReviewMetadata(videoPath, readMediaMetadata(videoPath));
 
         // 记录跳过
         createReviewRecord({
@@ -361,14 +413,13 @@ function createReviewHandlers(deps) {
           review_status: 'skipped'
         });
 
-        metadata.aiReview = {
+        writeReviewMetadata(videoPath, metadata, {
           reviewId,
           status: 'skipped',
           reason: reason || 'manual_skip',
           manuallySkipped: true,
           reviewedAt: new Date().toISOString()
-        };
-        writeMediaMetadata(videoPath, metadata);
+        }, writeMediaMetadata, resetPublishAssetsCache);
 
         res.json({ success: true, reviewId, skipped: true });
       } catch (err) {
@@ -438,11 +489,32 @@ function createReviewHandlers(deps) {
     // 删除审核记录
     deleteReview: (req, res) => {
       try {
-        const { reviewId } = req.params;
-        deleteReviewRecord(reviewId);
+        const reviewId = String(req.params.reviewId || '').trim();
+        if (!reviewId) {
+          return sendError(res, {
+            status: 400,
+            code: 'REVIEW_ID_MISSING',
+            stage: 'review.delete',
+            error: '缺少审核记录 ID'
+          });
+        }
+
+        const record = getReviewRecord(reviewId);
+        const videoPath = String(record?.video_path || req.query?.videoPath || req.body?.videoPath || '').trim();
+        const deletedRecords = deleteReviewRecord(reviewId);
+        const reviewCenterHidden = hideReviewCenterTask(
+          reviewId,
+          videoPath,
+          readMediaMetadata,
+          writeMediaMetadata,
+          resetPublishAssetsCache
+        );
 
         res.json({
-          success: true
+          success: true,
+          deletedRecords,
+          metadataCleared: reviewCenterHidden,
+          reviewCenterHidden
         });
       } catch (err) {
         sendError(res, {

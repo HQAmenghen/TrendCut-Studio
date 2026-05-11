@@ -29,11 +29,24 @@ function createDefaultAvatarConfig() {
   };
 }
 
+function createDefaultSourceMeta() {
+  return {
+    sourceAuthor: '',
+    sourcePostId: '',
+    sourcePartitionId: '',
+    sourcePartitionLabel: '',
+    sourceRank: 0,
+    videoUrl: '',
+    postUrl: ''
+  };
+}
+
 function createDefaultTaskState() {
   return {
     useSmartClip: true,
     useCache: true,
     autoGenerate: true,
+    sourceMeta: createDefaultSourceMeta(),
     avatarConfig: createDefaultAvatarConfig()
   };
 }
@@ -67,14 +80,31 @@ function normalizeAvatarConfig(input = {}) {
   };
 }
 
+function normalizeSourceMeta(input = {}) {
+  const sourceRank = Number(input?.sourceRank || input?.source_rank || 0);
+  return {
+    sourceAuthor: String(input?.sourceAuthor || input?.source_author || input?.author || input?.postAuthor || '').trim(),
+    sourcePostId: String(input?.sourcePostId || input?.source_post_id || input?.postId || input?.post_id || '').trim(),
+    sourcePartitionId: String(input?.sourcePartitionId || input?.source_partition_id || input?.partitionId || '').trim(),
+    sourcePartitionLabel: String(input?.sourcePartitionLabel || input?.source_partition_label || input?.partitionLabel || '').trim(),
+    sourceRank: Number.isFinite(sourceRank) ? sourceRank : 0,
+    videoUrl: String(input?.videoUrl || input?.video_url || input?.materialUrl || input?.sourceVideoUrl || '').trim(),
+    postUrl: String(input?.postUrl || input?.post_url || input?.sourcePostUrl || input?.url || '').trim()
+  };
+}
+
 function normalizeTaskState(input = {}) {
   const base = createDefaultTaskState();
+  const sourceMetaInput = input?.sourceMeta && typeof input.sourceMeta === 'object'
+    ? input.sourceMeta
+    : {};
   return {
     ...base,
     ...input,
     useSmartClip: input?.useSmartClip !== false,
     useCache: input?.useCache !== false,
     autoGenerate: input?.autoGenerate !== false,
+    sourceMeta: normalizeSourceMeta({ ...(input || {}), ...sourceMetaInput }),
     avatarConfig: normalizeAvatarConfig(input?.avatarConfig || {})
   };
 }
@@ -105,8 +135,10 @@ function readTaskState(outputPath) {
 module.exports = {
   TASK_STATE_FILE,
   createDefaultAvatarConfig,
+  createDefaultSourceMeta,
   createDefaultTaskState,
   normalizeAvatarConfig,
+  normalizeSourceMeta,
   normalizeTaskState,
   readTaskState,
   writeTaskState

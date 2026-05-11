@@ -98,6 +98,31 @@ class ScriptPolisherSkillTest(unittest.TestCase):
         self.assertEqual(len(result.output["script_units"]), 3)
         self.assertIn("BlackRock", result.output["script_units"][0]["text"])
 
+    def test_partition_prompt_addendum_is_included_in_polish_prompt(self):
+        skill = ScriptPolisherSkill()
+        payload = {
+            **self.payload,
+            "source_post": {
+                **self.payload["source_post"],
+                "sourcePartitionId": "finance",
+                "sourcePartitionLabel": "金融",
+            },
+        }
+
+        with patch("pipeline.skills.script_polisher_skill.create_llm_client", return_value=object()), patch(
+            "pipeline.skills.script_polisher_skill.get_llm_provider",
+            return_value="qwen",
+        ), patch(
+            "pipeline.skills.script_polisher_skill.generate_content",
+            return_value=_response(_valid_blackrock_units()),
+        ) as generate:
+            result = skill.run(payload)
+
+        self.assertEqual(result.meta["status"], "ready")
+        prompt = generate.call_args_list[0].kwargs["contents"]
+        self.assertIn("当前分区是「金融」", prompt)
+        self.assertEqual(result.meta["partition_prompt_profile"]["profile_key"], "finance")
+
     def test_retries_once_when_first_output_is_off_topic(self):
         skill = ScriptPolisherSkill()
         off_topic = {
@@ -121,6 +146,66 @@ class ScriptPolisherSkillTest(unittest.TestCase):
         self.assertEqual(result.meta["status"], "ready")
         self.assertTrue(result.meta["repair_applied"])
         self.assertNotIn("初创公司", "".join(item["text"] for item in result.output["script_units"]))
+
+    def test_retries_when_first_output_exceeds_max_chars(self):
+        skill = ScriptPolisherSkill()
+        over_limit = _valid_blackrock_units()
+        over_limit["script_units"][2]["text"] += (
+            "这段补充说明故意写得很长，用来模拟模型没有遵守最长字数限制的情况。"
+            "系统必须拒绝这版口播稿，继续请求大模型压缩，而不是把超长文案放行给数字人。"
+        ) * 3
+
+        with patch.dict(os.environ, {
+            "SCRIPT_POLISH_MIN_CHARS": "220",
+            "SCRIPT_POLISH_MAX_CHARS": "300",
+        }, clear=False), patch(
+            "pipeline.skills.script_polisher_skill.create_llm_client",
+            return_value=object(),
+        ), patch(
+            "pipeline.skills.script_polisher_skill.get_llm_provider",
+            return_value="qwen",
+        ), patch(
+            "pipeline.skills.script_polisher_skill.generate_content",
+            side_effect=[_response(over_limit), _response(_valid_blackrock_units())],
+        ) as generate:
+            result = skill.run(self.payload)
+
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(result.meta["status"], "ready")
+        self.assertTrue(result.meta["repair_applied"])
+        self.assertLessEqual(result.meta["char_count"], 300)
+
+    def test_over_limit_draft_retries_even_when_polish_is_disabled(self):
+        skill = ScriptPolisherSkill()
+        long_text = "BlackRock 的 Jay Jacobs 说，比特币提供投资组合价值。" * 20
+        payload = {
+            **self.payload,
+            "draft_script_units": [
+                {"unit_id": 1, "role": "hook", "text": long_text},
+                {"unit_id": 2, "role": "explain", "text": "比特币由自身规则驱动。"},
+                {"unit_id": 3, "role": "ending", "text": "短期价格不是唯一重点。"},
+            ],
+        }
+
+        with patch.dict(os.environ, {
+            "SCRIPT_POLISH_ENABLED": "0",
+            "SCRIPT_POLISH_MAX_CHARS": "300",
+        }, clear=False), patch(
+            "pipeline.skills.script_polisher_skill.create_llm_client",
+            return_value=object(),
+        ), patch(
+            "pipeline.skills.script_polisher_skill.get_llm_provider",
+            return_value="qwen",
+        ), patch(
+            "pipeline.skills.script_polisher_skill.generate_content",
+            return_value=_response(_valid_blackrock_units()),
+        ) as generate:
+            result = skill.run(payload)
+
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(result.meta["status"], "ready")
+        self.assertTrue(result.meta["llm_used"])
+        self.assertLessEqual(result.meta["char_count"], 300)
 
     def test_fails_when_repair_output_is_still_invalid(self):
         skill = ScriptPolisherSkill()

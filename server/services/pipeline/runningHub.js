@@ -92,6 +92,40 @@ function extractRunningHubTaskStatus(payload) {
   ).trim().toUpperCase();
 }
 
+function extractRunningHubFailureReason(payload) {
+  const data = getRunningHubData(payload);
+  const failedReason = data?.failedReason;
+  if (!failedReason || typeof failedReason !== 'object') return '';
+  const parts = [];
+  if (failedReason.exception_type) {
+    parts.push(`exception_type=${failedReason.exception_type}`);
+  }
+  if (failedReason.node_name) {
+    parts.push(`node=${failedReason.node_name}`);
+  }
+  if (failedReason.exception_message) {
+    const cleanMsg = String(failedReason.exception_message).replace(/\s+/gu, ' ').trim();
+    parts.push(cleanMsg);
+  }
+  return parts.join(', ');
+}
+
+function formatRunningHubErrorMessage(payload, options = {}) {
+  const taskId = String(options.taskId || '');
+  const status = String(options.status || extractRunningHubTaskStatus(payload));
+  const failureReason = extractRunningHubFailureReason(payload);
+  const apiMsg = payload?.msg || payload?.message || '';
+  const errorCode = getRunningHubData(payload)?.errorCode
+    ? `, errorCode=${getRunningHubData(payload).errorCode}`
+    : '';
+  const errorMessage = getRunningHubData(payload)?.errorMessage
+    ? `, errorMessage=${getRunningHubData(payload).errorMessage}`
+    : '';
+
+  const detail = failureReason || apiMsg || JSON.stringify(payload);
+  return `[RunningHub 任务失败] taskId=${taskId}, status=${status}${errorCode}${errorMessage}, detail=${detail}`;
+}
+
 function collectOutputItems(value, items = []) {
   if (!value) return items;
   if (Array.isArray(value)) {
@@ -246,8 +280,7 @@ function createRunningHubClient(deps = {}) {
         };
       }
       if (FAILURE_STATUSES.has(status)) {
-        const message = payload?.msg || payload?.message || JSON.stringify(payload);
-        throw new Error(`[RunningHub 任务失败] taskId=${options.taskId}, status=${status}, message=${message}`);
+        throw new Error(formatRunningHubErrorMessage(payload, { taskId: options.taskId, status }));
       }
       await new Promise((resolve) => setTimeoutFn(resolve, pollIntervalMs));
     }
@@ -305,7 +338,9 @@ module.exports = {
   DEFAULT_RUNNINGHUB_BASE_URL,
   buildRunningHubRunUrl,
   createRunningHubClient,
+  extractRunningHubFailureReason,
   extractRunningHubOutputUrl,
+  formatRunningHubErrorMessage,
   normalizeRunningHubBaseUrl,
   resolveRunningHubApiKey
 };

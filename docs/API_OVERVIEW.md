@@ -44,10 +44,11 @@
 主要接口：
 
 - `POST /api/generate-vertical-standalone`
-- `GET /api/vertical/status`
-- `POST /api/vertical/enqueue`
-- `POST /api/vertical/cancel/:jobId`
-- `POST /api/vertical/remove/:jobId`
+- `GET /api/vertical/material-tasks`
+- `GET /api/xai-top10/vertical-jobs`
+- `POST /api/xai-top10/vertical-jobs`
+- `POST /api/xai-top10/vertical-jobs/:jobId/cancel`
+- `DELETE /api/xai-top10/vertical-jobs/:jobId`
 
 ## 4. AI 审核
 

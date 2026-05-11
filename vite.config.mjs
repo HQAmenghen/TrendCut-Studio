@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5173,
-    host: '127.0.0.1',
+    host: '0.0.0.0',
     proxy: {
       '/api': 'http://127.0.0.1:3001',
       '/output_final.mp4': 'http://127.0.0.1:3001',

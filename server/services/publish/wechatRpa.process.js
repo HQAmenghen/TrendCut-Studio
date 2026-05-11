@@ -57,6 +57,21 @@ function createWechatProcessService(deps) {
     return null;
   }
 
+  function resolveStandaloneRuntimeVideoPath(job) {
+    const taskDir = String(job?.asset?.metadata?.taskDir || '').trim();
+    if (!taskDir) return '';
+    const candidate = path.resolve(taskDir, 'standalone_output_vertical.mp4');
+    try {
+      return fs.existsSync(candidate) && fs.statSync(candidate).isFile() ? candidate : '';
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  function resolveJobVideoPath(job) {
+    return resolveStandaloneRuntimeVideoPath(job) || String(job?.asset?.path || '').trim();
+  }
+
   /**
    * 启动 WeChat RPA
    */
@@ -86,19 +101,38 @@ function createWechatProcessService(deps) {
     if (activeAccountRuntime && activeAccountRuntime.jobId !== jobId) {
       throw new Error(`账号 ${wechatAccount.displayName || wechatAccount.helperAccount || wechatAccount.finderUserName || wechatAccount.id} 当前已有发布任务在运行，请稍后再试`);
     }
-    if (!job.asset?.path || !fs.existsSync(job.asset.path)) {
+    const videoPath = resolveJobVideoPath(job);
+    if (!videoPath || !fs.existsSync(videoPath)) {
       throw new Error('待发布视频文件不存在');
     }
     if (!fs.existsSync(wechatRpaScript)) {
       throw new Error('视频号 RPA 脚本不存在');
     }
 
+    const runtimeEntry = {
+      proc: null,
+      cancel: null,
+      jobId,
+      platform: 'wechatChannels',
+      accountId: wechatAccount.id,
+      publishMode,
+      cancelledByUser: false,
+      currentState: 'starting'
+    };
+    publishRuntimeProcesses.set(runtimeKey, runtimeEntry);
+
     const rpaPayload = {
       ...buildWechatPublishPayload(job, wechatAccount),
-      publishMode
+      publishMode,
+      videoPath
     };
     const payloadFile = path.join(wechatRpaTaskDir, `${jobId}_wechatChannels.json`);
-    await fs.promises.writeFile(payloadFile, JSON.stringify(rpaPayload, null, 2), 'utf-8');
+    try {
+      await fs.promises.writeFile(payloadFile, JSON.stringify(rpaPayload, null, 2), 'utf-8');
+    } catch (err) {
+      publishRuntimeProcesses.delete(runtimeKey);
+      throw err;
+    }
 
     safeUpdatePublishPlatformTask(jobId, 'wechatChannels', {
       status: publishMode === 'publish' ? 'publishing' : 'draft_preparing',
@@ -117,27 +151,26 @@ function createWechatProcessService(deps) {
       }
     });
 
-    const { process: proc, promise, cancel } = runPythonScriptCancellable(
-      wechatRpaScript,
-      ['--payload', payloadFile],
-      {
-        cwd: publishCenterDir,
-        onStdout: (chunk) => handleOutput(chunk),
-        onStderr: (chunk) => handleOutput(chunk)
-      }
-    );
+    let proc;
+    let promise;
+    let cancel;
+    try {
+      ({ process: proc, promise, cancel } = runPythonScriptCancellable(
+        wechatRpaScript,
+        ['--payload', payloadFile],
+        {
+          cwd: publishCenterDir,
+          onStdout: (chunk) => handleOutput(chunk),
+          onStderr: (chunk) => handleOutput(chunk)
+        }
+      ));
+    } catch (err) {
+      publishRuntimeProcesses.delete(runtimeKey);
+      throw err;
+    }
 
-    const runtimeEntry = {
-      proc,
-      cancel,
-      jobId,
-      platform: 'wechatChannels',
-      accountId: wechatAccount.id,
-      publishMode,
-      cancelledByUser: false,
-      currentState: 'starting'
-    };
-    publishRuntimeProcesses.set(runtimeKey, runtimeEntry);
+    runtimeEntry.proc = proc;
+    runtimeEntry.cancel = cancel;
     let latestRuntimeState = 'starting';
     let latestRuntimeMessage = '正在启动视频号自动化浏览器...';
     let latestRuntimeProgress = 3;

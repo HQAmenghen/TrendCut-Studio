@@ -268,8 +268,8 @@ export function useStandalone() {
     form.value.subtitlesPayload = '';
     if (normalizedTaskDir) {
       form.value.title = '';
-      form.value.useASR = false;
-      appendLog(`已选择素材驱动任务：${form.value.sourceTaskTitle || normalizedTaskDir}`);
+      form.value.useASR = true;
+      appendLog(`已选择素材驱动任务：${form.value.sourceTaskTitle || normalizedTaskDir}，将重新 ASR 打轴并对齐原始文本`);
     }
   };
 

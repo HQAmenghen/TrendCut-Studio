@@ -2,7 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const {
   listMaterialTasks: listMaterialDrivenTasks,
-  resolveMaterialTaskImport
+  resolveMaterialTaskImport,
+  normalizeAvatarSegmentSubtitles,
+  normalizeExecutionPlanSubtitles
 } = require('./taskImport');
 
 function resolveImportedAvatarAsrInput(taskImport) {
@@ -27,24 +29,116 @@ async function refreshImportedAvatarSubtitles(options = {}) {
     return taskImport;
   }
 
+  const avatarSegmentsPath = path.join(taskImport.taskPath, 'avatar_segments.json');
+  const executionPlanPath = path.join(taskImport.taskPath, 'execution_plan.json');
+  const aimanSubtitlesPath = path.join(taskImport.taskPath, 'aiman_subtitles.json');
+  const aimanAudioPath = path.join(taskImport.taskPath, 'aiman_audio.json');
+  const referenceSubtitlesPath = path.join(taskImport.taskPath, 'aiman_reference_subtitles.json');
+
+  const buildReferenceSubtitleArtifacts = () => {
+    if (fs.existsSync(avatarSegmentsPath)) {
+      try {
+        const payload = JSON.parse(fs.readFileSync(avatarSegmentsPath, 'utf8'));
+        const subtitles = normalizeAvatarSegmentSubtitles(payload)
+          .map((item) => ({
+            ...item,
+            text: item.zh
+          }));
+        if (subtitles.length > 0) {
+          return {
+            subtitles,
+            source: 'avatar_segments.json'
+          };
+        }
+      } catch (_err) {}
+    }
+
+    if (fs.existsSync(executionPlanPath)) {
+      try {
+        const payload = JSON.parse(fs.readFileSync(executionPlanPath, 'utf8'));
+        const subtitles = normalizeExecutionPlanSubtitles(payload)
+          .map((item) => ({
+            ...item,
+            text: item.zh
+          }));
+        if (subtitles.length > 0) {
+          return {
+            subtitles,
+            source: 'execution_plan.json'
+          };
+        }
+      } catch (_err) {}
+    }
+
+    return null;
+  };
+
+  const writeReferenceSubtitles = (subtitles) => {
+    if (!Array.isArray(subtitles) || subtitles.length === 0) return '';
+    fs.writeFileSync(referenceSubtitlesPath, JSON.stringify(subtitles, null, 2), 'utf8');
+    return referenceSubtitlesPath;
+  };
+
+  const persistAvatarSubtitles = (subtitles) => {
+    try {
+      fs.writeFileSync(aimanSubtitlesPath, JSON.stringify(subtitles, null, 2), 'utf8');
+      fs.writeFileSync(
+        aimanAudioPath,
+        JSON.stringify(
+          subtitles.map((item) => ({
+            start: Array.isArray(item.time) ? item.time[0] : item.start,
+            end: Array.isArray(item.time) ? item.time[1] : item.end,
+            text: item.zh || item.text || item.en || ''
+          })),
+          null,
+          2
+        ),
+        'utf8'
+      );
+    } catch (_err) {}
+  };
+
   const avatarInputPath = resolveImportedAvatarAsrInput(taskImport);
+  const subtitleArtifacts = buildReferenceSubtitleArtifacts();
   if (!avatarInputPath) {
+    if (subtitleArtifacts?.subtitles?.length) {
+      persistAvatarSubtitles(subtitleArtifacts.subtitles);
+      if (sse) {
+        sendProgressEvent(sse, {
+          type: 'status',
+          msg: `未找到可重新 ASR 的数字人音视频，已回退使用 ${subtitleArtifacts.source} 字幕。`
+        });
+      }
+      return resolveMaterialTaskImport({ projectsDir, taskDir: taskImport.outputDir });
+    }
     return taskImport;
   }
+
+  const referencePath = subtitleArtifacts?.subtitles?.length
+    ? writeReferenceSubtitles(subtitleArtifacts.subtitles)
+    : '';
 
   if (sse) {
     sendProgressEvent(sse, {
       type: 'status',
-      msg: `正在为任务 ${taskImport.outputDir} 的数字人口播重跑 ASR 并回写句级字幕...`
+      msg: referencePath
+        ? `正在为任务 ${taskImport.outputDir} 重新 ASR 打轴，并结合 ${subtitleArtifacts.source} 校准字幕...`
+        : `正在为任务 ${taskImport.outputDir} 的数字人口播重新识别字幕...`
     });
   }
 
-  await runPythonScript(runAsrScript, [
+  const asrArgs = [
     '--input', avatarInputPath,
     '--audio-json', 'aiman_audio.json',
     '--subtitles-json', 'aiman_subtitles.json',
-    '--speaker-scene-json', 'aiman_speaker_scene.json'
-  ], {
+    '--speaker-scene-json', 'aiman_speaker_scene.json',
+    '--refine-subtitles'
+  ];
+  if (referencePath) {
+    asrArgs.push('--reference-subtitles-json', referencePath);
+  }
+
+  await runPythonScript(runAsrScript, asrArgs, {
     cwd: taskImport.taskPath,
     onStdout: (chunk) => {
       const lastLine = chunk.toString().trim().split('\n').pop();
@@ -58,7 +152,11 @@ async function refreshImportedAvatarSubtitles(options = {}) {
     }
   });
 
-  return resolveMaterialTaskImport({ projectsDir, taskDir: taskImport.outputDir });
+  const refreshedTaskImport = resolveMaterialTaskImport({ projectsDir, taskDir: taskImport.outputDir });
+  if (refreshedTaskImport?.subtitles?.length) {
+    persistAvatarSubtitles(refreshedTaskImport.subtitles);
+  }
+  return refreshedTaskImport;
 }
 
 function createStandaloneHandler(deps) {
@@ -179,14 +277,45 @@ function createStandaloneHandler(deps) {
 
       const contentJsonPath = path.join(taskDir, 'content.json');
       const subsJsonPath = path.join(taskDir, 'subtitles.json');
+      const referenceSubsJsonPath = path.join(taskDir, 'reference_subtitles.json');
       const shouldUseASR = req.body.useASR === 'true' || (
         !req.files?.srt &&
         req.body.useASR !== 'false' &&
         !req.body.subtitlesPayload &&
         !taskImport?.hasSubtitles
       );
+      const runStandaloneAsr = async () => {
+        if (sse) sendProgressEvent(sse, { type: 'status', msg: '自动 ASR 打轴已开启，正在识别视频语音...' });
+        console.log('[Standalone] 启动 ASR 任务...');
+        const asrArgs = ['--input', 'standalone_input.mp4', '--refine-subtitles'];
+        if (fs.existsSync(referenceSubsJsonPath)) {
+          asrArgs.push('--reference-subtitles-json', referenceSubsJsonPath);
+        }
+        await runPythonScript(runAsrScript, asrArgs, {
+          cwd: taskDir,
+          onStdout: (chunk) => {
+            const lastLine = chunk.toString().trim().split('\n').pop();
+            if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
+          },
+          onStderr: (chunk) => {
+            const errStr = chunk.toString();
+            console.error(`[run_asr.py stderr]: ${errStr}`);
+          }
+        });
+      };
 
-      if (req.body.subtitlesPayload) {
+      if (req.body.subtitlesPayload && shouldUseASR) {
+        if (sse) sendProgressEvent(sse, { type: 'status', msg: '检测到参考 JSON 字幕，将用于 ASR 时间轴校准...' });
+        try {
+          const subs = JSON.parse(req.body.subtitlesPayload);
+          fs.writeFileSync(referenceSubsJsonPath, JSON.stringify(subs, null, 2), 'utf8');
+          console.log(`[Standalone] 成功加载参考 JSON 字幕，包含 ${Array.isArray(subs) ? subs.length : '未知数量'} 条记录`);
+        } catch (e) {
+          console.error('[Standalone] 参考 JSON 字幕格式错误:', e);
+          if (sse) sendProgressEvent(sse, { type: 'status', msg: '参考 JSON 字幕解析失败，将仅使用 ASR 自动打轴。' });
+        }
+        await runStandaloneAsr();
+      } else if (req.body.subtitlesPayload) {
         if (sse) sendProgressEvent(sse, { type: 'status', msg: '检测到导入的 JSON 字幕，正在加载...' });
         try {
           // Verify valid JSON before writing
@@ -201,19 +330,7 @@ function createStandaloneHandler(deps) {
         if (sse) sendProgressEvent(sse, { type: 'status', msg: `已从任务 ${taskImport.outputDir} 加载 ${taskImport.subtitleSource} 字幕...` });
         fs.writeFileSync(subsJsonPath, JSON.stringify(taskImport.subtitles, null, 2));
       } else if (shouldUseASR) {
-        if (sse) sendProgressEvent(sse, { type: 'status', msg: '自动 ASR 打轴已开启，正在识别视频语音...' });
-        console.log('[Standalone] 启动 ASR 任务...');
-        await runPythonScript(runAsrScript, ['--input', 'standalone_input.mp4'], {
-          cwd: taskDir,
-          onStdout: (chunk) => {
-            const lastLine = chunk.toString().trim().split('\n').pop();
-            if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
-          },
-          onStderr: (chunk) => {
-            const errStr = chunk.toString();
-            console.error(`[run_asr.py stderr]: ${errStr}`);
-          }
-        });
+        await runStandaloneAsr();
       } else if (req.files.srt) {
         if (sse) sendProgressEvent(sse, { type: 'status', msg: '检测到 SRT 文件，正在转换为 JSON...' });
         fs.renameSync(req.files.srt[0].path, srtPath);

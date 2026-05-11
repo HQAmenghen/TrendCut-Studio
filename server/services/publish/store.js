@@ -35,6 +35,12 @@ function createPublishStore(deps) {
     makeJobId
   });
 
+  function createPublishJobId() {
+    const generated = typeof makeJobId === 'function' ? String(makeJobId() || '').trim() : '';
+    if (generated) return generated;
+    return `job_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  }
+
   // ========== 任务管理函数（待拆分到 publishStore.jobs.js） ==========
 
   function getAutoArchiveDelayMinutes(config = null) {
@@ -101,6 +107,61 @@ function createPublishStore(deps) {
       }
     }
     return { payload: next, changed };
+  }
+
+  const SCHEDULABLE_PLATFORM_TASK_STATUSES = new Set([
+    'pending',
+    'pending_integration',
+    'ready',
+    'rpa_available',
+    'scheduled_wait'
+  ]);
+
+  function isSchedulablePlatformTask(task) {
+    return SCHEDULABLE_PLATFORM_TASK_STATUSES.has(String(task?.status || '').trim());
+  }
+
+  function normalizeScheduledPlatformTasks(job) {
+    if (!job || !job.scheduledAt) {
+      return { job, changed: false };
+    }
+
+    const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];
+    if (tasks.length === 0) {
+      return { job, changed: false };
+    }
+
+    let changed = false;
+    const updatedAt = new Date().toISOString();
+    const platformTasks = tasks.map((task) => {
+      if (!isSchedulablePlatformTask(task) || String(task?.status || '') === 'scheduled_wait') {
+        return task;
+      }
+      changed = true;
+      return {
+        ...task,
+        status: 'scheduled_wait',
+        updatedAt
+      };
+    });
+    const status = getJobTerminalStatus({ ...job, platformTasks });
+    if (String(job.status || '') !== status) {
+      changed = true;
+    }
+
+    if (!changed) {
+      return { job, changed: false };
+    }
+
+    return {
+      job: {
+        ...job,
+        platformTasks,
+        status,
+        updatedAt
+      },
+      changed: true
+    };
   }
 
   function readPublishJobs() {
@@ -171,6 +232,11 @@ function createPublishStore(deps) {
   }
 
   function normalizeScheduledJobStatus(job) {
+    const normalizedTasks = normalizeScheduledPlatformTasks(job);
+    if (normalizedTasks.changed) {
+      return normalizedTasks;
+    }
+
     if (!job || !job.scheduledAt || !hasScheduledWaitingTask(job)) {
       return { job, changed: false };
     }
@@ -297,6 +363,9 @@ function createPublishStore(deps) {
       const existingTask = existingTaskMap.get(platformKey);
       const selection = job?.platformSelections?.[platformKey] || {};
       const nextTask = reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig, selection);
+      if (job?.scheduledAt && isSchedulablePlatformTask(nextTask)) {
+        nextTask.status = 'scheduled_wait';
+      }
       nextTasks.push(nextTask);
     }
     return {
@@ -344,6 +413,7 @@ function createPublishStore(deps) {
     // 配置服务
     ...configService,
     // 任务管理
+    makeJobId: createPublishJobId,
     readPublishJobs,
     writePublishJobs,
     updatePublishJob,

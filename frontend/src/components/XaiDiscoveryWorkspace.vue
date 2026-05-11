@@ -6,10 +6,10 @@
           <div class="section-kicker">Discovery Console</div>
           <div>
             <h3>XAI 热门视频发现面板</h3>
-            <p>直接在当前中台内运行 XAI + X 搜索任务，抓取过去 24 小时的加密热视频、计算热度指标，并把结果整理成可筛读的榜单。</p>
+            <p>按账号分区运行 XAI + X 搜索任务，分别抓取过去 24 小时的热门视频、计算热度指标，并把结果整理成可筛读的榜单。</p>
           </div>
           <div class="flow-pills">
-            <span class="flow-pill">账号扫描</span>
+            <span class="flow-pill">{{ partitionLabel }}</span>
             <span class="flow-pill">视频补全</span>
             <span class="flow-pill">热度评分</span>
             <span class="flow-pill">结果沉淀</span>
@@ -32,9 +32,9 @@
             <p>基于超粉比、播放、互动和时效综合计算。</p>
           </div>
           <div class="dashboard-stat">
-            <span>数据窗口</span>
-            <strong>{{ windowHours }}h</strong>
-            <p>结果文件可重复读取，无需离开当前页面。</p>
+            <span>当前分区</span>
+            <strong>{{ partitionLabel }}</strong>
+            <p>{{ accountsCount }} 个账号，窗口 {{ windowHours }}h。</p>
           </div>
         </div>
       </div>
@@ -70,12 +70,12 @@
               <div class="dashboard-stat">
                 <span>更新时间</span>
                 <strong class="mini-strong">{{ updatedLabel }}</strong>
-                <p>读取的是项目内 `xai_top10/result.json`。</p>
+                <p>读取的是项目内 `xai_top10/{{ resultFileLabel }}`。</p>
               </div>
             </div>
 
             <button type="button" class="btn-primary" @click="xai.run" :disabled="xai.loading.value || xai.summary.value.running">
-              <span v-if="!xai.loading.value && !xai.summary.value.running">▶ 运行过去 24 小时 Top10 榜单</span>
+              <span v-if="!xai.loading.value && !xai.summary.value.running">▶ 运行「{{ partitionLabel }}」Top10 榜单</span>
               <span v-else class="pulse">⏳ 榜单任务执行中...</span>
             </button>
 
@@ -141,20 +141,63 @@
         </div>
 
         <div class="panel">
-          <div class="panel-header"><span>👥 账号池配置</span></div>
+          <div class="panel-header"><span>👥 分区账号池</span></div>
           <div class="panel-body xai-stack">
+            <div class="partition-switcher">
+              <button
+                v-for="partition in xai.partitions.value"
+                :key="partition.id"
+                type="button"
+                class="partition-tab"
+                :class="{ active: partition.id === xai.activePartitionId.value }"
+                @click="xai.selectPartition(partition.id)"
+              >
+                <span>{{ partition.label }}</span>
+                <small>{{ getPartitionAccountCount(partition) }} 个账号</small>
+              </button>
+            </div>
+
+            <div class="partition-create-row">
+              <input
+                class="input-dark"
+                :value="xai.newPartitionLabel.value"
+                placeholder="新增分区，如 美股 / 游戏 / SaaS"
+                @input="xai.newPartitionLabel.value = $event.target.value"
+                @keydown.enter.prevent="xai.createPartition"
+              />
+              <button type="button" class="dark-btn" @click="xai.createPartition" :disabled="!xai.newPartitionLabel.value.trim() || xai.savingConfig.value">新增</button>
+            </div>
+
             <div class="quick-tip-box">
-              <strong>当前共 {{ accountsCount }} 个账号</strong>
-              <p>如果只是正常跑榜单，这里一般不用频繁改。只有在你要增减扫描账号时，再展开维护。</p>
+              <strong>当前「{{ partitionLabel }}」共 {{ accountsCount }} 个账号</strong>
+              <p>运行、刷新、导出和批量入队都会使用当前分区；自动发布中心也可以为不同账号槽选择不同分区。</p>
             </div>
             <details class="advanced-block">
-              <summary>展开账号池维护</summary>
+              <summary>展开当前分区维护</summary>
               <div class="advanced-body xai-stack">
+                <div class="partition-edit-grid">
+                  <div>
+                    <label class="control-label">分区名称</label>
+                    <input
+                      class="input-dark"
+                      :value="xai.activePartition.value?.label || ''"
+                      @input="xai.updatePartitionLabel(xai.activePartitionId.value, $event.target.value)"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    class="ghost-btn danger-btn"
+                    :disabled="xai.partitions.value.length <= 1 || xai.savingConfig.value"
+                    @click="xai.removePartition(xai.activePartitionId.value)"
+                  >
+                    删除分区
+                  </button>
+                </div>
                 <textarea
                   class="input-dark accounts-text"
                   :value="xai.accountsText.value"
                   rows="10"
-                  placeholder="每行一个 X 账号，支持带 @ 或不带 @"
+                  placeholder="每行一个 X 账号，支持带 @ 或不带 @。保存后该分区会独立抓榜。"
                   @input="xai.accountsText.value = $event.target.value"
                 />
                 <div class="mini-grid">
@@ -295,6 +338,11 @@ const props = defineProps({
 const emit = defineEmits(['send-to-pipeline']);
 
 const items = computed(() => props.xai.items.value || []);
+const partitionLabel = computed(() => props.xai.activePartitionLabel.value || '默认分区');
+const resultFileLabel = computed(() => {
+  const id = props.xai.activePartitionId.value || 'crypto';
+  return id === 'crypto' ? 'result.json' : `result.${id}.json`;
+});
 
 const runStatusLabel = computed(() => {
   if (props.xai.loading.value) return '运行中';
@@ -351,8 +399,13 @@ const summaryText = computed(() => {
 
 const allSelected = computed(() => items.value.length > 0 && props.xai.selectedItems.value.length === items.value.length);
 
-const accountsCount = computed(() => String(props.xai.accountsText.value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean).length);
+const accountsCount = computed(() => props.xai.activePartitionAccountsCount.value || 0);
 const renderPresetLabel = computed(() => '信息流稳态模板');
+
+function getPartitionAccountCount(partition) {
+  if (partition?.id === props.xai.activePartitionId.value) return accountsCount.value;
+  return Array.isArray(partition?.accounts) ? partition.accounts.length : 0;
+}
 
 function stripSummary(value) {
   return String(value || '')
@@ -601,6 +654,58 @@ function percent(value) {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
+}
+
+.partition-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.partition-tab {
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--panel-subtle);
+  color: var(--text);
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.partition-tab.active {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(14, 165, 233, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.16);
+}
+
+.partition-tab span,
+.partition-tab small {
+  display: block;
+}
+
+.partition-tab span {
+  color: var(--strong-text);
+  font-weight: 800;
+}
+
+.partition-tab small {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.partition-create-row,
+.partition-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.danger-btn {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.28);
 }
 
 .input-dark {

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 from llm_client import create_llm_client, generate_content, get_llm_provider
 
 from .base import BaseSkill, SkillResult
+from .partition_prompt_profile import prepend_partition_prompt, resolve_partition_prompt_profile
 from .prompt_skill_loader import load_prompt_text
 from .script_rewriter_skill import ScriptRewriterSkill, _get_script_provider
 
@@ -20,6 +21,7 @@ DEFAULT_QWEN_SCRIPT_POLISH_MODEL = "qwen3.6-plus"
 DEFAULT_DEEPSEEK_SCRIPT_POLISH_MODEL = "deepseek-v4-pro"
 DEFAULT_SCRIPT_POLISH_MIN_CHARS = 220
 DEFAULT_SCRIPT_POLISH_MAX_CHARS = 300
+DEFAULT_SCRIPT_POLISH_MAX_ATTEMPTS = 12
 
 BANNED_POLISH_TEMPLATE_PHRASES = [
     "不知道大家发现没",
@@ -79,6 +81,10 @@ def resolve_polish_char_bounds() -> Tuple[int, int]:
     return min_chars, max_chars
 
 
+def resolve_polish_max_attempts() -> int:
+    return max(2, _env_int("SCRIPT_POLISH_MAX_ATTEMPTS", DEFAULT_SCRIPT_POLISH_MAX_ATTEMPTS))
+
+
 class ScriptPolisherSkill(BaseSkill):
     name = "script_polisher_skill"
 
@@ -130,8 +136,10 @@ class ScriptPolisherSkill(BaseSkill):
 
         if unit_count < 3 or unit_count > 4:
             errors.append(f"script_units 数量必须是 3-4 段，当前为 {unit_count} 段")
-        if char_count < min_chars or char_count > max_chars:
-            errors.append(f"全文字数必须在 {min_chars}-{max_chars} 字之间，当前为 {char_count} 字")
+        if char_count < min_chars:
+            errors.append(f"口播稿字数低于下限: 当前 {char_count} 字，最少 {min_chars} 字")
+        if char_count > max_chars:
+            errors.append(f"口播稿字数超过上限: 当前 {char_count} 字，最多 {max_chars} 字，必须压缩重写")
         if source_repair_required:
             missing_anchor = coverage.get("missing_facts") or coverage.get("missing_cues") or []
             errors.append(f"缺少原帖关键锚点: {missing_anchor}")
@@ -202,28 +210,36 @@ class ScriptPolisherSkill(BaseSkill):
                 },
             )
 
-        if not _env_bool("SCRIPT_POLISH_ENABLED", True):
-            return SkillResult(
-                skill=self.name,
-                version=self.version,
-                output={"script_units": draft_units},
-                meta={
-                    "status": "skipped",
-                    "message": "Script polish disabled by SCRIPT_POLISH_ENABLED.",
-                    "decision_mode": "polish_disabled",
-                    "char_count": self._char_count(draft_units),
-                    "unit_count": len(draft_units),
-                    "repair_applied": False,
-                },
-            )
-
         min_chars, max_chars = resolve_polish_char_bounds()
+        max_attempts = resolve_polish_max_attempts()
         source_post = payload.get("source_post") or {}
+        source_post_info = self.rewriter._normalize_source_post(source_post)
+        partition_profile = resolve_partition_prompt_profile(source_post_info)
+
+        if not _env_bool("SCRIPT_POLISH_ENABLED", True):
+            char_count = self._char_count(draft_units)
+            if char_count <= max_chars:
+                return SkillResult(
+                    skill=self.name,
+                    version=self.version,
+                    output={"script_units": draft_units},
+                    meta={
+                        "status": "skipped",
+                        "message": "Script polish disabled by SCRIPT_POLISH_ENABLED.",
+                        "decision_mode": "polish_disabled",
+                        "char_count": char_count,
+                        "min_chars": min_chars,
+                        "max_chars": max_chars,
+                        "unit_count": len(draft_units),
+                        "repair_applied": False,
+                        "partition_prompt_profile": partition_profile,
+                    },
+                )
+
         outline = payload.get("outline") or {}
         audio_items = payload.get("audio") or payload.get("audio_items") or []
         selected_segments = payload.get("selected_segments") or []
 
-        source_post_info = self.rewriter._normalize_source_post(source_post)
         outline_items = self.rewriter._normalize_outline(outline)
         audio_snippets = self.rewriter._normalize_audio(audio_items)
         segment_items = self.rewriter._normalize_selected_segments(selected_segments)
@@ -240,7 +256,7 @@ class ScriptPolisherSkill(BaseSkill):
         provider = _get_script_provider()
         model = get_polish_model(provider)
         client = create_llm_client(provider=provider)
-        base_prompt = self._build_prompt(
+        base_prompt = prepend_partition_prompt(self._build_prompt(
             source_post_info=source_post_info,
             source_focus=source_focus,
             outline_items=outline_items,
@@ -249,13 +265,13 @@ class ScriptPolisherSkill(BaseSkill):
             draft_units=draft_units,
             min_chars=min_chars,
             max_chars=max_chars,
-        )
+        ), partition_profile)
 
         last_errors: List[str] = []
         last_diagnostics: Dict[str, Any] = {}
         last_units: List[Dict[str, Any]] = []
 
-        for attempt in range(2):
+        for attempt in range(max_attempts):
             prompt = base_prompt if attempt == 0 else self._build_repair_prompt(
                 base_prompt=base_prompt,
                 validation_errors=last_errors,
@@ -306,8 +322,11 @@ class ScriptPolisherSkill(BaseSkill):
                     "llm_used": True,
                     "fallback_used": False,
                     "repair_applied": repair_applied,
+                    "attempts": attempt + 1,
+                    "max_attempts": max_attempts,
                     "source_anchor": source_focus,
                     "validation_errors": [],
+                    "partition_prompt_profile": partition_profile,
                     **diagnostics,
                 }
                 return SkillResult(
@@ -333,8 +352,11 @@ class ScriptPolisherSkill(BaseSkill):
             "llm_used": True,
             "fallback_used": False,
             "repair_applied": True,
+            "attempts": max_attempts,
+            "max_attempts": max_attempts,
             "source_anchor": source_focus,
             "validation_errors": last_errors,
+            "partition_prompt_profile": partition_profile,
             **last_diagnostics,
         }
         return SkillResult(

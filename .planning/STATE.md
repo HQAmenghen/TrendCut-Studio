@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
-last_updated: "2026-05-06T08:52:00Z"
-last_activity: 2026-05-06 — Completed quick task: 将数字人形象预设切换为 f031330ba1e17e22843d47b9d4f3cc08.png
+last_updated: "2026-05-08T06:04:00Z"
+last_activity: 2026-05-09 — Completed quick task: 无声音竖屏自动化产物不创建自动发布任务
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-07 — Completed quick task: 清理目录边界并移除运行产物的 git 跟踪
+Last activity: 2026-05-08 — Completed quick task: Top10 分区 TopN 发布计划修正
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -94,10 +94,17 @@ None yet.
 | 2026-05-06 | 在 .env 添加 RUNNINGHUB_API_KEY 字段 | `.planning/quick/260506-ehk-env-runninghub-api-key/260506-ehk-SUMMARY.md` |
 | 2026-05-06 | 验证原生 ComfyUI 与 RunningHub 两条渲染链路并补齐前端 | `.planning/quick/260506-eku-comfyui-runninghub/260506-eku-SUMMARY.md` |
 | 2026-05-06 | 精简 RunningHub 前端配置并锁定 QwenTTS 合成音频上传 | `.planning/quick/260506-f1p-runninghub-qwentts/260506-f1p-SUMMARY.md` |
-| 2026-05-06 | 清理源码边界、临时文件和未使用依赖 | `.planning/quick/260506-code-cleanup-stabilization/SUMMARY.md` |
-| 2026-05-06 | 统一变量命名规范和日志输出格式 | `.planning/quick/260506-log-naming-standardization/SUMMARY.md` |
-| 2026-05-06 | 将数字人形象预设切换为 f031330ba1e17e22843d47b9d4f3cc08.png | `.planning/quick/260506-p44-public-presets-image-f031330ba1e17e22843/260506-p44-SUMMARY.md` |
-| 2026-05-07 | 清理目录边界并移除运行产物的 git 跟踪 | `.planning/quick/260507-directory-boundary-cleanup/SUMMARY.md` |
+| 2026-05-07 | 修改口播稿生成的最长字数限制，字数超标不放行，大模型重试压缩 | `.planning/quick/260507-khx-oral-script-max-limit/260507-khx-SUMMARY.md` |
+| 2026-05-07 | 自动发布中心支持带数字人和不带数字人两种发布模式并存，且两种模式都可以定时发布 | `.planning/quick/260507-kr5-autopilot-dual-publish-modes/260507-kr5-SUMMARY.md` |
+| 2026-05-07 | 发布中心自动化创建任务旁新增当前自动化任务列表窗口 | `.planning/quick/260507-l0a-autopilot-task-list-panel/260507-l0a-SUMMARY.md` |
+| 2026-05-07 | 发布中心自动化配置和当前自动化任务列表拆成两个窗口 | `.planning/quick/260507-l4j-autopilot-split-windows/260507-l4j-SUMMARY.md` |
+| 2026-05-07 | 发布中心制作模式改为非勾选式模式选择控件 | `.planning/quick/260507-l90-autopilot-mode-buttons/260507-l90-SUMMARY.md` |
+| 2026-05-07 | 发布中心按制作模式分别配置自动化计划并显示未生成任务的计划列表 | `.planning/quick/260507-lgg-mode-specific-autopilot-plans/260507-lgg-SUMMARY.md` |
+| 2026-05-08 | Top10 分区账号池与自动发布分区接入 | `.planning/quick/260508-ebj-top10/260508-ebj-SUMMARY.md` |
+| 2026-05-08 | Top10 分区 TopN 发布计划修正 | `.planning/quick/260508-jiz-top10-top1-topn/260508-jiz-SUMMARY.md` |
+| 2026-05-08 | 移除发布中心必须审核通过才能创建发布任务的限制 | `.planning/quick/260508-remove-publish-review-gate/SUMMARY.md` |
+| 2026-05-09 | 无声音竖屏自动化产物不创建自动发布任务 | `.planning/quick/260509-d0l-skip-silent-autopublish/SUMMARY.md` |
+| 2026-05-09 | 修复 xAI Top10 分区删除后刷新回弹 | `.planning/quick/260509-xai-partition-delete-persist/SUMMARY.md` |
 
 ## Session Continuity
 

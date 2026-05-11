@@ -198,6 +198,65 @@ class ClipSelectorLocalizationTest(unittest.TestCase):
         self.assertTrue(result["clip_matches"][0]["use_cutaway"])
         self.assertIn("person_mismatch", result["clip_matches"][0]["reject_reasons"])
 
+    def test_run_accepts_speaker_commentary_when_segment_has_speaker_quote_evidence(self):
+        unit = build_script_unit()
+        unit["text"] = "Michael Saylor said his stock crashed from 333 dollars to 42 cents, but he kept holding."
+        unit["evidence"]["must_match"]["persons"] = ["Michael Saylor"]
+        unit["evidence"]["must_match"]["assets"] = []
+        unit["evidence"]["must_match"]["event_types"] = ["speaker_quote"]
+        unit["evidence"]["must_match"]["event_tags"] = ["HODL", "暴跌"]
+        unit["evidence"]["must_match"]["polarity"] = "na"
+
+        segment = build_segment()
+        segment["id"] = "seg_08"
+        segment["start"] = 54.80
+        segment["end"] = 61.76
+        segment["duration_sec"] = 6.96
+        segment["text"] = "My stock went from $333 a share to 42 cents a share."
+        segment["entities"]["persons"] = []
+        segment["entities"]["orgs"] = []
+        segment["speaker"]["speaker_name"] = "Vivek4real"
+        segment["event"]["event_type"] = "speaker_commentary"
+        segment["event"]["event_tags"] = ["price_data", "historical_record"]
+        segment["evidence"]["evidence_type"] = "speaker_quote"
+
+        retrieval_result = {
+            "by_script": {
+                "script_001": [
+                    {
+                        "segment_id": "seg_08",
+                        "cosine_similarity": 0.2002,
+                        "vector_rank": 1,
+                    }
+                ]
+            },
+            "retrievals": [
+                {
+                    "script_ref": "script_001",
+                    "candidates": [{"segment_id": "seg_08", "cosine_similarity": 0.2002, "vector_rank": 1}],
+                }
+            ],
+        }
+
+        with mock.patch(
+            "pipeline.skills.clip_selector.StructuredVectorRetriever.retrieve",
+            return_value=retrieval_result,
+        ):
+            result = self.skill.run(
+                {
+                    "script_units": [unit],
+                    "material_segments": {"segments": [segment]},
+                    "route": {"content_type": "fast_news"},
+                    "editing_style": {"constraints": {"max_cutaway_count": 8}},
+                }
+            ).output
+
+        match = result["clip_matches"][0]
+        self.assertTrue(match["use_cutaway"])
+        self.assertNotIn("event_type_mismatch", match["reject_reasons"])
+        self.assertIn("person_mismatch", match["reject_reasons"])
+        self.assertIn("event_tag_mismatch", match["reject_reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

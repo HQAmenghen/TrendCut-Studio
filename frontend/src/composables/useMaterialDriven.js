@@ -35,6 +35,70 @@ function formatDurationMs(ms) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function createEmptyMaterialSourceMeta() {
+  return {
+    sourceAuthor: '',
+    sourcePostId: '',
+    sourceRank: 0,
+    sourcePartitionId: '',
+    sourcePartitionLabel: '',
+    videoUrl: '',
+    postUrl: ''
+  };
+}
+
+function pickString(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function normalizeSourceRank(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function buildXaiSourceMeta(item = {}, videoUrl = '', postUrl = '') {
+  return {
+    sourceAuthor: pickString(item.author, item.sourceAuthor, item.postAuthor),
+    sourcePostId: pickString(item.post_id, item.postId, item.sourcePostId),
+    sourceRank: normalizeSourceRank(item.rank || item.sourceRank || item.source_rank),
+    sourcePartitionId: pickString(item.source_partition_id, item.sourcePartitionId, item.partition?.id),
+    sourcePartitionLabel: pickString(item.source_partition_label, item.sourcePartitionLabel, item.partition?.label),
+    videoUrl: String(videoUrl || '').trim(),
+    postUrl: String(postUrl || '').trim()
+  };
+}
+
+function buildTaskSourceMeta(task = {}) {
+  const sourceMeta = task?.sourceMeta && typeof task.sourceMeta === 'object' ? task.sourceMeta : {};
+  const sourcePost = task?.sourcePost && typeof task.sourcePost === 'object' ? task.sourcePost : {};
+  return {
+    ...createEmptyMaterialSourceMeta(),
+    sourceAuthor: pickString(sourceMeta.sourceAuthor, sourcePost.author),
+    sourcePostId: pickString(sourceMeta.sourcePostId, sourcePost.postId),
+    sourceRank: normalizeSourceRank(sourceMeta.sourceRank || sourcePost.sourceRank),
+    sourcePartitionId: pickString(sourceMeta.sourcePartitionId, sourcePost.sourcePartitionId),
+    sourcePartitionLabel: pickString(sourceMeta.sourcePartitionLabel, sourcePost.sourcePartitionLabel),
+    videoUrl: pickString(sourceMeta.videoUrl, sourcePost.materialUrl),
+    postUrl: pickString(sourceMeta.postUrl, sourcePost.postUrl)
+  };
+}
+
+function normalizeRenderProvider(value) {
+  return String(value || '').trim().toLowerCase() === 'runninghub' ? 'runninghub' : 'comfyui';
+}
+
+function getRenderProviderLabel(value) {
+  return normalizeRenderProvider(value) === 'runninghub' ? 'RunningHub' : 'ComfyUI';
+}
+
+function getNarrationFullText(payload = {}) {
+  return pickString(payload.fullText, payload.full_text);
+}
+
 export function useMaterialDriven() {
   const jobId = ref(null);
   const currentStep = ref(0);
@@ -56,13 +120,15 @@ export function useMaterialDriven() {
   const materialSourceTitle = ref('');
   const materialSourceBody = ref('');
   const materialSourcePostUrl = ref('');
+  const materialSourceMeta = ref(createEmptyMaterialSourceMeta());
   const gen = ref({
     text: '',
     audioPreset: '',
     imagePreset: '',
     audioFile: null,
     imageFile: null,
-    serverUrl: 'https://u920820-82c4-2ba7d3b1.westc.seetacloud.com:8443'
+    serverUrl: 'https://u920820-82c4-2ba7d3b1.westc.seetacloud.com:8443',
+    renderProvider: 'comfyui'
   });
   const withSubtitles = ref(true);
   const comfyTestLoading = ref(false);
@@ -250,6 +316,7 @@ export function useMaterialDriven() {
         materialSourceTitle: materialSourceTitle.value,
         materialSourceBody: materialSourceBody.value,
         materialSourcePostUrl: materialSourcePostUrl.value,
+        materialSourceMeta: materialSourceMeta.value,
         audioMode: audioMode.value,
         imageMode: imageMode.value,
         withSubtitles: withSubtitles.value,
@@ -258,7 +325,8 @@ export function useMaterialDriven() {
           text: gen.value.text,
           audioPreset: gen.value.audioPreset,
           imagePreset: gen.value.imagePreset,
-          serverUrl: gen.value.serverUrl
+          serverUrl: gen.value.serverUrl,
+          renderProvider: gen.value.renderProvider
         },
         activeDurationLabel: activeDurationLabel.value,
         lastDurationLabel: lastDurationLabel.value,
@@ -295,6 +363,10 @@ export function useMaterialDriven() {
       materialSourceTitle.value = String(payload?.materialSourceTitle || payload?.sourcePost?.title || '');
       materialSourceBody.value = String(payload?.materialSourceBody || payload?.sourcePost?.body || '');
       materialSourcePostUrl.value = String(payload?.materialSourcePostUrl || payload?.sourcePost?.postUrl || '');
+      materialSourceMeta.value = {
+        ...createEmptyMaterialSourceMeta(),
+        ...(payload?.materialSourceMeta && typeof payload.materialSourceMeta === 'object' ? payload.materialSourceMeta : {})
+      };
       audioMode.value = String(payload?.audioMode || 'preset');
       imageMode.value = String(payload?.imageMode || 'preset');
       withSubtitles.value = typeof payload?.withSubtitles === 'boolean' ? payload.withSubtitles : true;
@@ -305,6 +377,7 @@ export function useMaterialDriven() {
         audioPreset: String(payload?.gen?.audioPreset || gen.value.audioPreset || ''),
         imagePreset: String(payload?.gen?.imagePreset || gen.value.imagePreset || ''),
         serverUrl: String(payload?.gen?.serverUrl || gen.value.serverUrl || ''),
+        renderProvider: String(payload?.gen?.renderProvider || gen.value.renderProvider || 'comfyui'),
         audioFile: null,
         imageFile: null
       };
@@ -373,6 +446,36 @@ export function useMaterialDriven() {
       if (materialSourceTitle.value) formData.append('sourceTitle', materialSourceTitle.value);
       if (materialSourceBody.value) formData.append('sourceBody', materialSourceBody.value);
       if (materialSourcePostUrl.value) formData.append('sourcePostUrl', materialSourcePostUrl.value);
+      const sourceMeta = materialSourceMeta.value || createEmptyMaterialSourceMeta();
+      if (sourceMeta.videoUrl && sourceMeta.videoUrl !== materialUrl.value) {
+        throw new Error('热点素材身份不一致，请重新从榜单送入素材');
+      }
+      if (sourceMeta.sourceAuthor) formData.append('sourceAuthor', sourceMeta.sourceAuthor);
+      if (sourceMeta.sourcePostId) formData.append('sourcePostId', sourceMeta.sourcePostId);
+      if (sourceMeta.sourceRank) formData.append('sourceRank', sourceMeta.sourceRank);
+      if (sourceMeta.sourcePartitionId) formData.append('sourcePartitionId', sourceMeta.sourcePartitionId);
+      if (sourceMeta.sourcePartitionLabel) formData.append('sourcePartitionLabel', sourceMeta.sourcePartitionLabel);
+      if (
+        sourceMeta.sourceAuthor
+        || sourceMeta.sourcePostId
+        || sourceMeta.sourcePartitionId
+        || sourceMeta.sourcePartitionLabel
+        || sourceMeta.sourceRank
+        || sourceMeta.videoUrl
+        || sourceMeta.postUrl
+      ) {
+        formData.append('sourceMeta', JSON.stringify({
+          sourceAuthor: sourceMeta.sourceAuthor || '',
+          sourcePostId: sourceMeta.sourcePostId || '',
+          sourcePartitionId: sourceMeta.sourcePartitionId || '',
+          sourcePartitionLabel: sourceMeta.sourcePartitionLabel || '',
+          sourceRank: sourceMeta.sourceRank || 0,
+          videoUrl: sourceMeta.videoUrl || '',
+          postUrl: sourceMeta.postUrl || ''
+        }));
+      }
+
+      formData.append('renderProvider', gen.value.renderProvider);
 
       if (config.autoGenerate) {
         formData.append('genText', gen.value.text);
@@ -380,7 +483,7 @@ export function useMaterialDriven() {
 
         if (audioMode.value === 'preset') formData.append('audioPreset', gen.value.audioPreset);
         else if (gen.value.audioFile) formData.append('audioFile', gen.value.audioFile);
-        
+
         if (imageMode.value === 'preset') formData.append('imagePreset', gen.value.imagePreset);
         else if (gen.value.imageFile) formData.append('imageFile', gen.value.imageFile);
       }
@@ -425,29 +528,34 @@ export function useMaterialDriven() {
   const testComfyConnection = async () => {
     comfyTestLoading.value = true;
     comfyTestResult.value = { status: '', message: '', testedUrl: '' };
+    const renderProvider = normalizeRenderProvider(gen.value.renderProvider);
+    const providerLabel = getRenderProviderLabel(renderProvider);
     try {
       const response = await fetch('/api/material-driven/test-comfy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serverUrl: gen.value.serverUrl })
+        body: JSON.stringify({
+          serverUrl: gen.value.serverUrl,
+          renderProvider
+        })
       });
       const payload = await response.json();
       if (!response.ok || !payload?.success) {
-        throw new Error(payload?.message || 'ComfyUI 连通性检测失败');
+        throw new Error(payload?.message || `${providerLabel} 配置检测失败`);
       }
       comfyTestResult.value = {
         status: 'success',
-        message: payload.message || 'ComfyUI 连通正常',
+        message: payload.message || `${providerLabel} 配置有效`,
         testedUrl: payload.testedUrl || ''
       };
-      addLog(`ComfyUI 连通测试成功: ${payload.testedUrl || gen.value.serverUrl}`, 'success');
+      addLog(`${providerLabel} 配置检测成功: ${payload.testedUrl || gen.value.serverUrl}`, 'success');
     } catch (err) {
       comfyTestResult.value = {
         status: 'error',
-        message: err.message || 'ComfyUI 连通性检测失败',
+        message: err.message || `${providerLabel} 配置检测失败`,
         testedUrl: ''
       };
-      addLog(`ComfyUI 连通测试失败: ${comfyTestResult.value.message}`, 'error');
+      addLog(`${providerLabel} 配置检测失败: ${comfyTestResult.value.message}`, 'error');
     } finally {
       comfyTestLoading.value = false;
       saveState();
@@ -501,7 +609,8 @@ export function useMaterialDriven() {
     eventSource.addEventListener('narration_summary', (e) => {
       const data = JSON.parse(e.data);
       narrationSummary.value = data;
-      if (data?.fullText) narrationFullText.value = data.fullText;
+      const fullText = getNarrationFullText(data);
+      if (fullText) narrationFullText.value = fullText;
       addLog(`解说词生成: ${data.charCount}字, ${data.speed}字/秒`, 'success');
       saveState();
     });
@@ -580,6 +689,7 @@ export function useMaterialDriven() {
       materialSourceBody.value = String(task.sourcePost.body || materialSourceBody.value || '');
       materialSourcePostUrl.value = String(task.sourcePost.postUrl || materialSourcePostUrl.value || '');
     }
+    materialSourceMeta.value = buildTaskSourceMeta(task);
     if (task.avatarConfig && typeof task.avatarConfig === 'object') {
       gen.value = {
         ...gen.value,
@@ -587,6 +697,7 @@ export function useMaterialDriven() {
         audioPreset: String(task.avatarConfig.audioPreset || gen.value.audioPreset || ''),
         imagePreset: String(task.avatarConfig.imagePreset || gen.value.imagePreset || ''),
         serverUrl: String(task.avatarConfig.serverUrl || gen.value.serverUrl || ''),
+        renderProvider: String(task.avatarConfig.renderProvider || gen.value.renderProvider || 'comfyui'),
         audioFile: null,
         imageFile: null
       };
@@ -602,8 +713,9 @@ export function useMaterialDriven() {
     }
     editPlan.value = task.editPlan || null;
     executionPlan.value = task.executionPlan || null;
-    if (task.narration?.full_text) {
-      narrationFullText.value = String(task.narration.full_text);
+    const taskNarrationText = getNarrationFullText(task.narration || {});
+    if (taskNarrationText) {
+      narrationFullText.value = taskNarrationText;
     }
   };
 
@@ -764,6 +876,7 @@ export function useMaterialDriven() {
           outputPath: outputPath.value,
           avatarConfig: {
             serverUrl: gen.value.serverUrl,
+            renderProvider: gen.value.renderProvider,
             ...(audioMode.value === 'preset' ? { audioPreset: gen.value.audioPreset } : {}),
             ...(imageMode.value === 'preset' ? { imagePreset: gen.value.imagePreset } : {})
           }
@@ -792,7 +905,7 @@ export function useMaterialDriven() {
     }
   };
 
-  const resetWorkflow = () => {
+  const resetWorkflow = (options = {}) => {
     if (eventSource) {
       eventSource.close();
       eventSource = null;
@@ -820,6 +933,15 @@ export function useMaterialDriven() {
     materialSourceTitle.value = '';
     materialSourceBody.value = '';
     materialSourcePostUrl.value = '';
+    materialSourceMeta.value = createEmptyMaterialSourceMeta();
+    if (options.clearDraftText) {
+      gen.value = {
+        ...gen.value,
+        text: '',
+        audioFile: null,
+        imageFile: null
+      };
+    }
     saveState();
   };
 
@@ -832,13 +954,15 @@ export function useMaterialDriven() {
     }
     
     // Clear workflow and file states
-    resetWorkflow();
+    resetWorkflow({ clearDraftText: true });
     const sourceInfo = deriveXaiSourceText(item);
+    const postUrl = String(item?.postUrl || item?.post_url || '').trim();
     materialUrl.value = url;
     materialSourceLabel.value = sourceInfo.label;
     materialSourceTitle.value = sourceInfo.title;
     materialSourceBody.value = sourceInfo.body;
-    materialSourcePostUrl.value = String(item?.postUrl || item?.post_url || '').trim();
+    materialSourcePostUrl.value = postUrl;
+    materialSourceMeta.value = buildXaiSourceMeta(item, url, postUrl);
     
     addLog(`已接入热点素材：${materialSourceLabel.value}`, 'success');
     saveState();
@@ -866,6 +990,7 @@ export function useMaterialDriven() {
     materialSourceTitle,
     materialSourceBody,
     materialSourcePostUrl,
+    materialSourceMeta,
     audioMode,
     imageMode,
     withSubtitles,
@@ -907,6 +1032,7 @@ export function useMaterialDriven() {
     materialSourceTitle,
     materialSourceBody,
     materialSourcePostUrl,
+    materialSourceMeta,
     loadPresets,
     refreshTaskSnapshot,
     restoreActiveJob,

@@ -24,6 +24,15 @@ describe('material-driven task state persistence', () => {
       useSmartClip: false,
       useCache: true,
       autoGenerate: true,
+      sourceMeta: {
+        sourceAuthor: 'BMNRBullz',
+        sourcePostId: '2052826049046536201',
+        sourcePartitionId: 'finance',
+        sourcePartitionLabel: '金融',
+        sourceRank: 2,
+        videoUrl: 'https://video.twimg.com/example.mp4',
+        postUrl: 'https://x.com/BMNRBullz/status/2052826049046536201'
+      },
       avatarConfig: {
         genText: 'test narration',
         renderProvider: 'runninghub',
@@ -53,6 +62,47 @@ describe('material-driven task state persistence', () => {
     const restored = readTaskState(tempDir);
 
     expect(restored).toEqual(snapshot);
+  });
+
+  test('normalizes source partition metadata from legacy top-level fields', () => {
+    writeTaskState(tempDir, {
+      sourcePartitionId: 'tech',
+      sourcePartitionLabel: '科技',
+      sourceRank: '3'
+    });
+
+    const restored = readTaskState(tempDir);
+
+    expect(restored.sourceMeta).toEqual({
+      sourceAuthor: '',
+      sourcePostId: '',
+      sourcePartitionId: 'tech',
+      sourcePartitionLabel: '科技',
+      sourceRank: 3,
+      videoUrl: '',
+      postUrl: ''
+    });
+  });
+
+  test('normalizes source identity from source post style fields', () => {
+    writeTaskState(tempDir, {
+      author: 'DocumentingBTC',
+      postId: '2052896454608330953',
+      sourcePostUrl: 'https://x.com/DocumentingBTC/status/2052896454608330953',
+      materialUrl: 'https://video.twimg.com/example-source.mp4'
+    });
+
+    const restored = readTaskState(tempDir);
+
+    expect(restored.sourceMeta).toEqual({
+      sourceAuthor: 'DocumentingBTC',
+      sourcePostId: '2052896454608330953',
+      sourcePartitionId: '',
+      sourcePartitionLabel: '',
+      sourceRank: 0,
+      videoUrl: 'https://video.twimg.com/example-source.mp4',
+      postUrl: 'https://x.com/DocumentingBTC/status/2052896454608330953'
+    });
   });
 
   test('does not persist one-off RunningHub API keys in task state', () => {

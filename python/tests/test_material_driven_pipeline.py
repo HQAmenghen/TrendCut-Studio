@@ -51,6 +51,39 @@ class MaterialDrivenPipelineReuseTest(unittest.TestCase):
             self.assertIn("--file-url", asr_args)
             self.assertEqual(asr_args[asr_args.index("--file-url") + 1], "https://cdn.example.com/news.mp4")
 
+    def test_load_source_post_preserves_xai_partition_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "source_post.json").write_text(
+                json.dumps({
+                    "title": "金融分区素材",
+                    "body": "市场资金流变化。",
+                    "author": "market-watch",
+                    "postId": "post-1",
+                    "postUrl": "https://x.com/post/1",
+                    "materialUrl": "https://cdn.example.com/news.mp4",
+                    "sourceMeta": {
+                        "sourcePartitionId": "finance",
+                        "sourcePartitionLabel": "金融",
+                        "sourceRank": "2",
+                    },
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            pipeline = MaterialDrivenPipeline(
+                material_path=str(output_dir / "material.mp4"),
+                output_dir=str(output_dir),
+            )
+
+            source_post = pipeline.load_source_post()
+
+            self.assertEqual(source_post["author"], "market-watch")
+            self.assertEqual(source_post["postId"], "post-1")
+            self.assertEqual(source_post["sourcePartitionId"], "finance")
+            self.assertEqual(source_post["sourcePartitionLabel"], "金融")
+            self.assertEqual(source_post["sourceRank"], 2)
+            self.assertEqual(source_post["sourceMeta"]["sourcePartitionId"], "finance")
+
     def test_tail_silence_detection_returns_precise_effective_duration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)

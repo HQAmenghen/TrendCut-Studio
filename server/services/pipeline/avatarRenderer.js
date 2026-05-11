@@ -8,6 +8,66 @@ const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 const NATIVE_PROVIDER = 'comfyui';
 const RUNNINGHUB_PROVIDER = 'runninghub';
 
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 2000,
+  maxDelayMs: 30000
+};
+
+const VRAM_ERROR_PATTERNS = [
+  /torch\.OutOfMemoryError/i,
+  /out\s*of\s*memory/i,
+  /oom/i,
+  /vram/i,
+  /显存不足告警/,
+  /显存耗尽/,
+  /显存不足/,
+  /显存/,
+  /CUDA\s+out\s+of\s+memory/i,
+  /gpu\s*memory/i,
+  /allocation\s+failed/i,
+  /device.*memory.*exhausted/i,
+  /insufficient.*memory/i,
+  /内存不足/i,
+  /not\s+enough\s+memory/i
+];
+
+function isRetryableError(err) {
+  const message = String(err?.message || err || '');
+  return VRAM_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveRetryConfig(overrides = {}) {
+  return {
+    maxRetries: Number(overrides.maxRetries ?? RETRY_CONFIG.maxRetries),
+    baseDelayMs: Number(overrides.baseDelayMs ?? RETRY_CONFIG.baseDelayMs),
+    maxDelayMs: Number(overrides.maxDelayMs ?? RETRY_CONFIG.maxDelayMs)
+  };
+}
+
+async function withRetry(fn, { label = 'render', maxRetries, baseDelayMs, maxDelayMs, onRetry } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= maxRetries || !isRetryableError(err)) throw err;
+      const delay = Math.min(baseDelayMs * (2 ** (attempt - 1)), maxDelayMs);
+      if (onRetry) {
+        onRetry({ attempt, maxRetries, delay, error: err.message });
+      }
+      console.warn(`[AvatarRenderer] ${label} 失败 (${attempt}/${maxRetries})，${delay}ms 后重试: ${err.message}`);
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+}
+
 function sanitizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/u, '');
 }
@@ -112,17 +172,27 @@ function createAvatarRenderer(deps = {}) {
 
   async function render(options = {}) {
     const provider = resolveAvatarRenderProvider(options.avatarConfig || {});
+    const retryCfg = resolveRetryConfig(options.retryConfig || {});
+    const providerLabel = provider === RUNNINGHUB_PROVIDER ? 'RunningHub' : 'ComfyUI';
+    const onRetry = options.onRetry;
+
     if (provider === RUNNINGHUB_PROVIDER) {
       const speechAudioPath = options.speechAudioPath || options.audioPath;
       if (!speechAudioPath) {
         throw new Error('缺少 QwenTTS 合成口播音频');
       }
-      return runningHubClient.render({
-        ...options,
-        audioPath: speechAudioPath
-      });
+      return withRetry(
+        () => runningHubClient.render({
+          ...options,
+          audioPath: speechAudioPath
+        }),
+        { label: providerLabel, ...retryCfg, onRetry }
+      );
     }
-    return nativeClient.render(options);
+    return withRetry(
+      () => nativeClient.render(options),
+      { label: providerLabel, ...retryCfg, onRetry }
+    );
   }
 
   return {
@@ -133,7 +203,11 @@ function createAvatarRenderer(deps = {}) {
 module.exports = {
   NATIVE_PROVIDER,
   RUNNINGHUB_PROVIDER,
+  RETRY_CONFIG,
   createAvatarRenderer,
+  isRetryableError,
   resolveAvatarRenderProvider,
-  resolveRunningHubWorkflowId
+  resolveRetryConfig,
+  resolveRunningHubWorkflowId,
+  withRetry
 };

@@ -150,48 +150,174 @@
                     />
                   </label>
                 </div>
+
+                <div style="margin-bottom: 16px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);">
+                  <div style="display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap;">
+                    <div>
+                      <strong style="display: block; color: var(--strong-text); font-size: 13px;">制作模式</strong>
+                      <span style="display: block; margin-top: 6px; color: #9ca3af; font-size: 12px; line-height: 1.6;">
+                        可同时开启带数字人与不带数字人，两条流水线会分别生成发布任务，并使用下方时间进入定时发布。
+                      </span>
+                    </div>
+                    <div class="autopilot-mode-selector">
+                      <button
+                        v-for="mode in center.autoPilotPipelineDefs"
+                        :key="mode.key"
+                        type="button"
+                        class="autopilot-mode-option"
+                        :class="{ active: center.activeAutoPilotPipelineModes.value.includes(mode.key) }"
+                        :title="mode.description"
+                        :aria-pressed="center.activeAutoPilotPipelineModes.value.includes(mode.key)"
+                        @click="center.toggleAutoPilotPipelineMode(mode.key, !center.activeAutoPilotPipelineModes.value.includes(mode.key))"
+                      >
+                        <span class="mode-option-title">{{ mode.label }}</span>
+                        <span class="mode-option-desc">{{ mode.description }}</span>
+                        <span class="mode-option-state">
+                          {{ center.activeAutoPilotPipelineModes.value.includes(mode.key) ? '已启用' : '点击启用' }}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
                 
-                <div style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
-                  <label class="control-label mb-2 block" style="font-size: 12px;">精细化定时分发策略</label>
-                  <div style="font-size: 12px; color: #9ca3af; margin-bottom: 12px;">为不同名次的素材独立指定其目标账号与确切投递时间：</div>
-                  <label class="control-label mb-1 block" style="font-size: 13px; font-weight: 800;">🎯 自动分发排名配置 (Rank-to-Account)</label>
-                  <div style="font-size: 12px; color: #9ca3af; margin-bottom: 12px;">您可以自由选择想要自动分发的各个排名（Top 1-10）：</div>
-
-                  <div v-for="m in center.activeAutoPilotMappings.value" :key="m.rank" style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08);">
-                    <div style="font-size: 13px; color: var(--strong-text); width: 60px; font-weight: 800; padding-left: 4px;">Top {{ m.rank }}</div>
-                    <select
-                      class="input-dark" style="font-size: 14px; flex: 1;"
-                      :value="m.accountId"
-                      @change="center.updateAutoPilotArray('autoPilotAccountIds', m.rank - 1, $event.target.value)"
-                    >
-                      <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
-                        {{ account.label }}
-                      </option>
-                    </select>
-                    <input
-                      type="time" class="input-dark" style="font-size: 14px; width: 100px;"
-                      :value="m.time"
-                      @input="center.updateAutoPilotArray('autoPilotTimes', m.rank - 1, $event.target.value)"
-                    />
-                    <button type="button" class="ghost-btn compact-btn" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.2); width: 32px; height: 32px;" title="移除排名" @click="center.updateAutoPilotArray('autoPilotAccountIds', m.rank - 1, '')">✕</button>
+                <div class="autopilot-config-panel">
+                  <div class="autopilot-section-intro">
+                    <div>
+                      <label class="control-label">精细化定时分发策略</label>
+                      <p>每条计划独立选择发布账号、榜单分区、分区内排名和发布时间，可同时发布多个板块的 Top1。</p>
+                    </div>
                   </div>
 
-                  <div v-if="!center.activeAutoPilotMappings.value.length" style="padding: 24px; text-align: center; color: #6b7280; font-size: 13px; border: 1px dashed rgba(255,255,255,0.1); border-radius: 14px; margin-bottom: 12px;">
-                    还没有配置任何自动分发映射。
-                  </div>
+                  <div
+                    v-for="mode in center.autoPilotPipelineDefs.filter(item => center.activeAutoPilotPipelineModes.value.includes(item.key))"
+                    :key="`schedule_${mode.key}`"
+                    class="autopilot-plan-group"
+                  >
+                    <div class="autopilot-plan-head">
+                      <div>
+                        <strong>{{ mode.label }}发布计划</strong>
+                        <span>{{ mode.description }}</span>
+                      </div>
+                      <span>{{ center.getAutoPilotMappingsForMode(mode.key).length }} 条</span>
+                    </div>
 
-                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px;">
-                    <button
-                      v-for="r in [1,2,3,4,5,6,7,8,9,10]"
-                      :key="r"
-                      v-show="!center.activeAutoPilotMappings.value.find(m => m.rank === r)"
-                      type="button"
-                      class="ghost-btn compact-btn"
-                      style="font-size: 11px; padding: 4px 8px; border-radius: 8px; background: rgba(255,255,255,0.02);"
-                      @click="center.updateAutoPilotArray('autoPilotAccountIds', r - 1, center.wechatAccounts.value[0]?.id || '')"
-                    >
-                      + Top {{ r }}
-                    </button>
+                    <div class="autopilot-plan-list">
+                      <div
+                        v-for="m in center.getAutoPilotMappingsForMode(mode.key)"
+                        :key="`${mode.key}_${m.slot}`"
+                        class="autopilot-plan-row"
+                      >
+                        <div class="plan-slot">
+                          <span>计划 {{ m.slot }}</span>
+                          <strong>{{ m.partitionLabel }} Top {{ m.sourceRank }}</strong>
+                        </div>
+
+                        <label class="plan-field plan-field-account">
+                          <span>发布账号</span>
+                          <select
+                            class="input-dark"
+                            :value="m.accountId"
+                            @change="center.updateAutoPilotModeArray(mode.key, 'accountIds', m.slot - 1, $event.target.value)"
+                          >
+                            <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
+                              {{ account.label }}
+                            </option>
+                          </select>
+                        </label>
+
+                        <label class="plan-field">
+                          <span>榜单分区</span>
+                          <select
+                            class="input-dark"
+                            :value="m.partitionId"
+                            @change="center.updateAutoPilotModeArray(mode.key, 'partitionIds', m.slot - 1, $event.target.value)"
+                          >
+                            <option v-for="partition in center.xaiPartitionOptions.value" :key="partition.id" :value="partition.id">
+                              {{ partition.label }}
+                            </option>
+                          </select>
+                        </label>
+
+                        <label class="plan-field plan-field-rank">
+                          <span>分区排名</span>
+                          <select
+                            class="input-dark"
+                            :value="String(m.sourceRank || 1)"
+                            @change="center.updateAutoPilotModeArray(mode.key, 'sourceRanks', m.slot - 1, $event.target.value)"
+                          >
+                            <option v-for="rank in [1,2,3,4,5,6,7,8,9,10]" :key="`${mode.key}_${m.slot}_rank_${rank}`" :value="String(rank)">
+                              Top {{ rank }}
+                            </option>
+                          </select>
+                        </label>
+
+                        <label class="plan-field plan-field-time">
+                          <span>发布时间</span>
+                          <input
+                            type="time"
+                            class="input-dark"
+                            :value="m.time"
+                            @input="center.updateAutoPilotModeArray(mode.key, 'times', m.slot - 1, $event.target.value)"
+                          />
+                        </label>
+
+                        <button
+                          type="button"
+                          class="plan-remove-btn"
+                          title="移除计划"
+                          @click="center.removeAutoPilotModeMapping(mode.key, m.slot)"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+
+                    <div v-if="!center.getAutoPilotMappingsForMode(mode.key).length" class="autopilot-empty-state">
+                      这个模式还没有配置自动分发映射。
+                    </div>
+
+                    <div class="autopilot-plan-actions">
+                      <button
+                        type="button"
+                        class="ghost-btn compact-btn autopilot-add-plan"
+                        :disabled="center.getAutoPilotMappingsForMode(mode.key).length >= 10"
+                        @click="center.addAutoPilotModeMapping(mode.key, center.getNextAutoPilotMappingSlot(mode.key))"
+                      >
+                        + 新增发布计划
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="platform-block autopilot-task-window">
+              <div class="autopilot-task-panel">
+                <div class="autopilot-task-head">
+                  <div>
+                    <div class="summary-kicker">Automation Queue</div>
+                    <strong>当前自动化任务</strong>
+                  </div>
+                  <span>{{ center.autoPilotJobs.value.length }} 条</span>
+                </div>
+                <div v-if="!center.autoPilotJobs.value.length" class="autopilot-empty">
+                  当前还没有由自动化流水线创建的发布任务。
+                </div>
+                <div v-else class="autopilot-task-list">
+                  <div v-for="task in center.autoPilotJobs.value" :key="task.id" class="autopilot-task-item">
+                    <div class="autopilot-task-title-row">
+                      <strong>{{ task.title }}</strong>
+                      <span>{{ task.statusLabel }}</span>
+                    </div>
+                    <div class="autopilot-task-meta">
+                      <span>{{ task.pipelineLabel }}</span>
+                      <span v-if="task.slot">计划 {{ task.slot }}</span>
+                      <span v-if="task.partitionLabel">{{ task.partitionLabel }} Top {{ task.sourceRank || task.rank }}</span>
+                      <span v-else-if="task.rank">Top {{ task.rank }}</span>
+                      <span>{{ task.accountLabel }}</span>
+                    </div>
+                    <div class="autopilot-task-time">
+                      {{ task.scheduledLabel || center.formatAutoPilotJobTime(task.scheduledAt) }}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -460,7 +586,7 @@
                           :checked="center.editor.value.tagStrategy === 'system'"
                           @change="center.editor.value.tagStrategy = 'system'"
                         />
-                        <span>系统标签（推荐）</span>
+                        <span>系统标签</span>
                       </label>
                       <label class="pick-card">
                         <input
@@ -470,7 +596,7 @@
                           :checked="center.editor.value.tagStrategy === 'model'"
                           @change="center.editor.value.tagStrategy = 'model'"
                         />
-                        <span>模型标签</span>
+                        <span>模型标签（默认）</span>
                       </label>
                     </div>
                     <div class="summary-meta">
@@ -897,7 +1023,7 @@ async function reviewAsset(asset) {
 
 // 跳过素材审核
 async function skipAssetReview(asset) {
-  if (!confirm('确定要跳过AI审核吗？跳过后可以直接创建发布任务。')) {
+  if (!confirm('确定要将该素材的AI审核标记为已跳过吗？')) {
     return;
   }
   const result = await review.skipReview(asset.path, asset.id, 'manual_skip');
@@ -1126,6 +1252,345 @@ function selfCheckStatusLabel(status) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 12px;
+}
+
+.autopilot-config-panel {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.autopilot-section-intro {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.autopilot-section-intro p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 6px 0 0;
+}
+
+.autopilot-config-panel,
+.autopilot-task-panel {
+  min-width: 0;
+}
+
+.autopilot-mode-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 10px;
+  min-width: min(100%, 360px);
+}
+
+.autopilot-mode-option {
+  appearance: none;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 106px;
+  padding: 12px;
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.autopilot-mode-option:hover {
+  border-color: rgba(125, 211, 252, 0.45);
+  transform: translateY(-1px);
+}
+
+.autopilot-mode-option.active {
+  border-color: rgba(14, 165, 233, 0.85);
+  background: rgba(14, 165, 233, 0.1);
+}
+
+.mode-option-title {
+  color: var(--strong-text);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.mode-option-desc {
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mode-option-state {
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 850;
+  margin-top: auto;
+}
+
+.autopilot-mode-schedule {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.autopilot-plan-group {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card-bg);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
+  margin-top: 14px;
+  padding: 14px;
+}
+
+.autopilot-plan-head {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.autopilot-plan-head strong {
+  color: var(--strong-text);
+  display: block;
+  font-size: 14px;
+}
+
+.autopilot-plan-head span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  line-height: 1.55;
+  margin-top: 4px;
+}
+
+.autopilot-plan-head > span {
+  color: #0ea5e9;
+  font-weight: 850;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.autopilot-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.autopilot-plan-row {
+  align-items: end;
+  background: var(--panel-subtle);
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 118px minmax(150px, 1.25fr) minmax(118px, 0.9fr) 108px 112px 34px;
+  padding: 12px;
+}
+
+.plan-slot {
+  align-self: stretch;
+  background: var(--card-subtle-bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 54px;
+  padding: 10px 12px;
+}
+
+.plan-slot span,
+.plan-field span {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.plan-slot strong {
+  color: var(--strong-text);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.plan-field {
+  margin: 0;
+  min-width: 0;
+}
+
+.plan-field .input-dark {
+  border-radius: 12px;
+  font-size: 14px;
+  min-height: 46px;
+  padding: 10px 12px;
+}
+
+.plan-remove-btn {
+  align-items: center;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 12px;
+  color: #ef4444;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 20px;
+  height: 46px;
+  justify-content: center;
+  line-height: 1;
+  transition: background 0.16s ease, border-color 0.16s ease;
+  width: 34px;
+}
+
+.plan-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.42);
+}
+
+.autopilot-empty-state {
+  border: 1px dashed var(--line-soft);
+  border-radius: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 18px;
+  text-align: center;
+}
+
+.autopilot-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.autopilot-add-plan {
+  background: var(--input-bg);
+  border-radius: 10px;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.mode-schedule-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mode-schedule-head strong {
+  color: var(--strong-text);
+  display: block;
+  font-size: 13px;
+}
+
+.mode-schedule-head span {
+  color: #9ca3af;
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.mode-schedule-head > span {
+  color: #38bdf8;
+  font-weight: 850;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.autopilot-task-window {
+  margin-top: 16px;
+  background: rgba(0, 0, 0, 0.1);
+  border: none;
+}
+
+.autopilot-task-panel {
+  border-radius: 12px;
+}
+
+.autopilot-task-head,
+.autopilot-task-title-row,
+.autopilot-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.autopilot-task-head {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.autopilot-task-head strong,
+.autopilot-task-title-row strong {
+  color: var(--strong-text);
+}
+
+.autopilot-task-head > span,
+.autopilot-task-title-row span {
+  color: #7dd3fc;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.autopilot-empty {
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 18px;
+  text-align: center;
+}
+
+.autopilot-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.autopilot-task-item {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px;
+}
+
+.autopilot-task-title-row {
+  justify-content: space-between;
+}
+
+.autopilot-task-title-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autopilot-task-meta {
+  flex-wrap: wrap;
+  color: #9ca3af;
+  font-size: 12px;
+  margin-top: 7px;
+}
+
+.autopilot-task-time {
+  color: #cbd5e1;
+  font-size: 12px;
+  margin-top: 7px;
 }
 
 .job-detail-card {
@@ -1819,8 +2284,22 @@ function selfCheckStatusLabel(status) {
   .platform-picks,
   .summary-grid,
   .hero-stats,
+  .autopilot-mode-selector,
   .two-col {
     grid-template-columns: 1fr;
+  }
+
+  .autopilot-plan-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .plan-slot,
+  .plan-field-account {
+    grid-column: 1 / -1;
+  }
+
+  .plan-remove-btn {
+    width: 100%;
   }
 
   .section-tip {

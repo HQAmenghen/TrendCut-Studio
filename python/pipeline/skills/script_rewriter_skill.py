@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from llm_client import create_llm_client, generate_content, get_text_llm_provider
 
 from .base import BaseSkill, SkillResult
+from .partition_prompt_profile import prepend_partition_prompt, resolve_partition_prompt_profile
 from .prompt_skill_loader import load_prompt_text
 
 
@@ -89,8 +90,8 @@ SEMANTIC_CUE_GROUPS = {
 
 
 def _get_script_provider() -> str:
-    """口播稿专用 provider：优先读 SCRIPT_LLM_PROVIDER，否则走全局"""
-    return os.getenv("SCRIPT_LLM_PROVIDER", "").strip().lower() or get_text_llm_provider()
+    """口播稿使用统一文本 provider；SCRIPT_LLM_PROVIDER 由 llm_client 兼容处理。"""
+    return get_text_llm_provider()
 
 
 def get_text_model() -> str:
@@ -202,15 +203,69 @@ class ScriptRewriterSkill(BaseSkill):
     def _normalize_source_post(self, payload: Any) -> Dict[str, Any]:
         if not isinstance(payload, dict):
             return {}
+        source_meta = (
+            payload.get("sourceMeta")
+            if isinstance(payload.get("sourceMeta"), dict)
+            else payload.get("source_meta")
+            if isinstance(payload.get("source_meta"), dict)
+            else {}
+        )
+        partition = payload.get("partition") if isinstance(payload.get("partition"), dict) else {}
+
+        def pick_string(*values: Any) -> str:
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
         title = str(payload.get("title") or "").strip()
         body = str(payload.get("body") or "").strip()
         post_url = str(payload.get("postUrl") or "").strip()
         material_url = str(payload.get("materialUrl") or "").strip()
+        source_rank_raw = pick_string(
+            payload.get("sourceRank"),
+            payload.get("source_rank"),
+            source_meta.get("sourceRank"),
+            source_meta.get("source_rank"),
+        )
+        try:
+            source_rank = int(float(source_rank_raw)) if source_rank_raw else 0
+        except Exception:
+            source_rank = 0
+        source_partition_id = pick_string(
+            payload.get("sourcePartitionId"),
+            payload.get("source_partition_id"),
+            source_meta.get("sourcePartitionId"),
+            source_meta.get("source_partition_id"),
+            payload.get("partitionId"),
+            payload.get("partition_id"),
+            partition.get("id"),
+        )
+        source_partition_label = pick_string(
+            payload.get("sourcePartitionLabel"),
+            payload.get("source_partition_label"),
+            source_meta.get("sourcePartitionLabel"),
+            source_meta.get("source_partition_label"),
+            payload.get("partitionLabel"),
+            payload.get("partition_label"),
+            partition.get("label"),
+        )
         return {
             "title": title,
             "body": body,
+            "author": pick_string(payload.get("author"), payload.get("sourceAuthor")),
+            "postId": pick_string(payload.get("postId"), payload.get("post_id"), payload.get("sourcePostId")),
             "post_url": post_url,
             "material_url": material_url,
+            "sourcePartitionId": source_partition_id,
+            "sourcePartitionLabel": source_partition_label,
+            "sourceRank": source_rank,
+            "sourceMeta": {
+                "sourcePartitionId": source_partition_id,
+                "sourcePartitionLabel": source_partition_label,
+                "sourceRank": source_rank,
+            },
         }
 
     def _tokenize(self, text: str) -> List[str]:
@@ -1201,12 +1256,13 @@ class ScriptRewriterSkill(BaseSkill):
         route: Dict[str, Any],
         outline: Dict[str, Any],
         context_blob: str,
+        partition_profile: Dict[str, Any] | None = None,
     ) -> SkillResult | None:
         """尝试合并单次 LLM 调用生成 text + content_intent + evidence。
         成功返回 SkillResult，失败返回 None（由调用方 fallback 到两阶段模式）。
         """
         try:
-            combined_prompt = self.COMBINED_PROMPT.format(
+            combined_prompt = prepend_partition_prompt(self.COMBINED_PROMPT.format(
                 content_type=str(route.get("content_type") or "fast_news"),
                 duration_target=str(route.get("duration_target") or outline.get("target_duration_sec") or 45),
                 outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
@@ -1214,7 +1270,7 @@ class ScriptRewriterSkill(BaseSkill):
                 segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
                 source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
                 source_focus_json=json.dumps(source_focus, ensure_ascii=False, indent=2),
-            )
+            ), partition_profile)
             response = generate_content(
                 client,
                 model=model,
@@ -1305,6 +1361,7 @@ class ScriptRewriterSkill(BaseSkill):
                         "repair_applied": text_repaired,
                         "style_violations": style_violations,
                         "guardrail_mode": guardrail_mode,
+                        "partition_prompt_profile": partition_profile or {},
                     },
                 },
                 meta={
@@ -1321,6 +1378,7 @@ class ScriptRewriterSkill(BaseSkill):
                     "repair_applied": text_repaired,
                     "style_violations": style_violations,
                     "guardrail_mode": guardrail_mode,
+                    "partition_prompt_profile": partition_profile or {},
                 },
             )
         except Exception:
@@ -1337,6 +1395,7 @@ class ScriptRewriterSkill(BaseSkill):
         audio_snippets = self._normalize_audio(audio_items)
         segment_items = self._normalize_selected_segments(selected_segments)
         source_post_info = self._normalize_source_post(source_post)
+        partition_profile = resolve_partition_prompt_profile(source_post_info)
         source_focus = self._extract_source_focus(source_post_info)
         context_blob = self._build_context_blob(source_post_info, outline_items, audio_snippets, segment_items)
 
@@ -1349,6 +1408,7 @@ class ScriptRewriterSkill(BaseSkill):
                     "status": "failed",
                     "message": "No usable outline/audio facts for script rewriting.",
                     "decision_mode": "llm_failed",
+                    "partition_prompt_profile": partition_profile,
                 },
             )
 
@@ -1370,12 +1430,13 @@ class ScriptRewriterSkill(BaseSkill):
             route=route,
             outline=outline,
             context_blob=context_blob,
+            partition_profile=partition_profile,
         )
         if combined_result is not None:
             return combined_result
 
         # ── Fallback：旧两阶段模式 ────────────────────────────
-        text_prompt = self.REWRITE_TEXT_PROMPT.format(
+        text_prompt = prepend_partition_prompt(self.REWRITE_TEXT_PROMPT.format(
             content_type=str(route.get("content_type") or "fast_news"),
             duration_target=str(route.get("duration_target") or outline.get("target_duration_sec") or 45),
             outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
@@ -1383,7 +1444,7 @@ class ScriptRewriterSkill(BaseSkill):
             segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
             source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
             source_focus_json=json.dumps(source_focus, ensure_ascii=False, indent=2),
-        )
+        ), partition_profile)
 
         try:
             text_stage_mode = "full_prompt"
@@ -1401,14 +1462,14 @@ class ScriptRewriterSkill(BaseSkill):
                 if not text_units:
                     raise ValueError("full_prompt 未返回有效 text script_units")
             except Exception as full_exc:
-                compact_prompt = self._build_compact_text_prompt(
+                compact_prompt = prepend_partition_prompt(self._build_compact_text_prompt(
                     source_post_info=source_post_info,
                     outline_items=outline_items,
                     audio_snippets=audio_snippets,
                     segment_items=segment_items,
                     route=route,
                     outline=outline,
-                )
+                ), partition_profile)
                 response = generate_content(
                     client,
                     model=text_model,
@@ -1466,7 +1527,7 @@ class ScriptRewriterSkill(BaseSkill):
                 except Exception:
                     pass
 
-            enrich_prompt = self.ENRICH_PROMPT.format(
+            enrich_prompt = prepend_partition_prompt(self.ENRICH_PROMPT.format(
                 outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
                 audio_json=json.dumps(audio_snippets, ensure_ascii=False, indent=2),
                 segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
@@ -1476,7 +1537,7 @@ class ScriptRewriterSkill(BaseSkill):
                     ensure_ascii=False,
                     indent=2,
                 ),
-            )
+            ), partition_profile)
             stage2_llm_used = False
             stage2_fallback_used = False
             stage2_error = None
@@ -1526,6 +1587,7 @@ class ScriptRewriterSkill(BaseSkill):
                         "repair_applied": text_repaired,
                         "style_violations": style_violations,
                         "guardrail_mode": guardrail_mode,
+                        "partition_prompt_profile": partition_profile,
                     },
                 },
                 meta={
@@ -1544,6 +1606,7 @@ class ScriptRewriterSkill(BaseSkill):
                     "repair_applied": text_repaired,
                     "style_violations": style_violations,
                     "guardrail_mode": guardrail_mode,
+                    "partition_prompt_profile": partition_profile,
                     "text_stage_llm_used": True,
                     "text_stage_mode": text_stage_mode,
                     "enrichment_stage_llm_used": stage2_llm_used,
@@ -1565,5 +1628,6 @@ class ScriptRewriterSkill(BaseSkill):
                     "enrichment_stage_model": enrich_model,
                     "decision_mode": "llm_failed",
                     "source_anchor": source_focus,
+                    "partition_prompt_profile": partition_profile,
                 },
             )

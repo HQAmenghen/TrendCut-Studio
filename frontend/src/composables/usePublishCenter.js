@@ -9,6 +9,12 @@ const PLATFORM_DEFS = [
   { key: 'youtube', label: 'YouTube', runModes: [] }
 ];
 
+const AUTO_PILOT_PIPELINE_DEFS = [
+  { key: 'vertical', label: '不带数字人', description: '直接生成竖屏成片并进入定时发布' },
+  { key: 'avatar', label: '带数字人', description: '先生成数字人口播，再进入竖屏成片与定时发布' }
+];
+const DEFAULT_XAI_PARTITION_ID = 'crypto';
+
 const FIELD_LABELS = {
   wechatChannels: {
     enabled: '启用',
@@ -79,6 +85,44 @@ function normalizeStringArray(value) {
   return [];
 }
 
+function normalizeAutoPilotPipelineModes(value, fallback = 'vertical') {
+  const allowedModes = new Set(AUTO_PILOT_PIPELINE_DEFS.map((item) => item.key));
+  const source = Array.isArray(value) ? value : [fallback];
+  const modes = [];
+  for (const item of source) {
+    const mode = String(item || '').trim();
+    if (allowedModes.has(mode) && !modes.includes(mode)) {
+      modes.push(mode);
+    }
+  }
+  return modes.length ? modes : ['vertical'];
+}
+
+function normalizeAutoPilotModeSchedules(value = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  const schedules = {};
+  for (const mode of AUTO_PILOT_PIPELINE_DEFS.map((item) => item.key)) {
+    const item = source[mode] && typeof source[mode] === 'object' ? source[mode] : {};
+    schedules[mode] = {
+      accountIds: normalizeStringArray(item.accountIds),
+      times: normalizeStringArray(item.times),
+      partitionIds: normalizeStringArray(item.partitionIds),
+      sourceRanks: normalizeStringArray(item.sourceRanks)
+    };
+  }
+  return schedules;
+}
+
+function normalizeXaiPartitionId(value, fallback = DEFAULT_XAI_PARTITION_ID) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return normalized || fallback;
+}
+
 function normalizeApiError(err, fallbackMessage = '请求失败') {
   const payload = err?.response?.data || {};
   return {
@@ -102,6 +146,7 @@ export function usePublishCenter() {
   const assets = ref([]);
   const jobs = ref([]);
   const config = ref({});
+  const xaiPartitions = ref([]);
   const selfCheck = ref(null);
   const selfCheckLoading = ref(false);
   const selectedAssetId = ref('');
@@ -267,7 +312,7 @@ const clearErrorState = () => {
   const editor = ref({
     title: '',
     description: '',
-    tagStrategy: 'system',
+    tagStrategy: 'model',
     tags: '',
     coverUrl: '',
     scheduledTime: '',
@@ -290,34 +335,157 @@ const clearErrorState = () => {
   }));
 
   const wechatAccounts = computed(() => Array.isArray(config.value?.wechatChannels?.accounts) ? config.value.wechatChannels.accounts : []);
-  const activeAutoPilotMappings = computed(() => {
+  const xaiPartitionOptions = computed(() => {
+    const source = Array.isArray(xaiPartitions.value) && xaiPartitions.value.length
+      ? xaiPartitions.value
+      : [{ id: DEFAULT_XAI_PARTITION_ID, label: '加密', accounts: [] }];
+    return source.map((partition) => ({
+      id: normalizeXaiPartitionId(partition.id),
+      label: partition.label || partition.id || '默认分区',
+      accountCount: Array.isArray(partition.accounts) ? partition.accounts.length : 0
+    }));
+  });
+  const activeAutoPilotPipelineModes = computed(() => normalizeAutoPilotPipelineModes(
+    config.value?.global?.autoPilotPipelineModes,
+    config.value?.global?.pipelineMode || 'vertical'
+  ));
+
+  const getAutoPilotModeSchedule = (mode) => {
     const global = config.value?.global || {};
-    const accountIds = normalizeStringArray(global.autoPilotAccountIds);
-    const times = normalizeStringArray(global.autoPilotTimes);
+    const schedules = normalizeAutoPilotModeSchedules(global.autoPilotModeSchedules);
+    const schedule = schedules[mode] || {};
+    const accountIds = normalizeStringArray(schedule.accountIds);
+    const times = normalizeStringArray(schedule.times);
+    const partitionIds = normalizeStringArray(schedule.partitionIds);
+    const sourceRanks = normalizeStringArray(schedule.sourceRanks);
+    if (accountIds.length || times.length || partitionIds.length || sourceRanks.length) {
+      return { accountIds, times, partitionIds, sourceRanks };
+    }
+    return {
+      accountIds: normalizeStringArray(global.autoPilotAccountIds),
+      times: normalizeStringArray(global.autoPilotTimes),
+      partitionIds: [],
+      sourceRanks: []
+    };
+  };
+
+  const getAutoPilotMappingsForMode = (mode) => {
+    const { accountIds, times, partitionIds, sourceRanks } = getAutoPilotModeSchedule(mode);
+    const global = config.value?.global || {};
     const mappings = [];
-    const maxLen = Math.max(accountIds.length, times.length);
+    const maxLen = Math.max(accountIds.length, times.length, partitionIds.length, sourceRanks.length);
     for (let i = 0; i < maxLen; i++) {
       if (accountIds[i]) {
+        const partitionId = normalizeXaiPartitionId(partitionIds[i] || global.autoPilotPartitionId, global.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
+        const partition = xaiPartitionOptions.value.find((item) => item.id === partitionId);
+        const sourceRank = Math.max(1, Math.min(10, parseInt(sourceRanks[i] || '1', 10) || 1));
         mappings.push({
+          slot: i + 1,
           rank: i + 1,
+          sourceRank,
           accountId: accountIds[i],
-          time: times[i] || global.autoPilotTime || '08:00'
+          time: times[i] || global.autoPilotTime || '08:00',
+          partitionId,
+          partitionLabel: partition?.label || partitionId
+        });
+      }
+    }
+    return mappings;
+  };
+
+  const activeAutoPilotMappings = computed(() => {
+    const mappings = [];
+    for (const mode of activeAutoPilotPipelineModes.value) {
+      const modeDef = AUTO_PILOT_PIPELINE_DEFS.find((item) => item.key === mode);
+      for (const mapping of getAutoPilotMappingsForMode(mode)) {
+        mappings.push({
+          ...mapping,
+          pipelineMode: mode,
+          pipelineLabel: modeDef?.label || mode
         });
       }
     }
     return mappings;
   });
 
+  const autoPilotConfiguredPlans = computed(() => activeAutoPilotMappings.value.map((mapping) => {
+    const account = wechatAccounts.value.find((item) => item.id === mapping.accountId);
+    const accountLabel = account?.displayName || account?.helperAccount || account?.finderUserName || mapping.accountId || '未指定账号';
+    return {
+      id: `plan_${mapping.pipelineMode}_${mapping.slot}`,
+      title: `${mapping.pipelineLabel}自动化计划`,
+      rank: mapping.sourceRank,
+      slot: mapping.slot,
+      pipelineMode: mapping.pipelineMode,
+      pipelineLabel: mapping.pipelineLabel,
+      scheduledAt: '',
+      scheduledLabel: `每天 ${mapping.time || config.value?.global?.autoPilotTime || '08:00'}`,
+      status: 'configured',
+      statusLabel: '计划已配置',
+      accountLabel,
+      partitionId: mapping.partitionId,
+      partitionLabel: mapping.partitionLabel,
+      sourceMode: config.value?.global?.autoPilotUseCurrentRanking ? 'current_ranking' : 'refresh_ranking',
+      queueJobId: ''
+    };
+  }));
+
+  const generatedAutoPilotJobs = computed(() => jobs.value
+    .filter((job) => job?.autoPilot && !job.archived)
+    .map((job) => {
+      const task = (Array.isArray(job.platformTasks) ? job.platformTasks : []).find((item) => item.platform === 'wechatChannels') || null;
+      const pipelineMode = String(job?.autoPilot?.pipelineMode || job?.autoPilot?.mode || 'vertical').trim() || 'vertical';
+      const modeDef = AUTO_PILOT_PIPELINE_DEFS.find((item) => item.key === pipelineMode);
+      return {
+        id: job.id,
+        title: job.publishData?.title || job.asset?.label || '自动化任务',
+        rank: Number(job?.autoPilot?.rank || 0),
+        sourceRank: Number(job?.autoPilot?.sourceRank || job?.asset?.metadata?.sourceRank || job?.autoPilot?.rank || 0),
+        pipelineMode,
+        pipelineLabel: modeDef?.label || pipelineMode,
+        scheduledAt: job.scheduledAt || '',
+        scheduledLabel: '',
+        status: getJobTerminalState(job),
+        statusLabel: getJobStatusLabel(job),
+        accountLabel: task?.accountLabel || task?.accountId || job?.platformSelections?.wechatChannels?.accountLabel || job?.platformSelections?.wechatChannels?.accountId || '未指定账号',
+        partitionId: job?.autoPilot?.sourcePartitionId || job?.asset?.metadata?.sourcePartitionId || '',
+        partitionLabel: job?.autoPilot?.sourcePartitionLabel || job?.asset?.metadata?.sourcePartitionLabel || '',
+        sourceMode: job?.autoPilot?.sourceMode || '',
+        queueJobId: job?.autoPilot?.queueJobId || ''
+      };
+    })
+    .sort((a, b) => {
+      const aTime = new Date(a.scheduledAt || 0).getTime() || 0;
+      const bTime = new Date(b.scheduledAt || 0).getTime() || 0;
+      if (aTime !== bTime) return aTime - bTime;
+      return String(b.id).localeCompare(String(a.id));
+    }));
+
+  const autoPilotJobs = computed(() => [
+    ...autoPilotConfiguredPlans.value,
+    ...generatedAutoPilotJobs.value
+  ]);
+
+  const formatAutoPilotJobTime = (value) => {
+    if (!value) return '未设定';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString('zh-CN', { hour12: false });
+  };
+
   const autoPilotSummaryItems = computed(() => {
     const global = config.value?.global || {};
     const enabled = Boolean(global.autoPilotEnabled);
     const fetchTime = String(global.autoPilotFetchTime || '07:30').trim();
     const useCurrentRanking = Boolean(global.autoPilotUseCurrentRanking);
+    const pipelineLabels = AUTO_PILOT_PIPELINE_DEFS
+      .filter((item) => activeAutoPilotPipelineModes.value.includes(item.key))
+      .map((item) => item.label);
     
     const assignedAccounts = activeAutoPilotMappings.value.map(m => {
       const account = wechatAccounts.value.find((item) => item.id === m.accountId);
       const label = account?.displayName || account?.helperAccount || account?.finderUserName || m.accountId || '未知账号';
-      return `Top ${m.rank}: ${label} @ ${m.time}`;
+      return `${m.pipelineLabel}: ${m.partitionLabel || '默认分区'} Top ${m.sourceRank || 1} -> ${label} @ ${m.time}`;
     });
 
     if (!assignedAccounts.length) {
@@ -334,6 +502,7 @@ const clearErrorState = () => {
 
     return [
       { label: '托管状态', value: enabled ? '已开启' : '未开启' },
+      { label: '制作模式', value: pipelineLabels.join(' + ') || '不带数字人' },
       { label: '榜单来源', value: useCurrentRanking ? '使用当前榜单' : '到点重新抓榜' },
       { label: '抓榜时间', value: useCurrentRanking ? '保存配置即触发' : fetchTime },
       { label: '触发计划', value: enabled ? (useCurrentRanking ? '保存配置时立即检测任务' : `周期性触发 (下次: ${nextTrigger.toLocaleString('zh-CN', { hour12: false })})`) : '托管关闭' },
@@ -379,8 +548,8 @@ const clearErrorState = () => {
     if (!asset) return;
     editor.value.title = asset.metadata?.suggestedTitle || asset.compactLabel || asset.label || '';
     editor.value.description = '';
-    editor.value.tagStrategy = 'system';
-    editor.value.tags = normalizeTags(asset.metadata?.suggestedTags || []).join(', ');
+    editor.value.tagStrategy = 'model';
+    editor.value.tags = '';
     editor.value.coverUrl = asset.metadata?.coverUrl || '';
     if (!editor.value.platformSelections.wechatChannels.accountId && wechatAccounts.value.length) {
       editor.value.platformSelections.wechatChannels.accountId = wechatAccounts.value[0].id;
@@ -424,16 +593,18 @@ const clearErrorState = () => {
     }
     const keepId = selectedAssetId.value;
     try {
-      const [assetsRes, jobsRes, configRes, selfCheckRes] = await Promise.all([
+      const [assetsRes, jobsRes, configRes, selfCheckRes, xaiConfigRes] = await Promise.all([
         axios.get('/api/publish/assets', { params: { refresh: force ? 1 : 0 } }),
         axios.get('/api/publish/jobs'),
         axios.get('/api/publish/config'),
-        axios.get('/api/system/self-check')
+        axios.get('/api/system/self-check'),
+        axios.get('/api/xai-top10/config').catch(() => ({ data: { config: { partitions: [] } } }))
       ]);
       assets.value = assetsRes.data.assets || [];
       jobs.value = jobsRes.data.jobs || [];
       config.value = configRes.data.config || {};
       selfCheck.value = selfCheckRes.data?.report || null;
+      xaiPartitions.value = xaiConfigRes.data?.config?.partitions || [];
       if (!editor.value.platformSelections.wechatChannels.accountId && (config.value?.wechatChannels?.accounts || []).length) {
         editor.value.platformSelections.wechatChannels.accountId = config.value.wechatChannels.accounts[0].id;
       }
@@ -524,7 +695,9 @@ const clearErrorState = () => {
       ...config.value,
       [platformKey]: {
         ...config.value[platformKey],
-        [field]: typeof config.value[platformKey][field] === 'boolean' ? Boolean(value) : (Array.isArray(value) ? value : String(value ?? ''))
+        [field]: typeof config.value[platformKey][field] === 'boolean'
+          ? Boolean(value)
+          : (Array.isArray(value) || (value && typeof value === 'object') ? value : String(value ?? ''))
       }
     };
   };
@@ -533,6 +706,35 @@ const clearErrorState = () => {
     const arr = normalizeStringArray(config.value?.global?.[field]);
     arr[index] = value;
     updateConfigField('global', field, arr);
+  };
+
+  const updateAutoPilotModeArray = (mode, field, index, value) => {
+    const schedules = normalizeAutoPilotModeSchedules(config.value?.global?.autoPilotModeSchedules);
+    const current = schedules[mode] || { accountIds: [], times: [], partitionIds: [], sourceRanks: [] };
+    const key = field === 'times'
+      ? 'times'
+      : (field === 'partitionIds' ? 'partitionIds' : (field === 'sourceRanks' ? 'sourceRanks' : 'accountIds'));
+    const arr = normalizeStringArray(current[key]);
+    arr[index] = value;
+    updateConfigField('global', 'autoPilotModeSchedules', {
+      ...schedules,
+      [mode]: {
+        ...current,
+        [key]: arr
+      }
+    });
+  };
+
+  const toggleAutoPilotPipelineMode = (mode, checked) => {
+    const current = new Set(activeAutoPilotPipelineModes.value);
+    if (checked) current.add(mode);
+    else current.delete(mode);
+    const nextModes = AUTO_PILOT_PIPELINE_DEFS
+      .map((item) => item.key)
+      .filter((key) => current.has(key));
+    const normalizedModes = nextModes.length ? nextModes : ['vertical'];
+    updateConfigField('global', 'autoPilotPipelineModes', normalizedModes);
+    updateConfigField('global', 'pipelineMode', normalizedModes[0]);
   };
 
   const addAutoPilotMapping = (rank) => {
@@ -549,6 +751,33 @@ const clearErrorState = () => {
     const rIdx = rank - 1;
     if (rIdx < 0) return;
     updateAutoPilotArray('autoPilotAccountIds', rIdx, '');
+  };
+
+  const addAutoPilotModeMapping = (mode, rank) => {
+    const rIdx = rank - 1;
+    if (rIdx < 0) return;
+    const schedule = getAutoPilotModeSchedule(mode);
+    const accountIds = normalizeStringArray(schedule.accountIds);
+    if (!accountIds[rIdx] && wechatAccounts.value.length > 0) {
+      updateAutoPilotModeArray(mode, 'accountIds', rIdx, wechatAccounts.value[0].id);
+      updateAutoPilotModeArray(mode, 'times', rIdx, config.value.global?.autoPilotTime || '08:00');
+      updateAutoPilotModeArray(mode, 'partitionIds', rIdx, config.value.global?.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
+      updateAutoPilotModeArray(mode, 'sourceRanks', rIdx, 1);
+    }
+  };
+
+  const removeAutoPilotModeMapping = (mode, rank) => {
+    const rIdx = rank - 1;
+    if (rIdx < 0) return;
+    updateAutoPilotModeArray(mode, 'accountIds', rIdx, '');
+  };
+
+  const getNextAutoPilotMappingSlot = (mode) => {
+    const usedSlots = new Set(getAutoPilotMappingsForMode(mode).map((mapping) => mapping.slot || mapping.rank));
+    for (let rank = 1; rank <= 10; rank += 1) {
+      if (!usedSlots.has(rank)) return rank;
+    }
+    return 10;
   };
 
   const createWechatAccount = () => ({
@@ -892,9 +1121,15 @@ const clearErrorState = () => {
     editor,
     jobFilter,
     platformDefs,
+    autoPilotPipelineDefs: AUTO_PILOT_PIPELINE_DEFS,
     platformCards,
     wechatAccounts,
+    xaiPartitionOptions,
+    activeAutoPilotPipelineModes,
     activeAutoPilotMappings,
+    getAutoPilotMappingsForMode,
+    getNextAutoPilotMappingSlot,
+    autoPilotJobs,
     autoPilotSummaryItems,
     qrCodeData,
     testWechatLogin,
@@ -910,6 +1145,10 @@ const clearErrorState = () => {
     selectAsset,
     updateConfigField,
     updateAutoPilotArray,
+    updateAutoPilotModeArray,
+    toggleAutoPilotPipelineMode,
+    addAutoPilotModeMapping,
+    removeAutoPilotModeMapping,
     applySuggestedTitle,
     applySuggestedTags,
     loadJobIntoEditor,
@@ -937,6 +1176,7 @@ const clearErrorState = () => {
     getJobStatusLabel,
     getWechatProgress,
     canRunWechat,
+    formatAutoPilotJobTime,
     // 登录状态检测函数
     accountLoginStatus,
     checkingLoginAccounts,

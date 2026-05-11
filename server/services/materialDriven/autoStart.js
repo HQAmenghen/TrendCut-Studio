@@ -16,7 +16,7 @@ const { prepareNarrationTextForAvatarWorkflow } = require('./avatarWorkflow');
 const { resolvePresetFile } = require('./presetResolver');
 const { synthesizeQwenTtsSpeech } = require('./qwenTts');
 const { buildMaterialDrivenPipelineArgs } = require('./retryPlan');
-const { writeTaskState } = require('./taskState');
+const { normalizeSourceMeta, writeTaskState } = require('./taskState');
 const { readWorkflow } = require('../pipeline/workflow');
 const { activeTasks } = require('./sharedState');
 
@@ -65,6 +65,28 @@ function firstExistingFile(candidates = []) {
     } catch (_err) {}
   }
   return '';
+}
+
+function resolvePresetFileWithFallback(dirPath, requestedName = '', fallbackRequests = []) {
+  const resolved = resolvePresetFile(dirPath, requestedName);
+  if (resolved.path || !requestedName) return resolved;
+  for (const candidate of fallbackRequests) {
+    const fallback = resolvePresetFile(dirPath, candidate);
+    if (fallback.path) {
+      return {
+        ...fallback,
+        missingName: requestedName,
+        matchType: 'fallback_related_preset'
+      };
+    }
+  }
+  const fallback = resolvePresetFile(dirPath, '');
+  if (!fallback.path) return resolved;
+  return {
+    ...fallback,
+    missingName: requestedName,
+    matchType: 'fallback_first_available'
+  };
 }
 
 function summarizeFailureMessage(stderrTail, code) {
@@ -119,6 +141,9 @@ function getTaskStatus(jobId) {
  * @param {string} [params.author] - 来源作者
  * @param {string} [params.postId] - 来源帖子ID
  * @param {string} [params.postUrl] - 来源帖子URL
+ * @param {string} [params.sourcePartitionId] - 来源榜单分区ID
+ * @param {string} [params.sourcePartitionLabel] - 来源榜单分区名称
+ * @param {number} [params.sourceRank] - 来源榜单排名
  * @param {Object} [params.avatarConfig] - 数字人配置 { serverUrl, audioPreset, imagePreset, genText }
  * @param {boolean} [params.useSmartClip=true]
  * @param {boolean} [params.useCache=true]
@@ -133,6 +158,9 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     author = '',
     postId = '',
     postUrl: sourcePostUrl = '',
+    sourcePartitionId = '',
+    sourcePartitionLabel = '',
+    sourceRank = 0,
     avatarConfig: rawAvatarConfig = {},
     useSmartClip = true,
     useCache = true,
@@ -170,6 +198,15 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     audioUploadPath: '',
     imageUploadPath: ''
   };
+  const sourceMeta = normalizeSourceMeta({
+    sourceAuthor: author,
+    sourcePostId: postId,
+    sourcePartitionId,
+    sourcePartitionLabel,
+    sourceRank,
+    videoUrl,
+    postUrl: sourcePostUrl
+  });
 
   // 保存来源信息
   const sourcePostPayload = {
@@ -179,6 +216,10 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     postId,
     postUrl: sourcePostUrl,
     materialUrl: videoUrl,
+    sourcePartitionId: sourceMeta.sourcePartitionId,
+    sourcePartitionLabel: sourceMeta.sourcePartitionLabel,
+    sourceRank: sourceMeta.sourceRank,
+    sourceMeta,
     savedAt: nowIso()
   };
   try {
@@ -249,6 +290,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     lastStdout: '',
     lastStderr: '',
     avatarConfig,
+    sourceMeta,
     sourcePost: sourcePostPayload
   };
 
@@ -256,6 +298,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     useSmartClip,
     useCache,
     autoGenerate,
+    sourceMeta,
     avatarConfig
   });
 
@@ -376,7 +419,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
  * 自动生成数字人 (ComfyUI + Qwen3TTS)
  */
 async function generateAvatar(paths, jobId, task) {
-  const cfg = task.avatarConfig || {};
+  let cfg = task.avatarConfig || {};
   const narrationPath = path.join(task.outputPath, 'narration.json');
   let narrationText = String(cfg.genText || '').trim();
 
@@ -395,14 +438,41 @@ async function generateAvatar(paths, jobId, task) {
 
   const audioPresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'audio');
   const imagePresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'image');
-  const resolvedAudioPreset = resolvePresetFile(audioPresetDir, cfg.audioPreset);
-  const resolvedImagePreset = resolvePresetFile(imagePresetDir, cfg.imagePreset);
+  const resolvedAudioPreset = resolvePresetFileWithFallback(audioPresetDir, cfg.audioPreset, [cfg.imagePreset]);
+  const resolvedImagePreset = resolvePresetFileWithFallback(imagePresetDir, cfg.imagePreset, [cfg.audioPreset]);
 
   const audioPath = firstExistingFile([resolvedAudioPreset.path]);
   const imagePath = firstExistingFile([resolvedImagePreset.path]);
 
   if (!audioPath) throw new Error('未找到可用音频素材（audio preset）');
   if (!imagePath) throw new Error('未找到可用人物图片（image preset）');
+  let presetFallbackApplied = false;
+  if (String(resolvedAudioPreset.matchType || '').startsWith('fallback_')) {
+    addTaskLog(task, `音频预设 ${resolvedAudioPreset.missingName} 不存在，已自动改用 ${resolvedAudioPreset.resolvedName}`, 'warning');
+    task.avatarConfig = {
+      ...(task.avatarConfig || cfg),
+      audioPreset: resolvedAudioPreset.resolvedName
+    };
+    presetFallbackApplied = true;
+  }
+  if (String(resolvedImagePreset.matchType || '').startsWith('fallback_')) {
+    addTaskLog(task, `人物预设 ${resolvedImagePreset.missingName} 不存在，已自动改用 ${resolvedImagePreset.resolvedName}`, 'warning');
+    task.avatarConfig = {
+      ...(task.avatarConfig || cfg),
+      imagePreset: resolvedImagePreset.resolvedName
+    };
+    presetFallbackApplied = true;
+  }
+  if (presetFallbackApplied) {
+    writeTaskState(task.outputPath, {
+      useSmartClip: task.useSmartClip,
+      useCache: task.useCache,
+      autoGenerate: task.autoGenerate,
+      sourceMeta: task.sourceMeta || {},
+      avatarConfig: task.avatarConfig
+    });
+    cfg = task.avatarConfig || cfg;
+  }
 
   const referenceAudio = prepareReferenceAudio({
     inputPath: audioPath,

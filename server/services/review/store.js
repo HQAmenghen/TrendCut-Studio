@@ -282,7 +282,8 @@ function getReviewHistory(limit = 50, offset = 0) {
 function deleteReviewRecord(id) {
   const db = getReviewDb();
   try {
-    db.prepare('DELETE FROM ai_review_records WHERE id = ?').run(id);
+    const result = db.prepare('DELETE FROM ai_review_records WHERE id = ?').run(id);
+    return result.changes || 0;
   } finally {
     db.close();
   }

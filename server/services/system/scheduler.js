@@ -2,11 +2,20 @@ const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const { readProjectEnv } = require('../../../scripts/utils/env');
-const { enqueueRegenerationFromReview } = require('../review/regenerate');
 const { runCleanup, getCleanupConfig } = require('../../core/cleanup');
 
 const SCHEDULER_TIME_ZONE = 'Asia/Shanghai';
 const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.log');
+const DEFAULT_XAI_PARTITION_ID = 'crypto';
+
+function normalizeXaiPartitionId(value, fallback = DEFAULT_XAI_PARTITION_ID) {
+  const raw = String(value || '').trim().toLowerCase();
+  const normalized = raw
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return normalized || fallback;
+}
 
 function ensureSchedulerLogDir() {
   fs.mkdirSync(path.dirname(SCHEDULER_LOG_PATH), { recursive: true });
@@ -90,14 +99,16 @@ function formatJobBrief(job) {
   };
 }
 
-function normalizeRankingItem(item = {}) {
+function normalizeRankingItem(item = {}, partition = {}) {
   return {
     title: item.title,
     summary: item.author_summary_zh || item.author_summary || item.summary,
     videoUrl: item.video_url || item.videoUrl,
     author: item.author,
     postId: item.post_id || item.postId,
-    postUrl: item.post_url || item.postUrl
+    postUrl: item.post_url || item.postUrl,
+    sourcePartitionId: item.source_partition_id || item.sourcePartitionId || partition.id || '',
+    sourcePartitionLabel: item.source_partition_label || item.sourcePartitionLabel || partition.label || ''
   };
 }
 
@@ -126,6 +137,115 @@ function createAutoPilotActiveKey(normalized, rank) {
   if (postId) return `post:${postId}`;
 
   return `rank:${rank}`;
+}
+
+function getAutoPilotPipelineModes(config = {}) {
+  const allowedModes = new Set(['vertical', 'avatar']);
+  const fallback = String(config?.global?.pipelineMode || 'vertical').trim() || 'vertical';
+  const source = Array.isArray(config?.global?.autoPilotPipelineModes)
+    ? config.global.autoPilotPipelineModes
+    : [fallback];
+  const modes = [];
+  for (const item of source) {
+    const mode = String(item || '').trim();
+    if (allowedModes.has(mode) && !modes.includes(mode)) {
+      modes.push(mode);
+    }
+  }
+  return modes.length ? modes : ['vertical'];
+}
+
+function trimTrailingEmptyStrings(items = []) {
+  const values = Array.isArray(items) ? items.map((item) => String(item || '').trim()) : [];
+  while (values.length > 0 && !values[values.length - 1]) {
+    values.pop();
+  }
+  return values;
+}
+
+function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
+  const mode = String(pipelineMode || 'vertical').trim() || 'vertical';
+  const schedule = config?.global?.autoPilotModeSchedules?.[mode] || {};
+  const accountIds = Array.isArray(schedule.accountIds)
+    ? trimTrailingEmptyStrings(schedule.accountIds)
+    : [];
+  const times = Array.isArray(schedule.times)
+    ? trimTrailingEmptyStrings(schedule.times)
+    : [];
+  const partitionIds = Array.isArray(schedule.partitionIds)
+    ? trimTrailingEmptyStrings(schedule.partitionIds)
+    : [];
+  const sourceRanks = Array.isArray(schedule.sourceRanks)
+    ? trimTrailingEmptyStrings(schedule.sourceRanks)
+    : [];
+
+  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length) {
+    return { accountIds, times, partitionIds, sourceRanks };
+  }
+
+  return {
+    accountIds: Array.isArray(config?.global?.autoPilotAccountIds)
+      ? trimTrailingEmptyStrings(config.global.autoPilotAccountIds)
+      : [],
+    times: Array.isArray(config?.global?.autoPilotTimes)
+      ? trimTrailingEmptyStrings(config.global.autoPilotTimes)
+      : [],
+    partitionIds: [],
+    sourceRanks: []
+  };
+}
+
+function getAutoPilotSlotPartitionId(config = {}, pipelineMode = 'vertical', rankIndex = 0) {
+  const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+  return normalizeXaiPartitionId(
+    modeSchedule.partitionIds?.[rankIndex]
+    || config?.global?.autoPilotPartitionId
+    || DEFAULT_XAI_PARTITION_ID
+  );
+}
+
+function normalizeAutoPilotSourceRank(value, fallback = 1) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(10, parsed));
+}
+
+function getAutoPilotSlotSourceRank(config = {}, pipelineMode = 'vertical', rankIndex = 0) {
+  const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+  return normalizeAutoPilotSourceRank(modeSchedule.sourceRanks?.[rankIndex], rankIndex + 1);
+}
+
+function getAutoPilotRequiredPartitionIds(config = {}) {
+  const partitionIds = new Set();
+  const configCount = Math.max(1, Number(config?.global?.autoPilotCount) || 1);
+  for (const pipelineMode of getAutoPilotPipelineModes(config)) {
+    const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+    const count = Math.max(
+      configCount,
+      modeSchedule.accountIds?.length || 0,
+      modeSchedule.partitionIds?.length || 0,
+      modeSchedule.sourceRanks?.length || 0
+    );
+    for (let index = 0; index < count; index += 1) {
+      partitionIds.add(getAutoPilotSlotPartitionId(config, pipelineMode, index));
+    }
+  }
+  return Array.from(partitionIds);
+}
+
+function getRankingForPartition(rankings, partitionId) {
+  const id = normalizeXaiPartitionId(partitionId);
+  if (!rankings) return null;
+  if (rankings instanceof Map) {
+    return rankings.get(id) || rankings.get(DEFAULT_XAI_PARTITION_ID) || null;
+  }
+  if (rankings[id]) return rankings[id];
+  if (Array.isArray(rankings.items)) return rankings;
+  return null;
+}
+
+function getJobAutoPilotPipelineMode(job) {
+  return String(job?.autoPilot?.pipelineMode || job?.autoPilot?.mode || 'vertical').trim() || 'vertical';
 }
 
 function getWechatAccountId(job) {
@@ -167,9 +287,11 @@ function findExistingAutoPilotPublishJob(jobs, identity) {
   const queueJobId = String(identity?.queueJobId || '').trim();
   const sourceVideoKey = String(identity?.sourceVideoKey || '').trim();
   const accountId = String(identity?.accountId || '').trim();
+  const pipelineMode = String(identity?.pipelineMode || '').trim();
 
   return (jobs || []).find((job) => {
     if (!job || job.archived) return false;
+    if (pipelineMode && getJobAutoPilotPipelineMode(job) !== pipelineMode) return false;
 
     if (hasSameAssetReference(job, queueJobId, identity?.asset)) {
       return true;
@@ -185,7 +307,7 @@ function findExistingAutoPilotPublishJob(jobs, identity) {
 }
 
 
-function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, taskStore, generatePublishDescription, publishAssetsService, loginStatusService, feishuService, writeMediaMetadata, materialDrivenStarter }) {
+function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, taskStore, generatePublishDescription, publishAssetsService, loginStatusService, feishuService, materialDrivenStarter }) {
   logInfo('[Scheduler] 初始化定时调度引擎 - node-cron', {
     timeZone: SCHEDULER_TIME_ZONE,
     logPath: SCHEDULER_LOG_PATH
@@ -201,192 +323,284 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
   const SERVER_PORT = process.env.PORT || 3001;
 
   async function enqueueAutoPilotTopItems(config, result, nowParts, sourceMode) {
-    const configCount = Math.max(1, Number(config?.global?.autoPilotCount) || 1);
-    const targetAccountIds = config?.global?.autoPilotAccountIds || [];
-    const mappingLength = targetAccountIds.length;
-    const count = Math.max(configCount, mappingLength);
-    const rankingItems = Array.isArray(result?.items) ? result.items : [];
-    if (rankingItems.length === 0) {
-      logWarn('[AutoPilot] 当前榜单没有可用内容，结束本轮流水线', {
-        localDate: nowParts.dateStr,
-        sourceMode
-      });
-      return;
+    const pipelineModes = getAutoPilotPipelineModes(config);
+    for (const pipelineMode of pipelineModes) {
+      await enqueueAutoPilotTopItemsForMode(config, result, nowParts, sourceMode, pipelineMode);
     }
+  }
 
+  async function enqueueAutoPilotTopItemsForMode(config, rankings, nowParts, sourceMode, pipelineMode) {
+    const configCount = Math.max(1, Number(config?.global?.autoPilotCount) || 1);
+    const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+    const targetAccountIds = modeSchedule.accountIds || [];
+    const targetPartitionIds = modeSchedule.partitionIds || [];
+    const targetSourceRanks = modeSchedule.sourceRanks || [];
+    const mappingLength = Math.max(targetAccountIds.length, targetPartitionIds.length, targetSourceRanks.length);
+    const count = Math.max(configCount, mappingLength);
+    const sourceIndexByPartition = new Map();
     let rank = 0;
-    let sourceIndex = 0;
 
-    while (rank < count && sourceIndex < rankingItems.length) {
-      const itemRank = sourceIndex + 1;
-      const normalized = normalizeRankingItem(rankingItems[sourceIndex]);
-      sourceIndex += 1;
-
+    while (rank < count) {
       const assignedAccountId = String(targetAccountIds[rank] || '').trim();
+      const partitionId = getAutoPilotSlotPartitionId(config, pipelineMode, rank);
+      const explicitSourceRank = Boolean(String(targetSourceRanks[rank] || '').trim());
+      const configuredSourceRank = getAutoPilotSlotSourceRank(config, pipelineMode, rank);
+      const result = getRankingForPartition(rankings, partitionId);
+      const partition = result?.partition || { id: partitionId, label: partitionId };
+      const rankingItems = Array.isArray(result?.items) ? result.items : [];
 
       if (targetAccountIds.length > 0 && !assignedAccountId) {
         logInfo('[AutoPilot] 检测到当前排名映射为空，已跳过该排名的渲染与发布', {
           rank: rank + 1,
-          sourceRank: itemRank,
-          title: normalized.title || '',
-          sourceMode
+          sourceMode,
+          pipelineMode,
+          sourcePartitionId: partitionId
         });
         rank += 1;
         continue;
       }
-      if (!normalized.videoUrl) {
-        logWarn('[AutoPilot] 当前榜单项缺少视频地址，已跳过', {
+
+      if (rankingItems.length === 0) {
+        logWarn('[AutoPilot] 当前分区榜单没有可用内容，已跳过该账号槽', {
+          localDate: nowParts.dateStr,
           rank: rank + 1,
-          sourceRank: itemRank,
-          title: normalized.title || '',
-          author: normalized.author || '',
-          sourceMode
-        });
-        continue;
-      }
-      const activeKey = createAutoPilotActiveKey(normalized, rank + 1);
-      if (autoPilotActiveKeys.has(activeKey)) {
-        logWarn('[AutoPilot] 当前榜单项源视频已在自动流水线中，继续向后查找替补内容', {
-          rank: rank + 1,
-          sourceRank: itemRank,
-          title: normalized.title || '',
-          author: normalized.author || '',
           sourceMode,
-          activeKey
+          pipelineMode,
+          sourcePartitionId: partitionId,
+          sourcePartitionLabel: partition.label || ''
         });
+        rank += 1;
         continue;
       }
 
-      const sourceVideoKey = normalizeSourceVideoKey(normalized.videoUrl);
-      if (publishStore && typeof publishStore.readPublishJobs === 'function') {
-        try {
-          const payload = publishStore.readPublishJobs();
-          const existingJob = findExistingAutoPilotPublishJob(payload.jobs || [], { sourceVideoKey });
-          if (existingJob) {
-            logWarn('[AutoPilot] 当前榜单项源视频已存在发布任务，继续向后查找替补内容', {
+      let slotHandled = false;
+      while (!slotHandled && (sourceIndexByPartition.get(partitionId) || 0) < rankingItems.length) {
+        const sourceIndex = explicitSourceRank
+          ? Math.max(configuredSourceRank - 1, sourceIndexByPartition.get(partitionId) || 0)
+          : (sourceIndexByPartition.get(partitionId) || 0);
+        const itemRank = sourceIndex + 1;
+        const normalized = normalizeRankingItem(rankingItems[sourceIndex], partition);
+        sourceIndexByPartition.set(partitionId, sourceIndex + 1);
+
+        if (!normalized.videoUrl) {
+          logWarn('[AutoPilot] 当前榜单项缺少视频地址，已跳过', {
+            rank: rank + 1,
+            sourceRank: itemRank,
+            title: normalized.title || '',
+            author: normalized.author || '',
+            sourceMode,
+            pipelineMode,
+            sourcePartitionId: normalized.sourcePartitionId || partitionId
+          });
+          continue;
+        }
+        const activeKey = `${pipelineMode}:${createAutoPilotActiveKey(normalized, rank + 1)}`;
+        if (autoPilotActiveKeys.has(activeKey)) {
+          logWarn('[AutoPilot] 当前榜单项源视频已在自动流水线中，继续向后查找替补内容', {
+            rank: rank + 1,
+            sourceRank: itemRank,
+            title: normalized.title || '',
+            author: normalized.author || '',
+            sourceMode,
+            pipelineMode,
+            activeKey,
+            sourcePartitionId: normalized.sourcePartitionId || partitionId
+          });
+          continue;
+        }
+
+        const sourceVideoKey = normalizeSourceVideoKey(normalized.videoUrl);
+        if (publishStore && typeof publishStore.readPublishJobs === 'function') {
+          try {
+            const payload = publishStore.readPublishJobs();
+            const existingJob = findExistingAutoPilotPublishJob(payload.jobs || [], { sourceVideoKey, pipelineMode });
+            if (existingJob) {
+              logWarn('[AutoPilot] 当前榜单项源视频已存在发布任务，继续向后查找替补内容', {
+                rank: rank + 1,
+                sourceRank: itemRank,
+                title: normalized.title || '',
+                author: normalized.author || '',
+                existingJobId: existingJob.id || '',
+                sourceMode,
+                sourceVideoKey,
+                sourcePartitionId: normalized.sourcePartitionId || partitionId
+              });
+              continue;
+            }
+          } catch (err) {
+            logWarn('[AutoPilot] 检查已有发布任务失败，继续按当前榜单项入队', {
               rank: rank + 1,
               sourceRank: itemRank,
               title: normalized.title || '',
-              author: normalized.author || '',
-              existingJobId: existingJob.id || '',
-              sourceMode,
-              sourceVideoKey
+              error: err.message
             });
-            continue;
           }
-        } catch (err) {
-          logWarn('[AutoPilot] 检查已有发布任务失败，继续按当前榜单项入队', {
-            rank: rank + 1,
-            sourceRank: itemRank,
-            title: normalized.title || '',
-            error: err.message
-          });
         }
-      }
 
-      const pipelineMode = String(config?.global?.pipelineMode || 'vertical').trim();
-
-      if (pipelineMode === 'avatar' && materialDrivenStarter && typeof materialDrivenStarter.start === 'function') {
-        try {
-          const avatarConfig = config?.global?.avatarPipelineConfig || {};
-          avatarPendingQueue.push({
+        if (pipelineMode === 'avatar' && materialDrivenStarter && typeof materialDrivenStarter.start === 'function') {
+          try {
+            const avatarConfig = config?.global?.avatarPipelineConfig || {};
+            avatarPendingQueue.push({
+              rank,
+              activeKey,
+              sourceMode,
+              pipelineMode,
+              itemRank,
+              normalized,
+              sourceRank: itemRank,
+              sourcePartitionId: normalized.sourcePartitionId || partitionId,
+              sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+              avatarConfig: {
+                renderProvider: 'runninghub',
+                serverUrl: avatarConfig.serverUrl || '',
+                runningHubBaseUrl: avatarConfig.runningHubBaseUrl || '',
+                runningHubWorkflowId: avatarConfig.runningHubWorkflowId || '',
+                runningHubRunPath: avatarConfig.runningHubRunPath || '',
+                runningHubInstanceType: avatarConfig.runningHubInstanceType || '',
+                runningHubUsePersonalQueue: avatarConfig.runningHubUsePersonalQueue === true || avatarConfig.runningHubUsePersonalQueue === 'true',
+                runningHubAudioNodeId: avatarConfig.runningHubAudioNodeId || '',
+                runningHubAudioFieldName: avatarConfig.runningHubAudioFieldName || '',
+                runningHubImageNodeId: avatarConfig.runningHubImageNodeId || '',
+                runningHubImageFieldName: avatarConfig.runningHubImageFieldName || '',
+                runningHubOutputNodeId: avatarConfig.runningHubOutputNodeId || '',
+                audioPreset: avatarConfig.audioPreset || '',
+                imagePreset: avatarConfig.imagePreset || '',
+                genText: avatarConfig.genText || ''
+              }
+            });
+            autoPilotActiveKeys.add(activeKey);
+            logInfo('[AutoPilot] 已将榜单内容送入 AI剪辑+数字人 待执行队列', {
+              rank: rank + 1,
+              sourceRank: itemRank,
+              title: normalized.title,
+              author: normalized.author,
+              videoUrl: normalized.videoUrl,
+              pipelineMode: 'avatar',
+              sourceMode,
+              sourcePartitionId: normalized.sourcePartitionId || partitionId,
+              sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+              pendingCount: avatarPendingQueue.length
+            });
+            slotHandled = true;
+          } catch (err) {
+            logError('[AutoPilot] 送入队列失败，回退到竖屏直发', err, {
+              rank: rank + 1,
+              sourceRank: itemRank,
+              title: normalized.title || '',
+              pipelineMode: 'avatar'
+            });
+            if (verticalQueueService && typeof verticalQueueService.enqueue === 'function') {
+              const vjob = verticalQueueService.enqueue({
+                sourceType: sourceMode === 'current_ranking' ? 'xai_top10_cached' : 'xai_top10',
+                title: normalized.title,
+                summary: normalized.summary,
+                videoUrl: normalized.videoUrl,
+                author: normalized.author,
+                postId: normalized.postId,
+                postUrl: normalized.postUrl,
+                sourcePartitionId: normalized.sourcePartitionId || partitionId,
+                sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+                sourceRank: itemRank,
+                renderOptions: {}
+              });
+              autoPilotJobs.set(vjob.id, {
+                rank,
+                activeKey,
+                sourceMode,
+                pipelineMode,
+                sourcePartitionId: normalized.sourcePartitionId || partitionId,
+                sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+                sourceRank: itemRank
+              });
+              autoPilotActiveKeys.add(activeKey);
+              logInfo('[AutoPilot] 已回退到竖屏直发模式', {
+                rank: rank + 1,
+                queueJobId: vjob.id,
+                title: normalized.title
+              });
+              slotHandled = true;
+            }
+          }
+        } else if (verticalQueueService && typeof verticalQueueService.enqueue === 'function') {
+          const vjob = verticalQueueService.enqueue({
+            sourceType: sourceMode === 'current_ranking' ? 'xai_top10_cached' : 'xai_top10',
+            title: normalized.title,
+            summary: normalized.summary,
+            videoUrl: normalized.videoUrl,
+            author: normalized.author,
+            postId: normalized.postId,
+            postUrl: normalized.postUrl,
+            sourcePartitionId: normalized.sourcePartitionId || partitionId,
+            sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+            sourceRank: itemRank,
+            renderOptions: {}
+          });
+          autoPilotJobs.set(vjob.id, {
             rank,
             activeKey,
             sourceMode,
-            itemRank,
-            normalized,
-            avatarConfig: {
-              renderProvider: 'runninghub',
-              serverUrl: avatarConfig.serverUrl || '',
-              runningHubBaseUrl: avatarConfig.runningHubBaseUrl || '',
-              runningHubWorkflowId: avatarConfig.runningHubWorkflowId || '',
-              runningHubRunPath: avatarConfig.runningHubRunPath || '',
-              runningHubInstanceType: avatarConfig.runningHubInstanceType || '',
-              runningHubUsePersonalQueue: avatarConfig.runningHubUsePersonalQueue === true || avatarConfig.runningHubUsePersonalQueue === 'true',
-              runningHubAudioNodeId: avatarConfig.runningHubAudioNodeId || '',
-              runningHubAudioFieldName: avatarConfig.runningHubAudioFieldName || '',
-              runningHubImageNodeId: avatarConfig.runningHubImageNodeId || '',
-              runningHubImageFieldName: avatarConfig.runningHubImageFieldName || '',
-              runningHubOutputNodeId: avatarConfig.runningHubOutputNodeId || '',
-              audioPreset: avatarConfig.audioPreset || '',
-              imagePreset: avatarConfig.imagePreset || '',
-              genText: avatarConfig.genText || ''
-            }
+            pipelineMode,
+            sourcePartitionId: normalized.sourcePartitionId || partitionId,
+            sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+            sourceRank: itemRank
           });
           autoPilotActiveKeys.add(activeKey);
-          logInfo('[AutoPilot] 已将榜单内容送入 AI剪辑+数字人 待执行队列', {
+          logInfo('[AutoPilot] 已将榜单内容送入渲染队列', {
             rank: rank + 1,
             sourceRank: itemRank,
+            queueJobId: vjob.id,
             title: normalized.title,
             author: normalized.author,
             videoUrl: normalized.videoUrl,
-            pipelineMode: 'avatar',
             sourceMode,
-            pendingCount: avatarPendingQueue.length
+            pipelineMode,
+            sourcePartitionId: normalized.sourcePartitionId || partitionId,
+            sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || ''
           });
-          rank += 1;
-        } catch (err) {
-          logError('[AutoPilot] 送入队列失败，回退到竖屏直发', err, {
-            rank: rank + 1,
-            sourceRank: itemRank,
-            title: normalized.title || '',
-            pipelineMode: 'avatar'
-          });
-          if (verticalQueueService && typeof verticalQueueService.enqueue === 'function') {
-            const vjob = verticalQueueService.enqueue({
-              sourceType: sourceMode === 'current_ranking' ? 'xai_top10_cached' : 'xai_top10',
-              title: normalized.title,
-              summary: normalized.summary,
-              videoUrl: normalized.videoUrl,
-              author: normalized.author,
-              postId: normalized.postId,
-              postUrl: normalized.postUrl,
-              renderOptions: {}
-            });
-            autoPilotJobs.set(vjob.id, { rank, activeKey, sourceMode });
-            autoPilotActiveKeys.add(activeKey);
-            logInfo('[AutoPilot] 已回退到竖屏直发模式', {
-              rank: rank + 1,
-              queueJobId: vjob.id,
-              title: normalized.title
-            });
-          }
-          rank += 1;
+          slotHandled = true;
         }
-      } else if (verticalQueueService && typeof verticalQueueService.enqueue === 'function') {
-        const vjob = verticalQueueService.enqueue({
-          sourceType: sourceMode === 'current_ranking' ? 'xai_top10_cached' : 'xai_top10',
-          title: normalized.title,
-          summary: normalized.summary,
-          videoUrl: normalized.videoUrl,
-          author: normalized.author,
-          postId: normalized.postId,
-          postUrl: normalized.postUrl,
-          renderOptions: {}
-        });
-        autoPilotJobs.set(vjob.id, { rank, activeKey, sourceMode });
-        autoPilotActiveKeys.add(activeKey);
-        logInfo('[AutoPilot] 已将榜单内容送入渲染队列', {
+      }
+
+      if (!slotHandled) {
+        logWarn('[AutoPilot] 分区榜单已扫描完，未找到可用于该账号槽的不重复视频', {
+          requestedCount: count,
           rank: rank + 1,
-          sourceRank: itemRank,
-          queueJobId: vjob.id,
-          title: normalized.title,
-          author: normalized.author,
-          videoUrl: normalized.videoUrl,
+          scannedCount: sourceIndexByPartition.get(partitionId) || 0,
           sourceMode
         });
         rank += 1;
       }
+      rank += 1;
     }
 
     if (rank < count) {
       logWarn('[AutoPilot] 榜单已扫描完，未找到足够的不重复视频用于补齐账号槽位', {
         requestedCount: count,
         enqueuedCount: rank,
-        scannedCount: sourceIndex,
+        scannedCount: Array.from(sourceIndexByPartition.values()).reduce((total, value) => total + value, 0),
         sourceMode
       });
     }
+  }
+
+  async function loadAutoPilotRankings(config, sourceMode, reason) {
+    const partitionIds = getAutoPilotRequiredPartitionIds(config);
+    const rankings = new Map();
+    const dummyRes = { json: () => {}, send: () => {}, status() { return this; }, headersSent: false };
+
+    for (const partitionId of partitionIds) {
+      if (sourceMode === 'current_ranking') {
+        const result = xaiService.ensureTranslatedResult(partitionId);
+        rankings.set(partitionId, result);
+        continue;
+      }
+
+      await xaiService.run(`autopilot-${reason}-${partitionId}`, dummyRes, partitionId);
+      const result = xaiService.ensureTranslatedResult(partitionId);
+      rankings.set(partitionId, result);
+    }
+
+    return rankings;
   }
 
   async function triggerAutoPilotNow(config = publishStore?.readPublishConfig() || {}, options = {}) {
@@ -422,17 +636,15 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
       reason
     });
 
-    if (useCurrentRanking) {
-      const result = xaiService.ensureTranslatedResult();
-      await enqueueAutoPilotTopItems(config, result, nowParts, sourceMode);
-      return { triggered: true, sourceMode, count: Math.min((result?.items || []).length, config?.global?.autoPilotCount || 1) };
-    }
-
-    const dummyRes = { json: () => {}, send: () => {}, status() { return this; }, headersSent: false };
-    await xaiService.run(`autopilot-${reason}`, dummyRes);
-    const result = xaiService.ensureTranslatedResult();
-    await enqueueAutoPilotTopItems(config, result, nowParts, sourceMode);
-    return { triggered: true, sourceMode, count: Math.min((result?.items || []).length, config?.global?.autoPilotCount || 1) };
+    const rankings = await loadAutoPilotRankings(config, sourceMode, reason);
+    await enqueueAutoPilotTopItems(config, rankings, nowParts, sourceMode);
+    const totalItems = Array.from(rankings.values()).reduce((sum, result) => sum + (Array.isArray(result?.items) ? result.items.length : 0), 0);
+    return {
+      triggered: true,
+      sourceMode,
+      partitionIds: Array.from(rankings.keys()),
+      count: Math.min(totalItems, config?.global?.autoPilotCount || 1)
+    };
   }
 
   cron.schedule('* * * * *', async () => {
@@ -466,19 +678,18 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               });
 
               if (useCurrentRanking) {
-                const result = xaiService.ensureTranslatedResult();
+                const rankings = await loadAutoPilotRankings(config, 'current_ranking', 'cron');
                 logInfo('[AutoPilot] 已切换为使用当前榜单模式，本轮不会重新抓榜', {
                   localDate: nowParts.dateStr,
-                  resultUpdatedAt: xaiService.getStatus?.().resultUpdatedAt || null
+                  partitions: Array.from(rankings.keys())
                 });
-                await enqueueAutoPilotTopItems(config, result, nowParts, 'current_ranking');
+                await enqueueAutoPilotTopItems(config, rankings, nowParts, 'current_ranking');
               } else {
-                await xaiService.run('autopilot-cron', dummyRes);
-                const result = xaiService.ensureTranslatedResult();
-                await enqueueAutoPilotTopItems(config, result, nowParts, 'refresh_ranking');
+                const rankings = await loadAutoPilotRankings(config, 'refresh_ranking', 'cron');
+                await enqueueAutoPilotTopItems(config, rankings, nowParts, 'refresh_ranking');
               }
             } else {
-              xaiService.run('system-cron', dummyRes);
+              xaiService.run('system-cron', dummyRes, config?.global?.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
             }
           }
         } catch (err) {
@@ -501,24 +712,32 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             author: pendingTask.normalized.author,
             postId: pendingTask.normalized.postId,
             postUrl: pendingTask.normalized.postUrl,
+            sourcePartitionId: pendingTask.sourcePartitionId || pendingTask.normalized.sourcePartitionId || '',
+            sourcePartitionLabel: pendingTask.sourcePartitionLabel || pendingTask.normalized.sourcePartitionLabel || '',
+            sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0,
             avatarConfig: pendingTask.avatarConfig
           });
           autoPilotAvatarJobs.set(avatarJobId, {
             rank: pendingTask.rank,
             activeKey: pendingTask.activeKey,
             sourceMode: pendingTask.sourceMode,
+            pipelineMode: pendingTask.pipelineMode || 'avatar',
             outputPath: avatarOutputPath,
             title: pendingTask.normalized.title,
             summary: pendingTask.normalized.summary,
             author: pendingTask.normalized.author,
             postId: pendingTask.normalized.postId,
-            postUrl: pendingTask.normalized.postUrl
+            postUrl: pendingTask.normalized.postUrl,
+            sourcePartitionId: pendingTask.sourcePartitionId || pendingTask.normalized.sourcePartitionId || '',
+            sourcePartitionLabel: pendingTask.sourcePartitionLabel || pendingTask.normalized.sourcePartitionLabel || '',
+            sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0
           });
           logInfo('[AutoPilot] 调度器从队列中启动了新的 AI剪辑+数字人 任务', {
             rank: pendingTask.rank + 1,
             avatarJobId,
             outputPath: avatarOutputPath,
             title: pendingTask.normalized.title,
+            pipelineMode: pendingTask.pipelineMode || 'avatar',
             remainingInQueue: avatarPendingQueue.length
           });
         } catch (err) {
@@ -583,12 +802,19 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               author: meta.author || '',
               postId: meta.postId || '',
               postUrl: meta.postUrl || '',
+              sourcePartitionId: meta.sourcePartitionId || '',
+              sourcePartitionLabel: meta.sourcePartitionLabel || '',
+              sourceRank: meta.sourceRank || 0,
               renderOptions: {}
             });
             autoPilotJobs.set(vjob.id, {
               rank,
               activeKey,
-              sourceMode: meta.sourceMode || ''
+              sourceMode: meta.sourceMode || '',
+              pipelineMode: meta.pipelineMode || 'avatar',
+              sourcePartitionId: meta.sourcePartitionId || '',
+              sourcePartitionLabel: meta.sourcePartitionLabel || '',
+              sourceRank: meta.sourceRank || 0
             });
             logInfo('[AutoPilot:Avatar] 数字人成片已送入竖屏渲染队列', {
               avatarJobId,
@@ -605,6 +831,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
       for (const [vjobId, meta] of Array.from(autoPilotJobs.entries())) {
         const rank = typeof meta === 'object' ? meta.rank : meta;
         const activeKey = typeof meta === 'object' ? meta.activeKey : '';
+        const pipelineMode = typeof meta === 'object' ? String(meta.pipelineMode || 'vertical').trim() || 'vertical' : 'vertical';
+        const sourcePartitionId = typeof meta === 'object' ? String(meta.sourcePartitionId || '').trim() : '';
+        const sourcePartitionLabel = typeof meta === 'object' ? String(meta.sourcePartitionLabel || '').trim() : '';
+        const sourceRank = typeof meta === 'object' ? normalizeAutoPilotSourceRank(meta.sourceRank, rank + 1) : rank + 1;
         const vjob = verticalQueueService.getJob(vjobId);
         if (!vjob) {
           autoPilotJobs.delete(vjobId);
@@ -612,10 +842,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           logWarn('[AutoPilot] 渲染队列任务不存在，已从监控列表移除', { queueJobId: vjobId, rank: rank + 1 });
           continue;
         }
-        if (['cancelled', 'failed'].includes(vjob.status)) {
+        if (['cancelled', 'failed', 'skipped'].includes(vjob.status)) {
           autoPilotJobs.delete(vjobId);
           if (activeKey) autoPilotActiveKeys.delete(activeKey);
-          logWarn('[AutoPilot] 渲染任务失败或取消，停止后续自动发布', {
+          logWarn('[AutoPilot] 渲染任务失败、取消或跳过，停止后续自动发布', {
             queueJobId: vjobId,
             rank: rank + 1,
             status: vjob.status
@@ -629,7 +859,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           logInfo('[AutoPilot] 视频渲染完毕，开始自动创建发布任务', {
             queueJobId: vjobId,
             rank: rank + 1,
-            title: vjob.title || ''
+            title: vjob.title || '',
+            pipelineMode
           });
 
           publishAssetsService.resetPublishAssetsCache();
@@ -654,6 +885,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             const existingJob = findExistingAutoPilotPublishJob(payload.jobs || [], {
               queueJobId: vjobId,
               sourceVideoKey,
+              pipelineMode,
               asset
             });
             if (existingJob) {
@@ -674,89 +906,12 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             continue;
           }
 
-          try {
-            const { readReviewConfig } = require('../../services/review/store');
-            const reviewConfig = readReviewConfig();
-
-            if (reviewConfig.enabled && reviewConfig.require_manual_confirm) {
-              const aiReview = asset.metadata?.aiReview;
-
-              if (!aiReview || aiReview.status === 'pending' || aiReview.status === 'reviewing') {
-                logWarn('[AutoPilot] 视频尚未完成 AI 审核，跳过创建发布任务', {
-                  queueJobId: vjobId,
-                  rank: rank + 1,
-                  reviewStatus: aiReview?.status || 'not_reviewed',
-                  hint: '视频将保留在素材库中，可手动审核后发布'
-                });
-                continue;
-              }
-
-              if (aiReview.status === 'failed' && !aiReview.manuallySkipped) {
-                const regenerationMeta = asset.metadata?.regeneration || {};
-                const alreadyRetried = Number(regenerationMeta.attemptCount || 0) >= 1
-                  && String(regenerationMeta.previousReviewId || '') === String(aiReview.reviewId || '');
-
-                if (!alreadyRetried && Array.isArray(aiReview.fixSuggestions) && aiReview.fixSuggestions.length > 0) {
-                  try {
-                    const { job: regeneratedJob, adjustments } = enqueueRegenerationFromReview({
-                      videoPath: asset.path,
-                      metadata: asset.metadata || {},
-                      verticalQueueService,
-                      writeMediaMetadata,
-                      trigger: 'autopilot',
-                      sourceReview: aiReview
-                    });
-                    autoPilotJobs.set(regeneratedJob.id, { rank, activeKey });
-                    if (activeKey) autoPilotActiveKeys.add(activeKey);
-                    logInfo('[AutoPilot] 视频审核未达标，已按修改建议自动重新生成', {
-                      previousQueueJobId: vjobId,
-                      regeneratedQueueJobId: regeneratedJob.id,
-                      rank: rank + 1,
-                      overallScore: aiReview.overallScore || 0,
-                      appliedSuggestionsCount: adjustments.highPrioritySuggestions.length
-                    });
-                    continue;
-                  } catch (regenErr) {
-                    logWarn('[AutoPilot] 自动按建议重做失败，回退为跳过创建发布任务', {
-                      queueJobId: vjobId,
-                      rank: rank + 1,
-                      error: regenErr.message
-                    });
-                  }
-                }
-
-                logWarn('[AutoPilot] 视频 AI 审核未通过，跳过创建发布任务', {
-                  queueJobId: vjobId,
-                  rank: rank + 1,
-                  overallScore: aiReview.overallScore || 0,
-                  minPassScore: reviewConfig.min_pass_score || 70,
-                  hint: alreadyRetried
-                    ? '该视频已自动重做过一次，仍未达标，请在审核中心人工处理'
-                    : '可在审核中心查看修复建议或手动跳过审核'
-                });
-                continue;
-              }
-
-              logInfo('[AutoPilot] 视频已通过 AI 审核，继续创建发布任务', {
-                queueJobId: vjobId,
-                rank: rank + 1,
-                reviewStatus: aiReview.status,
-                overallScore: aiReview.overallScore || 0
-              });
-            }
-          } catch (reviewCheckErr) {
-            logWarn('[AutoPilot] 审核状态检查失败，继续创建发布任务', {
-              queueJobId: vjobId,
-              error: reviewCheckErr.message
-            });
-          }
-
           const sourceText = asset.metadata?.sourceSummary || asset.metadata?.suggestedDescription || '';
           const desc = await generatePublishDescription(
             sourceText,
             {
               title: asset.compactLabel || asset.label,
-              includeTags: false,
+              includeTags: true,
               allowFallback: false,
               timeoutMs: 180000
             }
@@ -773,13 +928,14 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           const publishData = {
             title: asset.compactLabel || asset.label,
             description: desc || asset.metadata?.suggestedDescription || '',
-            tagStrategy: 'system',
-            tags: ['热点速递', '每日快讯'],
+            tagStrategy: 'model',
+            tags: [],
             coverUrl: ''
           };
 
           const pcfg = config.wechatChannels;
-          const targetAccountIds = config?.global?.autoPilotAccountIds || [];
+          const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+          const targetAccountIds = modeSchedule.accountIds || [];
           const assignedAccountId = String(targetAccountIds[rank] || '').trim();
 
           let account = null;
@@ -807,7 +963,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             });
           }
 
-          const targetTimes = config?.global?.autoPilotTimes || [];
+          const targetTimes = modeSchedule.times || [];
           const targetTime = String(targetTimes[rank] || config?.global?.autoPilotTime || '08:00').trim();
           const isoScheduledTime = buildShanghaiIso(nowParts.dateStr, targetTime);
           const scheduledAlreadyDue = new Date(isoScheduledTime).getTime() <= Date.now();
@@ -833,9 +989,13 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               queueJobId: vjobId,
               rank: rank + 1,
               activeKey,
+              pipelineMode,
               sourceVideoUrl: asset.metadata?.videoUrl || asset.metadata?.sourceVideoUrl || '',
               sourcePostId: asset.metadata?.postId || asset.metadata?.sourcePostId || '',
-              sourceMode: typeof meta === 'object' ? meta.sourceMode || '' : ''
+              sourceMode: typeof meta === 'object' ? meta.sourceMode || '' : '',
+              sourcePartitionId: sourcePartitionId || asset.metadata?.sourcePartitionId || '',
+              sourcePartitionLabel: sourcePartitionLabel || asset.metadata?.sourcePartitionLabel || '',
+              sourceRank: sourceRank || asset.metadata?.sourceRank || 0
             }
           };
 
@@ -844,6 +1004,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             queueJobId: vjobId,
             sourceVideoKey,
             accountId: account?.id || '',
+            pipelineMode,
             asset
           });
           if (existingJobCheck) {
@@ -864,6 +1025,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             ...formatJobBrief(storedJob),
             queueJobId: vjobId,
             rank: rank + 1,
+            pipelineMode,
             localTargetDate: nowParts.dateStr,
             localTargetTime: targetTime,
             publishTimingMode: scheduledAlreadyDue ? 'catch_up_after_render' : 'scheduled',
@@ -930,24 +1092,6 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     for (const job of dueJobs) {
       logInfo('[Scheduler -> 微信发布] 定时任务到期，开始启动微信自动发布', formatJobBrief(job));
       try {
-        publishStore.updatePublishJob(job.id, (current) => {
-          current.status = 'ready';
-          if (Array.isArray(current.platformTasks)) {
-            for (const task of current.platformTasks) {
-              if (task.platform === 'wechatChannels') {
-                task.status = 'ready';
-                task.runtime = {
-                  ...(task.runtime || {}),
-                  state: 'ready',
-                  lastMessage: '定时任务已到期，准备启动微信自动发布',
-                  updatedAt: new Date().toISOString()
-                };
-              }
-            }
-          }
-          return current;
-        });
-
         if (wechatRpaService && typeof wechatRpaService.startWechatRpa === 'function') {
           wechatRpaService.startWechatRpa(job.id, 'publish').catch((err) => {
             logError('[Scheduler -> 微信发布] 启动失败', err, formatJobBrief(job));

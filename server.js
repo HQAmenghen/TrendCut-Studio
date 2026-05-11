@@ -83,6 +83,30 @@ app.use(express.static(paths.PUBLIC_DIR));
 app.use('/projects', express.static(paths.PROJECTS_DIR));
 app.use(express.json());
 
+app.get('/runtime_jobs/:jobId/standalone_output_vertical.mp4', (req, res) => {
+    const jobId = String(req.params.jobId || '').trim();
+    if (!/^standalone_[a-zA-Z0-9_-]+$/.test(jobId)) {
+        return sendError(res, {
+            status: 400,
+            code: 'RUNTIME_JOB_ID_INVALID',
+            stage: 'runtime.assets',
+            error: '运行时任务 ID 无效'
+        });
+    }
+
+    const videoPath = path.join(paths.RUNTIME_ROOT, jobId, 'standalone_output_vertical.mp4');
+    if (!fs.existsSync(videoPath)) {
+        return sendError(res, {
+            status: 404,
+            code: 'RUNTIME_VIDEO_NOT_FOUND',
+            stage: 'runtime.assets',
+            error: '竖屏成片不存在'
+        });
+    }
+
+    res.sendFile(videoPath);
+});
+
 app.get("/", (_req, res) => {
     res.sendFile(paths.FRONTEND_INDEX_PATH);
 });
@@ -487,18 +511,20 @@ const {
     registerXaiRoutes(app, {
         getResult: (req, res) => {
             try {
-                if (!fs.existsSync(paths.XAI_TOP10_RESULT)) {
+                const partitionId = req.query?.partitionId || req.query?.partition || '';
+                const partitionPaths = xaiService.getPathsForPartition(partitionId || xaiService.readConfig().activePartitionId);
+                if (!fs.existsSync(partitionPaths.resultPath)) {
                     return sendError(res, { status: 404, code: 'XAI_RESULT_NOT_FOUND', stage: 'xai.result', error: '结果文件不存在，请先运行一次榜单任务' });
                 }
-                const result = xaiService.ensureTranslatedResult();
+                const result = xaiService.ensureTranslatedResult(partitionId);
                 res.json({ success: true, result });
             } catch (err) {
                 sendError(res, { status: 500, code: 'XAI_RESULT_READ_FAILED', stage: 'xai.result', error: '读取榜单结果失败', details: err.message });
             }
         },
-        getStatus: (_req, res) => {
+        getStatus: (req, res) => {
             try {
-                res.json({ success: true, status: xaiService.getStatus() });
+                res.json({ success: true, status: xaiService.getStatus(req.query?.partitionId || req.query?.partition || '') });
             } catch (err) {
                 sendError(res, { status: 500, code: 'XAI_STATUS_READ_FAILED', stage: 'xai.status', error: '读取榜单状态失败', details: err.message });
             }
@@ -512,14 +538,14 @@ const {
         },
         postConfig: (req, res) => {
             try {
-                const config = xaiService.writeConfig(req.body?.accounts || []);
+                const config = xaiService.writeConfig(req.body || {});
                 res.json({ success: true, config });
             } catch (err) {
                 const status = err.message === '账号池不能为空' ? 400 : 500;
                 sendError(res, { status, code: status === 400 ? 'XAI_ACCOUNTS_EMPTY' : 'XAI_CONFIG_WRITE_FAILED', stage: 'xai.config', error: err.message, details: err.message });
             }
         },
-        run: (req, res) => xaiService.run(req.body?.clientId, res)
+        run: (req, res) => xaiService.run(req.body?.clientId, res, req.body?.partitionId || req.body?.partition || '')
     });
     verticalQueueService = createVerticalQueueService({
         baseDir: paths.PROJECT_ROOT,
@@ -566,6 +592,8 @@ const {
                         title: item.title,
                         summary: item.author_summary || item.summary,
                         videoUrl: item.video_url || item.videoUrl,
+                        sourcePartitionId: item.sourcePartitionId || item.partitionId || item.partition?.id || '',
+                        sourcePartitionLabel: item.sourcePartitionLabel || item.partitionLabel || item.partition?.label || '',
                         renderOptions: item.renderOptions || {}
                     }))
                     .filter((item) => item.videoUrl);
@@ -691,8 +719,6 @@ const {
         cancelWechatRpa,
         checkWechatLogin,
         triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
-        readReviewConfig,
-        readMediaMetadata: utils.readMediaMetadata,
         accountDashboardService
     });
 
@@ -703,7 +729,8 @@ const {
         sendError,
         readMediaMetadata: utils.readMediaMetadata,
         writeMediaMetadata: utils.writeMediaMetadata,
-        verticalQueueService
+        verticalQueueService,
+        resetPublishAssetsCache
     });
     registerReviewRoutes(app, reviewHandlers);
     registerLoginStatusRoutes(app, loginStatusService, feishuService);
@@ -719,7 +746,6 @@ const {
         publishAssetsService,
         loginStatusService,
         feishuService,
-        writeMediaMetadata: utils.writeMediaMetadata,
         materialDrivenStarter: {
             start: (params) => startMaterialDrivenFromUrl(paths, params),
             getStatus: getTaskStatus

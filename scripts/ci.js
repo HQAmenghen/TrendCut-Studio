@@ -63,16 +63,28 @@ function main() {
       required: true
     },
     {
-      name: '2. 构建前端',
+      name: '2. 运行 Python 单元测试',
+      command: 'npm',
+      args: ['run', 'test:py'],
+      required: true
+    },
+    {
+      name: '3. 构建前端',
       command: 'npm',
       args: ['run', 'build:front'],
       required: true
     },
     {
-      name: '3. 代码风格检查',
+      name: '4. 代码风格检查',
       command: 'npm',
       args: ['run', 'lint'],
-      required: false // 可选，因为可能还没配置 lint
+      required: true
+    },
+    {
+      name: '5. 生产依赖安全审计',
+      command: 'npm',
+      args: ['run', 'audit:prod'],
+      required: true
     }
   ];
 

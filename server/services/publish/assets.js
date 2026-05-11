@@ -47,6 +47,7 @@ function createPublishAssetsService(deps) {
     const map = {
       pipeline: '全链路混剪',
       standalone: '独立竖屏',
+      standalone_runtime: '竖屏合成成片',
       xai_queue: 'XAI 批量竖屏'
     };
     return map[sourceType] || sourceType || '视频素材';
@@ -132,6 +133,7 @@ function createPublishAssetsService(deps) {
     if (text.includes('web4')) addPreferred('Web4');
 
     if (sourceType === 'xai_queue') addPreferred('热点视频');
+    if (sourceType === 'standalone_runtime') addPreferred('竖屏合成');
     if (text.includes('稳定币') || text.includes('stable')) addPreferred('稳定币');
     if (text.includes('支付')) addPreferred('支付');
     if (text.includes('华尔街')) addPreferred('华尔街');
@@ -147,6 +149,7 @@ function createPublishAssetsService(deps) {
       'AI',
       'Web4',
       '热点视频',
+      '竖屏合成',
       '稳定币',
       '支付',
       '华尔街',
@@ -176,12 +179,41 @@ function createPublishAssetsService(deps) {
     };
   }
 
+  function isReviewCenterHidden(metadata = {}) {
+    return Boolean(metadata?.reviewCenterHiddenAt || metadata?.reviewCenterHiddenReviewId);
+  }
+
+  function buildStandaloneRuntimeMetadata(jobDir) {
+    const content = readJsonIfExists(path.join(jobDir, 'content.json'), {});
+    const context = readJsonIfExists(path.join(jobDir, 'original_context.json'), {});
+    const subtitles = readJsonIfExists(path.join(jobDir, 'subtitles.json'), []);
+    const title = String(content?.title || context?.title || '').trim();
+    const summary = String(context?.body || context?.summary || '').trim();
+
+    return buildPublishMetadata({
+      title,
+      subtitles,
+      summary,
+      sourceType: 'standalone_runtime',
+      sourceUrl: context?.postUrl || context?.sourceUrl || '',
+      author: context?.author || ''
+    });
+  }
+
+  function hasStandaloneRuntimeOutput(taskDir) {
+    const normalizedTaskDir = String(taskDir || '').trim();
+    if (!normalizedTaskDir) return false;
+    const outputPath = path.join(normalizedTaskDir, 'standalone_output_vertical.mp4');
+    return fs.existsSync(outputPath) && fs.statSync(outputPath).isFile();
+  }
+
   function collectPublishAssets() {
     const assets = [];
     const addAsset = (label, fullPath, publicUrl, sourceType, metadata = {}) => {
       if (!fs.existsSync(fullPath)) return;
       const stat = fs.statSync(fullPath);
       const savedMetadata = readMediaMetadata(fullPath) || {};
+      if (isReviewCenterHidden(savedMetadata) || isReviewCenterHidden(metadata)) return;
       const mergedSubtitles = Array.isArray(savedMetadata.subtitles) && savedMetadata.subtitles.length
         ? savedMetadata.subtitles
         : (Array.isArray(metadata.subtitles) ? metadata.subtitles : []);
@@ -282,17 +314,37 @@ function createPublishAssetsService(deps) {
         sourceType: 'pipeline'
       })
     );
-    addAsset(
-      '独立竖屏成片',
-      standaloneVideoPath,
-      '/standalone_output_vertical.mp4',
-      'standalone',
-      buildPublishMetadata({
-        title: standaloneMeta?.title,
-        subtitles: standaloneMeta?.subtitles || [],
-        sourceType: 'standalone'
-      })
-    );
+    if (!hasStandaloneRuntimeOutput(standaloneMeta?.taskDir)) {
+      addAsset(
+        '独立竖屏成片',
+        standaloneVideoPath,
+        '/standalone_output_vertical.mp4',
+        'standalone',
+        buildPublishMetadata({
+          title: standaloneMeta?.title,
+          subtitles: standaloneMeta?.subtitles || [],
+          sourceType: 'standalone'
+        })
+      );
+    }
+
+    const runtimeRoot = path.join(projectRoot, 'data', 'uploads', 'runtime_jobs');
+    if (fs.existsSync(runtimeRoot)) {
+      const dirs = fs.readdirSync(runtimeRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith('standalone_'));
+      for (const dir of dirs) {
+        const jobDir = path.join(runtimeRoot, dir.name);
+        const filePath = path.join(jobDir, 'standalone_output_vertical.mp4');
+        if (!fs.existsSync(filePath)) continue;
+        addAsset(
+          `竖屏合成成片 ${dir.name}`,
+          filePath,
+          `/runtime_jobs/${dir.name}/standalone_output_vertical.mp4`,
+          'standalone_runtime',
+          buildStandaloneRuntimeMetadata(jobDir)
+        );
+      }
+    }
 
     if (fs.existsSync(verticalPublicDir)) {
       const dirs = fs.readdirSync(verticalPublicDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
@@ -344,6 +396,7 @@ function createPublishAssetsService(deps) {
   return {
     buildShortTitle,
     buildPublishMetadata,
+    isReviewCenterHidden,
     collectPublishAssets,
     getCachedPublishAssets,
     resetPublishAssetsCache

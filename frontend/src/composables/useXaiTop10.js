@@ -1,6 +1,14 @@
 import { computed, ref } from 'vue';
 import axios from 'axios';
 
+const DEFAULT_PARTITION_ID = 'crypto';
+const DEFAULT_PARTITIONS = [
+  { id: 'crypto', label: '加密', description: 'Crypto / Web3 热点账号池', accounts: [] },
+  { id: 'finance', label: '金融', description: '宏观、市场和金融账号池', accounts: [] },
+  { id: 'tech', label: '科技', description: '科技产品和创业账号池', accounts: [] },
+  { id: 'ai', label: 'AI', description: 'AI 模型、应用和研究账号池', accounts: [] }
+];
+
 function downloadTextFile(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -13,6 +21,45 @@ function downloadTextFile(filename, content, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+function sanitizePartitionId(value, fallback = DEFAULT_PARTITION_ID) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return normalized || fallback;
+}
+
+function parseAccountsText(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((item) => item.trim().replace(/^@+/, ''))
+    .filter(Boolean);
+}
+
+function normalizePartitions(config = {}) {
+  const source = Array.isArray(config.partitions) && config.partitions.length ? config.partitions : DEFAULT_PARTITIONS;
+  const used = new Set();
+  const partitions = source.map((partition, index) => {
+    const fallback = DEFAULT_PARTITIONS[index] || {};
+    let id = sanitizePartitionId(partition?.id || partition?.label || fallback.id || `partition-${index + 1}`);
+    let suffix = 2;
+    while (used.has(id)) {
+      id = sanitizePartitionId(`${id}-${suffix}`);
+      suffix += 1;
+    }
+    used.add(id);
+    return {
+      id,
+      label: String(partition?.label || fallback.label || id).trim() || id,
+      description: String(partition?.description || fallback.description || '').trim(),
+      accounts: Array.isArray(partition?.accounts) ? partition.accounts.map((item) => String(item || '').trim()).filter(Boolean) : []
+    };
+  });
+  return partitions.length ? partitions : DEFAULT_PARTITIONS.map((item) => ({ ...item }));
+}
+
 export function useXaiTop10() {
   const loading = ref(false);
   const queueing = ref(false);
@@ -22,6 +69,10 @@ export function useXaiTop10() {
   const status = ref(null);
   const queueStatus = ref(null);
   const accountsText = ref('');
+  const partitions = ref(DEFAULT_PARTITIONS.map((item) => ({ ...item })));
+  const activePartitionId = ref(DEFAULT_PARTITION_ID);
+  const newPartitionLabel = ref('');
+  const partitionDrafts = ref({});
   const concurrency = ref(2);
   const selectedKeys = ref([]);
   const renderOptions = ref({
@@ -45,12 +96,16 @@ export function useXaiTop10() {
     localErrors.value = [...localErrors.value, line].slice(-20);
   };
 
+  const activePartition = computed(() => partitions.value.find((item) => item.id === activePartitionId.value) || partitions.value[0] || DEFAULT_PARTITIONS[0]);
+  const activePartitionLabel = computed(() => activePartition.value?.label || activePartitionId.value || '默认分区');
+  const activePartitionAccountsCount = computed(() => parseAccountsText(accountsText.value).length);
   const items = computed(() => result.value?.items || []);
   const summary = computed(() => {
     const timeRange = result.value?.time_range;
     const total = result.value?.total_items ?? items.value.length;
     return {
       total,
+      partition: activePartition.value,
       since: timeRange?.since || '-',
       until: timeRange?.until || '-',
       running: !!status.value?.running,
@@ -68,6 +123,101 @@ export function useXaiTop10() {
     return [...localErrors.value, ...remote].slice(-8);
   });
 
+  const persistActivePartitionDraft = () => {
+    partitionDrafts.value = {
+      ...partitionDrafts.value,
+      [activePartitionId.value]: accountsText.value
+    };
+  };
+
+  const applyConfig = (config = {}) => {
+    const normalizedPartitions = normalizePartitions(config);
+    partitions.value = normalizedPartitions;
+    const requested = sanitizePartitionId(config.activePartitionId || activePartitionId.value);
+    activePartitionId.value = normalizedPartitions.some((partition) => partition.id === requested)
+      ? requested
+      : normalizedPartitions[0]?.id || DEFAULT_PARTITION_ID;
+    partitionDrafts.value = normalizedPartitions.reduce((acc, partition) => {
+      acc[partition.id] = (partition.accounts || []).join('\n');
+      return acc;
+    }, {});
+    accountsText.value = partitionDrafts.value[activePartitionId.value] || '';
+  };
+
+  const buildConfigPayload = () => {
+    persistActivePartitionDraft();
+    return {
+      activePartitionId: activePartitionId.value,
+      partitions: partitions.value.map((partition) => ({
+        id: partition.id,
+        label: partition.label,
+        description: partition.description || '',
+        accounts: parseAccountsText(partitionDrafts.value[partition.id] || '')
+      }))
+    };
+  };
+
+  const selectPartition = async (partitionId) => {
+    const id = sanitizePartitionId(partitionId);
+    if (!partitions.value.some((partition) => partition.id === id)) return;
+    persistActivePartitionDraft();
+    activePartitionId.value = id;
+    accountsText.value = partitionDrafts.value[id] || '';
+    selectedKeys.value = [];
+    result.value = null;
+    await refresh();
+  };
+
+  const createPartition = async () => {
+    if (savingConfig.value) return;
+    const label = String(newPartitionLabel.value || '').trim();
+    if (!label) return;
+    persistActivePartitionDraft();
+    const baseId = sanitizePartitionId(label, `partition-${partitions.value.length + 1}`);
+    const existingIds = new Set(partitions.value.map((partition) => partition.id));
+    let id = baseId;
+    let suffix = 2;
+    while (existingIds.has(id)) {
+      id = sanitizePartitionId(`${baseId}-${suffix}`, `partition-${suffix}`);
+      suffix += 1;
+    }
+    partitions.value = [
+      ...partitions.value,
+      { id, label, description: '', accounts: [] }
+    ];
+    partitionDrafts.value = { ...partitionDrafts.value, [id]: '' };
+    newPartitionLabel.value = '';
+    activePartitionId.value = id;
+    accountsText.value = '';
+    selectedKeys.value = [];
+    result.value = null;
+    await saveConfig();
+  };
+
+  const removePartition = async (partitionId) => {
+    if (savingConfig.value) return;
+    const id = sanitizePartitionId(partitionId);
+    if (partitions.value.length <= 1) return;
+    persistActivePartitionDraft();
+    partitions.value = partitions.value.filter((partition) => partition.id !== id);
+    const { [id]: _removed, ...rest } = partitionDrafts.value;
+    partitionDrafts.value = rest;
+    if (activePartitionId.value === id) {
+      activePartitionId.value = partitions.value[0]?.id || DEFAULT_PARTITION_ID;
+      accountsText.value = partitionDrafts.value[activePartitionId.value] || '';
+      result.value = null;
+      selectedKeys.value = [];
+    }
+    await saveConfig();
+  };
+
+  const updatePartitionLabel = (partitionId, label) => {
+    const id = sanitizePartitionId(partitionId);
+    partitions.value = partitions.value.map((partition) => partition.id === id
+      ? { ...partition, label: String(label || '').trim() }
+      : partition);
+  };
+
   const refresh = async (silent = false) => {
     if (!silent) {
       loading.value = true;
@@ -76,11 +226,11 @@ export function useXaiTop10() {
     }
     try {
       const [resultRes, statusRes, queueRes] = await Promise.all([
-        axios.get('/api/xai-top10/result').catch((err) => {
+        axios.get('/api/xai-top10/result', { params: { partitionId: activePartitionId.value } }).catch((err) => {
           if (err.response?.status === 404) return { data: { success: false, result: null } };
           throw err;
         }),
-        axios.get('/api/xai-top10/status'),
+        axios.get('/api/xai-top10/status', { params: { partitionId: activePartitionId.value } }),
         axios.get('/api/xai-top10/vertical-jobs')
       ]);
       result.value = resultRes.data?.result || null;
@@ -98,7 +248,8 @@ export function useXaiTop10() {
     try {
       appendLog('读取账号池配置');
       const res = await axios.get('/api/xai-top10/config');
-      accountsText.value = (res.data?.config?.accounts || []).join('\n');
+      applyConfig(res.data?.config || {});
+      await refresh(true);
     } catch (err) {
       error.value = err.response?.data?.error || err.message;
       appendError(error.value);
@@ -110,12 +261,9 @@ export function useXaiTop10() {
     error.value = '';
     appendLog('保存账号池配置');
     try {
-      const accounts = String(accountsText.value || '')
-        .split(/\r?\n/)
-        .map((item) => item.trim().replace(/^@+/, ''))
-        .filter(Boolean);
-      const res = await axios.post('/api/xai-top10/config', { accounts });
-      accountsText.value = (res.data?.config?.accounts || []).join('\n');
+      const res = await axios.post('/api/xai-top10/config', buildConfigPayload());
+      applyConfig(res.data?.config || {});
+      await refresh(true);
     } catch (err) {
       error.value = err.response?.data?.error || err.message;
       appendError(error.value);
@@ -129,9 +277,9 @@ export function useXaiTop10() {
     const stream = new EventSource(`/api/progress?clientId=${clientId}`);
     loading.value = true;
     error.value = '';
-    appendLog('启动过去 24 小时 Top10 榜单任务');
+    appendLog(`启动「${activePartitionLabel.value}」过去 24 小时 Top10 榜单任务`);
     try {
-      const res = await axios.post('/api/xai-top10/run', { clientId });
+      const res = await axios.post('/api/xai-top10/run', { clientId, partitionId: activePartitionId.value });
       result.value = res.data?.result || result.value;
       status.value = res.data?.status || status.value;
       appendLog('榜单任务执行完成，开始刷新结果');
@@ -162,6 +310,9 @@ export function useXaiTop10() {
   const queueItems = async (inputItems) => {
     const payloadItems = inputItems.map((item) => ({
       ...item,
+      sourcePartitionId: item.source_partition_id || item.sourcePartitionId || activePartitionId.value,
+      sourcePartitionLabel: item.source_partition_label || item.sourcePartitionLabel || activePartitionLabel.value,
+      partition: item.partition || { id: activePartitionId.value, label: activePartitionLabel.value },
       renderOptions: { ...renderOptions.value }
     }));
     if (!payloadItems.length) return;
@@ -205,7 +356,7 @@ export function useXaiTop10() {
     appendLog(`导出榜单结果：${format.toUpperCase()}`);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     if (format === 'json') {
-      downloadTextFile(`xai-top10-${timestamp}.json`, JSON.stringify(result.value, null, 2), 'application/json;charset=utf-8');
+      downloadTextFile(`xai-top10-${activePartitionId.value}-${timestamp}.json`, JSON.stringify(result.value, null, 2), 'application/json;charset=utf-8');
       return;
     }
     const headers = ['rank', 'author', 'author_summary', 'views_display', 'hot_score', 'post_url', 'video_url'];
@@ -213,7 +364,7 @@ export function useXaiTop10() {
     for (const item of items.value) {
       rows.push(headers.map((key) => `"${String(item[key] ?? '').replace(/"/g, '""')}"`).join(','));
     }
-    downloadTextFile(`xai-top10-${timestamp}.csv`, rows.join('\n'), 'text/csv;charset=utf-8');
+    downloadTextFile(`xai-top10-${activePartitionId.value}-${timestamp}.csv`, rows.join('\n'), 'text/csv;charset=utf-8');
   };
 
   return {
@@ -225,6 +376,12 @@ export function useXaiTop10() {
     status,
     queueStatus,
     accountsText,
+    partitions,
+    activePartitionId,
+    activePartition,
+    activePartitionLabel,
+    activePartitionAccountsCount,
+    newPartitionLabel,
     concurrency,
     selectedKeys,
     renderOptions,
@@ -238,6 +395,10 @@ export function useXaiTop10() {
     stopAutoRefresh,
     loadConfig,
     saveConfig,
+    selectPartition,
+    createPartition,
+    removePartition,
+    updatePartitionLabel,
     run,
     toggleSelect,
     toggleSelectAll,

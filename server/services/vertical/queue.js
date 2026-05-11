@@ -76,6 +76,15 @@ function createVerticalQueueService(deps) {
     return JSON.stringify(payload, ensureAsciiSafeReplacer);
   }
 
+  function getSubtitleText(item) {
+    if (!item || typeof item !== 'object') return '';
+    return String(item.zh || item.text || item.en || '').replace(/\s+/g, '').trim();
+  }
+
+  function hasUsableSubtitleContent(subtitles) {
+    return Array.isArray(subtitles) && subtitles.some((item) => getSubtitleText(item));
+  }
+
   function ensureAsciiSafeReplacer(_key, value) {
     return value;
   }
@@ -330,6 +339,12 @@ function createVerticalQueueService(deps) {
     if (asrOptions.forceEnglishRescue) {
       asrArgs.push('--force-english-rescue');
     }
+    if (asrOptions.translateSubtitles !== false) {
+      asrArgs.push('--translate-subtitles');
+    }
+    if (asrOptions.refineSubtitles !== false) {
+      asrArgs.push('--refine-subtitles');
+    }
 
     const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
       cwd: jobDir,
@@ -363,7 +378,8 @@ function createVerticalQueueService(deps) {
       subtitlesData = fs.existsSync(subtitlesPayload) ? readJsonSafe(subtitlesPayload, []) : [];
     }
 
-    if (Array.isArray(subtitlesData) && subtitlesData.length > 0) {
+    const hasSpokenSubtitleContent = hasUsableSubtitleContent(subtitlesData);
+    if (hasSpokenSubtitleContent) {
       appendLog(job, '发布描述来源已切换为字幕内容');
     } else if (descriptionSource === 'post_summary') {
       appendLog(job, '检测到视频无有效字幕，发布描述将回退到帖子摘要');
@@ -372,6 +388,18 @@ function createVerticalQueueService(deps) {
     }
     if (job.cancelRequested) {
       updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, 'ASR 阶段后任务被取消');
+      return;
+    }
+
+    if (!hasSpokenSubtitleContent) {
+      const completedAt = new Date().toISOString();
+      updateJob({
+        status: 'skipped',
+        progress: 100,
+        message: '源视频无音轨或未识别到有效口播字幕，已跳过自动发布',
+        completedAt,
+        durationSeconds: job.startedAt ? Math.max(0, Math.floor((new Date(completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)) : null
+      }, '源视频无音轨或未识别到有效口播字幕，停止竖屏渲染与自动发布任务创建');
       return;
     }
 
@@ -459,6 +487,9 @@ function createVerticalQueueService(deps) {
       taskType: 'xai_queue',
       taskDir: jobDir,
       sourceType: job.sourceType || 'xai_top10',
+      sourcePartitionId: job.sourcePartitionId || '',
+      sourcePartitionLabel: job.sourcePartitionLabel || '',
+      sourceRank: job.sourceRank || 0,
       author: job.author || '',
       postId: job.postId || '',
       postUrl: job.postUrl || '',
@@ -653,6 +684,9 @@ function createVerticalQueueService(deps) {
         author: item.author || '',
         postId: item.postId || '',
         postUrl: item.postUrl || '',
+        sourcePartitionId: item.sourcePartitionId || '',
+        sourcePartitionLabel: item.sourcePartitionLabel || '',
+        sourceRank: item.sourceRank || 0,
         title: String(item.title || '').trim(),
         summary: String(item.summary || '').trim(),
         videoUrl: item.videoUrl,
@@ -664,6 +698,9 @@ function createVerticalQueueService(deps) {
           author: item.author,
           postId: item.postId,
           postUrl: item.postUrl,
+          sourcePartitionId: item.sourcePartitionId,
+          sourcePartitionLabel: item.sourcePartitionLabel,
+          sourceRank: item.sourceRank,
           title: item.title,
           summary: item.summary,
           videoUrl: item.videoUrl,
@@ -688,6 +725,9 @@ function createVerticalQueueService(deps) {
       currentProc: null,
       currentCancelHandle: null,
       sourceType: item.sourceType || 'xai_top10',
+      sourcePartitionId: item.sourcePartitionId || '',
+      sourcePartitionLabel: item.sourcePartitionLabel || '',
+      sourceRank: item.sourceRank || 0,
       author: item.author || '',
       postId: item.postId || '',
       postUrl: item.postUrl || '',

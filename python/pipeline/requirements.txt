@@ -9,3 +9,4 @@ requests-oauthlib
 oss2
 playwright
 moviepy
+opencc-python-reimplemented

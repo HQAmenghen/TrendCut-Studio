@@ -1,6 +1,9 @@
 import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 import argparse
 import json
@@ -48,7 +51,7 @@ def clamp_line(text: str, limit: int) -> str:
 
 
 def normalize_title(title: str) -> str:
-    cleaned = title.replace("\r\n", "\n").replace("\r", "\n").strip()
+    cleaned = title.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n").strip()
     cleaned = re.sub(r"[\"“”‘’]", "", cleaned)
     lines = [line.strip("：:，,。.！？!? ") for line in cleaned.split("\n") if line.strip()]
     used_explicit_breaks = len(lines) >= 2

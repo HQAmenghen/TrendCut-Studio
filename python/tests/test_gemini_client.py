@@ -52,7 +52,7 @@ class GeminiClientRetryTest(unittest.TestCase):
 
 
 class GeminiClientVertexAuthTest(unittest.TestCase):
-    def test_vertex_api_key_client_does_not_pass_project_or_location(self):
+    def test_vertex_api_key_client_uses_developer_backend_without_project_or_location(self):
         created_clients = []
 
         def fake_client(**kwargs):
@@ -74,7 +74,7 @@ class GeminiClientVertexAuthTest(unittest.TestCase):
 
         self.assertEqual(
             created_clients,
-            [{"vertexai": True, "api_key": "vertex-key"}],
+            [{"api_key": "vertex-key"}],
         )
 
     def test_vertex_api_key_mode_accepts_google_api_key_when_requested(self):
@@ -97,7 +97,7 @@ class GeminiClientVertexAuthTest(unittest.TestCase):
 
         self.assertEqual(
             created_clients,
-            [{"vertexai": True, "api_key": "google-vertex-key"}],
+            [{"api_key": "google-vertex-key"}],
         )
 
 

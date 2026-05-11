@@ -1,6 +1,9 @@
 import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 from faster_whisper import WhisperModel
 import json
@@ -10,6 +13,7 @@ import subprocess
 import argparse
 import re
 import uuid
+import difflib
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -20,8 +24,28 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from load_env import load_project_env
-from llm_client import get_llm_provider
+from llm_client import create_llm_client, generate_content, get_llm_provider, get_text_llm_provider
 from script_protocol import emit_result, emit_stage, run_guarded
+try:
+    from skills.prompt_skill_loader import load_prompt_text
+except ImportError:
+    from pipeline.skills.prompt_skill_loader import load_prompt_text
+try:
+    from subtitle_terms import (
+        extract_preserve_terms,
+        mask_preserved_terms,
+        repair_reference_subtitle_text,
+        restore_preserved_terms,
+        to_simplified_chinese,
+    )
+except ImportError:
+    from pipeline.subtitle_terms import (
+        extract_preserve_terms,
+        mask_preserved_terms,
+        repair_reference_subtitle_text,
+        restore_preserved_terms,
+        to_simplified_chinese,
+    )
 
 load_project_env(__file__)
 
@@ -197,18 +221,100 @@ def sentence_time_range(sentence):
     return start, end
 
 
+def should_insert_filetrans_space(current_text, token):
+    if not current_text or not token:
+        return False
+
+    first_char = token[0]
+    if not re.match(r"[A-Za-z0-9$]", first_char):
+        return False
+
+    previous_char = current_text[-1]
+    if previous_char in ".,，" and len(current_text) >= 2 and current_text[-2].isdigit() and first_char.isdigit():
+        return False
+
+    return bool(re.search(r"[A-Za-z0-9%\)]$", current_text) or previous_char in ".,!?;:")
+
+
+def join_filetrans_tokens(tokens):
+    parts = []
+    for token in tokens:
+        token_text = str(token or "").strip()
+        if not token_text:
+            continue
+        current_text = "".join(parts)
+        if should_insert_filetrans_space(current_text, token_text):
+            parts.append(" ")
+        parts.append(token_text)
+    return "".join(parts).strip()
+
+
+def reconstruct_filetrans_words(words):
+    tokens = []
+    has_punctuation = False
+    for word in words:
+        if not isinstance(word, dict):
+            continue
+        token = str(word.get("text") or word.get("word") or "").strip()
+        punctuation = str(word.get("punctuation") or "").strip()
+        if not token:
+            continue
+        if punctuation and not token.endswith(punctuation):
+            token = f"{token}{punctuation}"
+            has_punctuation = True
+        elif punctuation:
+            has_punctuation = True
+        tokens.append(token)
+    return join_filetrans_tokens(tokens), has_punctuation
+
+
 def sentence_text(sentence):
+    words = sentence.get("words")
+    if isinstance(words, list):
+        reconstructed, has_punctuation = reconstruct_filetrans_words(words)
+        raw_text = str(sentence.get("text") or sentence.get("sentence") or sentence.get("sentence_text") or "").strip()
+        if reconstructed and (
+            has_punctuation
+            or not raw_text
+            or (" " in reconstructed and " " not in raw_text)
+        ):
+            return apply_domain_corrections(reconstructed)
+
     text = str(sentence.get("text") or sentence.get("sentence") or sentence.get("sentence_text") or "").strip()
     if text:
         return apply_domain_corrections(text)
-    words = sentence.get("words")
-    if isinstance(words, list):
-        joined = "".join(str(word.get("text") or word.get("word") or "") for word in words if isinstance(word, dict))
-        return apply_domain_corrections(joined.strip())
     return ""
 
 
-def parse_filetrans_result_segments(payload):
+def parse_word_seconds(word, start_keys, *, default=None):
+    for key in start_keys:
+        if key in word:
+            return parse_seconds(word.get(key), milliseconds=(key in {"begin_time", "end_time"}))
+    return default
+
+
+def sentence_words(sentence):
+    words = sentence.get("words")
+    if not isinstance(words, list):
+        return []
+
+    parsed = []
+    for word in words:
+        if not isinstance(word, dict):
+            continue
+        text = str(word.get("text") or word.get("word") or "").strip()
+        punctuation = str(word.get("punctuation") or "").strip()
+        if punctuation and text and not text.endswith(punctuation):
+            text = f"{text}{punctuation}"
+        start = parse_word_seconds(word, ("begin_time", "start_time", "start"))
+        end = parse_word_seconds(word, ("end_time", "end"))
+        if not text or start is None or end is None or end <= start:
+            continue
+        parsed.append(MockWord(start, end, text))
+    return parsed
+
+
+def parse_filetrans_result_segments(payload, include_words=False):
     raw_segments = []
     detected_language = ""
     transcript_text_parts = []
@@ -235,11 +341,16 @@ def parse_filetrans_result_segments(payload):
             text = sentence_text(sentence)
             if not time_range or not text:
                 continue
-            raw_segments.append({
+            segment = {
                 "start": time_range[0],
                 "end": time_range[1],
                 "text": text
-            })
+            }
+            if include_words:
+                words = sentence_words(sentence)
+                if words:
+                    segment["words"] = words
+            raw_segments.append(segment)
             if not detected_language:
                 detected_language = str(sentence.get("language") or sentence.get("language_code") or "").strip().lower()
 
@@ -376,7 +487,7 @@ def _call_aliyun_asr(dashscope_module, audio_path, model=None):
     )
 
 
-def build_raw_segments_filetrans(file_url, model=None):
+def build_raw_segments_filetrans(file_url, model=None, split_config=None):
     model = model or get_qwen_asr_model()
     emit_stage("asr", "正在进行阿里云 Qwen3-ASR Filetrans 句级识别")
     print(f"1. 正在提交阿里云 {model} 文件转写任务...")
@@ -384,12 +495,17 @@ def build_raw_segments_filetrans(file_url, model=None):
     print(f"   -> Filetrans task_id: {task_id}")
     payload = wait_qwen_filetrans_task(task_id, headers)
     payload = expand_filetrans_transcription_urls(payload, headers=headers)
-    raw_segments, detected_language = parse_filetrans_result_segments(payload)
+    raw_segments, detected_language = parse_filetrans_result_segments(payload, include_words=True)
     if not raw_segments:
         print("   ℹ️ Filetrans 调用成功但未解析到句级时间戳")
         return [], detected_language or "zh"
 
-    print(f"   ✅ Filetrans 识别完成，语种: {detected_language}，句子数: {len(raw_segments)}")
+    raw_sentence_count = len(raw_segments)
+    split_segments = split_filetrans_segments(raw_segments, split_config=split_config)
+    if split_segments:
+        raw_segments = split_segments
+
+    print(f"   ✅ Filetrans 识别完成，语种: {detected_language}，句子数: {raw_sentence_count}，字幕段数: {len(raw_segments)}")
     for item in raw_segments:
         print(f"   [ASR filetrans]: {item['text']}")
     return raw_segments, detected_language
@@ -516,7 +632,7 @@ def build_raw_segments_aliyun(audio_file, split_config=None, file_url=""):
     if model == DEFAULT_QWEN_ASR_MODEL:
         resolved_file_url, _object_key = resolve_filetrans_file_url(audio_file, file_url)
         if resolved_file_url:
-            return build_raw_segments_filetrans(resolved_file_url, model=model)
+            return build_raw_segments_filetrans(resolved_file_url, model=model, split_config=split_config)
         print("   ⚠️ Qwen Filetrans 需要公网 file_url 或可用 OSS 上传配置，当前将降级使用 qwen3-asr-flash。")
         return build_raw_segments_qwen_flash(audio_file, split_config=split_config, model=LEGACY_QWEN_ASR_MODEL)
     return build_raw_segments_qwen_flash(audio_file, split_config=split_config, model=model)
@@ -571,10 +687,28 @@ DOMAIN_CORRECTIONS = load_domain_corrections()
 
 
 def apply_domain_corrections(text: str) -> str:
-    normalized = text or ""
+    normalized = to_simplified_chinese(text or "")
     for wrong, right in sorted(DOMAIN_CORRECTIONS.items(), key=lambda item: len(item[0]), reverse=True):
         normalized = re.sub(re.escape(wrong), right, normalized, flags=re.IGNORECASE)
     normalized = normalized.replace("万事达卡卡", "万事达卡")
+    return to_simplified_chinese(normalized)
+
+
+def normalize_subtitles_to_simplified(subtitles):
+    if not isinstance(subtitles, list):
+        return []
+
+    normalized = []
+    for entry in subtitles:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        for key in ("zh", "text"):
+            if item.get(key):
+                item[key] = apply_domain_corrections(str(item[key]).strip())
+        if item.get("en"):
+            item["en"] = to_simplified_chinese(str(item["en"]).strip())
+        normalized.append(item)
     return normalized
 
 
@@ -590,7 +724,27 @@ def time_overlap_ratio(start_a, end_a, start_b, end_b):
 
 
 def contains_sentence_break(text: str) -> bool:
-    return any(char in str(text or "") for char in "。！？!?；;，,、")
+    return any(char in str(text or "") for char in "。！？!?；;")
+
+
+def is_numeric_separator(text: str, index: int) -> bool:
+    if not (0 <= index < len(text)):
+        return False
+    if text[index] not in ".,，":
+        return False
+    previous_char = text[index - 1] if index > 0 else ""
+    next_char = text[index + 1] if index + 1 < len(text) else ""
+    return previous_char.isdigit() and next_char.isdigit()
+
+
+def contains_clause_break(text: str) -> bool:
+    sample = str(text or "")
+    for index, char in enumerate(sample):
+        if char in "。！？!?；;、":
+            return True
+        if char in "，," and not is_numeric_separator(sample, index):
+            return True
+    return False
 
 
 def detect_token_language(token: str) -> str:
@@ -607,7 +761,7 @@ def detect_token_language(token: str) -> str:
 def flush_word_chunk(chunks, words, start_time, end_time):
     if not words:
         return
-    text = apply_domain_corrections("".join(words).strip())
+    text = apply_domain_corrections(join_filetrans_tokens(words))
     if not text:
         return
     chunks.append({
@@ -637,16 +791,16 @@ def resolve_split_config(raw_config=None):
     return config
 
 
-def split_segment_words(segment, split_config=None):
+def split_segment_words(segment, split_config=None, allow_clause_breaks=False):
     split_config = resolve_split_config(split_config)
     words = list(getattr(segment, "words", None) or [])
     if not words:
         text = apply_domain_corrections(str(getattr(segment, "text", "")).strip())
-        return [{
-            "start": round(float(getattr(segment, "start", 0.0)), 2),
-            "end": round(float(getattr(segment, "end", 0.0)), 2),
+        return split_text_segment_by_clauses({
+            "start": float(getattr(segment, "start", 0.0) or 0.0),
+            "end": float(getattr(segment, "end", 0.0) or 0.0),
             "text": text
-        }] if text else []
+        }, split_config=split_config)
 
     chunks = []
     current_words = []
@@ -676,11 +830,14 @@ def split_segment_words(segment, split_config=None):
             and token_lang != current_lang
         )
         if lang_switched:
-            flush_word_chunk(chunks, current_words, chunk_start, chunk_end or token_start)
-            current_words = []
-            chunk_start = token_start
-            chunk_end = None
-            current_lang = token_lang
+            current_visible_len = len(visible_text("".join(current_words)))
+            current_duration = max(0.0, (chunk_end or token_start) - chunk_start)
+            if current_visible_len >= 6 or current_duration >= max(0.6, split_config["soft_chunk_duration"] * 0.7):
+                flush_word_chunk(chunks, current_words, chunk_start, chunk_end or token_start)
+                current_words = []
+                chunk_start = token_start
+                chunk_end = None
+                current_lang = token_lang
 
         current_words.append(token)
         chunk_end = token_end
@@ -690,7 +847,7 @@ def split_segment_words(segment, split_config=None):
         joined_text = "".join(current_words).strip()
         duration = max(0.0, chunk_end - chunk_start)
         visible_len = len(visible_text(joined_text))
-        sentence_break = contains_sentence_break(token)
+        sentence_break = contains_sentence_break(token) or (allow_clause_breaks and contains_clause_break(token))
         long_enough = duration >= split_config["soft_chunk_duration"]
         too_long = duration >= split_config["max_chunk_duration"] or visible_len >= split_config["max_visible_chars"]
         enough_words = len(current_words) >= split_config["max_words_per_chunk"]
@@ -712,6 +869,110 @@ def split_segment_words(segment, split_config=None):
             chunk_end = None
 
     flush_word_chunk(chunks, current_words, chunk_start, chunk_end)
+    return chunks
+
+
+def split_text_by_clause_boundaries(text):
+    sample = str(text or "").strip()
+    if not sample:
+        return []
+
+    pieces = []
+    start = 0
+    for index, char in enumerate(sample):
+        should_break = char in "。！？!?；;、" or (char in "，," and not is_numeric_separator(sample, index))
+        if not should_break:
+            continue
+        piece = sample[start:index + 1].strip()
+        if piece:
+            pieces.append(piece)
+        start = index + 1
+
+    tail = sample[start:].strip()
+    if tail:
+        pieces.append(tail)
+    return pieces or [sample]
+
+
+def split_long_text_piece(piece, max_visible_chars):
+    sample = str(piece or "").strip()
+    if len(visible_text(sample)) <= max_visible_chars:
+        return [sample] if sample else []
+
+    chunks = []
+    current = ""
+    for char in sample:
+        candidate = f"{current}{char}"
+        if current and len(visible_text(candidate)) > max_visible_chars:
+            chunks.append(current.strip())
+            current = char
+        else:
+            current = candidate
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks
+
+
+def split_text_segment_by_clauses(segment, split_config=None):
+    split_config = resolve_split_config(split_config)
+    text = apply_domain_corrections(str(segment.get("text") or "").strip())
+    if not text:
+        return []
+
+    start = float(segment.get("start", 0.0) or 0.0)
+    end = float(segment.get("end", start) or start)
+    if end <= start:
+        return []
+
+    pieces = []
+    for piece in split_text_by_clause_boundaries(text):
+        pieces.extend(split_long_text_piece(piece, split_config["max_visible_chars"]))
+
+    if len(pieces) <= 1:
+        return [{"start": round(start, 2), "end": round(end, 2), "text": text}]
+
+    weights = [max(1, len(visible_text(piece))) for piece in pieces]
+    total_weight = max(1, sum(weights))
+    duration = end - start
+    cursor = start
+    chunks = []
+    for index, piece in enumerate(pieces):
+        if index == len(pieces) - 1:
+            piece_end = end
+        else:
+            piece_end = cursor + duration * (weights[index] / total_weight)
+        chunks.append({
+            "start": round(cursor, 2),
+            "end": round(piece_end, 2),
+            "text": apply_domain_corrections(piece)
+        })
+        cursor = piece_end
+    return chunks
+
+
+def split_filetrans_segments(raw_segments, split_config=None):
+    if not raw_segments:
+        return []
+
+    split_config = resolve_split_config(split_config)
+    chunks = []
+    split_count = 0
+    for segment in raw_segments:
+        words = segment.get("words") if isinstance(segment, dict) else None
+        if words:
+            next_chunks = split_segment_words(
+                MockSegment(segment["start"], segment["end"], segment["text"], words),
+                split_config=split_config,
+                allow_clause_breaks=True
+            )
+        else:
+            next_chunks = split_text_segment_by_clauses(segment, split_config=split_config)
+        if len(next_chunks) > 1:
+            split_count += len(next_chunks) - 1
+        chunks.extend(next_chunks)
+
+    if split_count:
+        print(f"   ✅ Filetrans 句级结果已细分为短字幕块: +{split_count} 段")
     return chunks
 
 
@@ -771,6 +1032,906 @@ def build_raw_subtitles(raw_segments, source_language=""):
             "en": en_text,
             "text": original_text,
         })
+    return subtitles
+
+
+def get_text_model_for_provider(provider):
+    if provider == "deepseek":
+        return os.getenv("DEEPSEEK_TEXT_MODEL", "deepseek-v4-pro")
+    if provider in {"gemini", "vertex"}:
+        return os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    return os.getenv("QWEN_TEXT_MODEL", "qwen-max")
+
+
+def parse_json_array_from_text(text):
+    payload = str(text or "").strip()
+    if not payload:
+        return []
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        match = re.search(r"\[[\s\S]*\]", payload)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+    return data if isinstance(data, list) else []
+
+
+def chunked(items, size):
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
+
+
+def read_reference_subtitles(file_path):
+    if not file_path or not os.path.exists(file_path):
+        return []
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return []
+
+    if isinstance(payload, dict):
+        for key in ("subtitles", "items", "segments", "data"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                payload = candidate
+                break
+
+    if not isinstance(payload, list):
+        return []
+
+    normalized = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        time_range = item.get("time")
+        if not isinstance(time_range, list) or len(time_range) < 2:
+            time_range = [item.get("start"), item.get("end")]
+        start = parse_seconds(time_range[0], milliseconds=False)
+        end = parse_seconds(time_range[1], milliseconds=False)
+        if start is None or end is None or end <= start:
+            continue
+        zh_text = apply_domain_corrections(str(item.get("zh") or item.get("text") or item.get("subtitle_text") or item.get("subtitle") or "").strip())
+        en_text = to_simplified_chinese(str(item.get("en") or item.get("english") or item.get("subtitle_en") or "").strip())
+        normalized.append({
+            "time": [start, end],
+            "zh": zh_text,
+            "en": en_text,
+            "text": zh_text or en_text
+        })
+
+    return normalized
+
+
+def summarize_reference_context(reference_subtitles, start, end, limit=4):
+    if not reference_subtitles:
+        return ""
+
+    center = (float(start) + float(end)) / 2.0
+    scored = []
+    for ref in reference_subtitles:
+        ref_time = ref.get("time") or [0.0, 0.0]
+        ref_start = float(ref_time[0] or 0.0)
+        ref_end = float(ref_time[1] or 0.0)
+        overlap = time_overlap_ratio(start, end, ref_start, ref_end)
+        if overlap > 0:
+            score = -overlap
+        else:
+            ref_center = (ref_start + ref_end) / 2.0
+            score = abs(ref_center - center)
+        text = str(ref.get("zh") or ref.get("text") or ref.get("en") or "").strip()
+        if text:
+            scored.append((score, text))
+
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda item: item[0])
+    return "\n".join(text for _score, text in scored[:max(1, int(limit))])
+
+
+def score_reference_alignment_window(asr_visible, reference_visible):
+    asr_sample = str(asr_visible or "").lower()
+    reference_sample = str(reference_visible or "").lower()
+    if not asr_sample or not reference_sample:
+        return 0.0
+
+    sequence_score = difflib.SequenceMatcher(None, asr_sample, reference_sample).ratio()
+    asr_chars = set(asr_sample)
+    reference_chars = set(reference_sample)
+    coverage_score = len(asr_chars & reference_chars) / max(1, len(asr_chars))
+    length_penalty = abs(len(reference_sample) - len(asr_sample)) / max(len(reference_sample), len(asr_sample), 1)
+    return sequence_score + coverage_score * 0.45 - length_penalty * 0.2
+
+
+def select_reference_context_for_asr(reference_text, asr_text, max_window_size=3):
+    reference_sample = str(reference_text or "").strip()
+    asr_visible = visible_text(asr_text)
+    if not reference_sample or not asr_visible:
+        return reference_sample
+
+    pieces = split_text_by_clause_boundaries(reference_sample)
+    if len(pieces) <= 1:
+        return reference_sample
+
+    best_score = 0.0
+    best_text = reference_sample
+    window_limit = max(1, int(max_window_size))
+    for start_index in range(len(pieces)):
+        max_size = min(window_limit, len(pieces) - start_index)
+        for size in range(1, max_size + 1):
+            candidate = "".join(pieces[start_index:start_index + size]).strip()
+            candidate_visible = visible_text(candidate)
+            if not candidate_visible:
+                continue
+            score = score_reference_alignment_window(asr_visible, candidate_visible)
+            if score > best_score:
+                best_score = score
+                best_text = candidate
+
+    return best_text if best_score >= 0.18 else reference_sample
+
+
+PROTECTED_TERM_LEADING_WORDS = {
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "to",
+    "with",
+}
+
+
+def normalize_protected_term(term):
+    cleaned = re.sub(r"\s+", " ", str(term or "")).strip()
+    if not cleaned or not re.search(r"[A-Za-z]", cleaned):
+        return ""
+
+    parts = cleaned.split()
+    while len(parts) > 1 and parts[0].lower() in PROTECTED_TERM_LEADING_WORDS:
+        parts = parts[1:]
+    cleaned = " ".join(parts).strip()
+    if not cleaned or cleaned.lower() in PROTECTED_TERM_LEADING_WORDS:
+        return ""
+    return cleaned
+
+
+def build_protected_terms(*texts, max_terms=8):
+    combined = "\n".join(str(text or "") for text in texts if str(text or "").strip())
+    if not combined:
+        return []
+
+    terms = []
+    for term in extract_preserve_terms(combined, max_terms=max(max_terms * 3, 12)):
+        normalized = normalize_protected_term(term)
+        if not normalized or normalized in terms:
+            continue
+        terms.append(normalized)
+        if len(terms) >= max_terms:
+            break
+    return terms
+
+
+def find_missing_protected_terms(text, protected_terms):
+    sample = str(text or "")
+    missing = []
+    for term in protected_terms or []:
+        candidate = str(term or "").strip()
+        if candidate and candidate not in sample:
+            missing.append(candidate)
+    return missing
+
+
+def apply_aligned_subtitle_result(subtitles, index, item, target):
+    placeholders = target.get("placeholders") or {}
+    reference_text = restore_preserved_terms(
+        str(target.get("reference_text") or ""),
+        placeholders
+    )
+    zh_text = str(item.get("zh") or "").strip()
+    en_text = str(item.get("en") or "").strip()
+    changed = False
+    if zh_text:
+        restored_text = restore_preserved_terms(zh_text, placeholders)
+        subtitles[index]["zh"] = apply_domain_corrections(
+            repair_reference_subtitle_text(restored_text, reference_text)
+        )
+        changed = True
+    if en_text:
+        restored_text = restore_preserved_terms(en_text, placeholders)
+        subtitles[index]["en"] = repair_reference_subtitle_text(restored_text, reference_text)
+        changed = True
+    if subtitles[index].get("zh"):
+        subtitles[index]["text"] = subtitles[index]["zh"]
+    elif subtitles[index].get("en"):
+        subtitles[index]["text"] = subtitles[index]["en"]
+    return changed
+
+
+def repair_alignment_protected_terms_with_llm(subtitles, repair_targets, provider, client, model, source_language="", batch_size=12):
+    if not repair_targets:
+        return subtitles, 0
+
+    emit_stage("subtitle_align_repair", f"正在修复 {len(repair_targets)} 条字幕中的英文专有名词")
+    prompt_template = """
+你是一名专业字幕修复师。下面 JSON 数组里每一条字幕已经完成 ASR 时间轴对齐，但 zh 字段可能把当前口播里的英文专有名词、品牌、人名、活动名、ticker 或缩写翻译成了中文。
+
+源语言提示：{source_language}
+
+修复规则：
+1. 严格保留数组条数不变，保持 index 和 time 原值。
+2. `protected_terms` 是当前 ASR 时间片里应原样保留的英文术语；这些词在 zh 字段中必须按原英文出现，不要翻译、意译或改写大小写。
+3. 只修复当前时间片，不要把 reference_text 中相邻时间片的内容扩写进本条。
+4. 可以翻译普通功能词和上下文说明，但不能改动时间轴。
+5. 输出纯 JSON 数组，不要 markdown 或说明。
+
+输入 JSON：
+{payload}
+
+输出 JSON 结构：
+[
+  {{
+    "index": 0,
+    "time": [0.0, 1.2],
+    "zh": "修复后的中文字幕",
+    "en": "Natural English subtitle"
+  }}
+]
+""".strip()
+
+    repaired_count = 0
+    for batch in chunked(repair_targets, batch_size):
+        prompt = prompt_template.format(
+            source_language=source_language or "auto",
+            payload=json.dumps(batch, ensure_ascii=False)
+        )
+        response = generate_content(
+            client,
+            model=model,
+            contents=prompt,
+            response_mime_type="application/json",
+            provider=provider
+        )
+        results = parse_json_array_from_text(getattr(response, "text", response))
+        target_lookup = {item["index"]: item for item in batch if isinstance(item, dict) and "index" in item}
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            target = target_lookup.get(index)
+            if not target or not (0 <= index < len(subtitles)):
+                continue
+            if apply_aligned_subtitle_result(subtitles, index, item, target):
+                zh_text = str(subtitles[index].get("zh") or subtitles[index].get("text") or "")
+                missing = find_missing_protected_terms(zh_text, target.get("protected_terms") or [])
+                if not missing:
+                    repaired_count += 1
+                else:
+                    print(f"   ⚠️ 字幕 {index} 仍缺少英文术语: {missing}")
+
+    if repaired_count:
+        print(f"   ✅ 已用大模型修复英文术语字幕: {repaired_count}/{len(repair_targets)}")
+    return subtitles, repaired_count
+
+
+def align_subtitles_with_reference(subtitles, reference_subtitles, source_language="", batch_size=24):
+    if not reference_subtitles:
+        return subtitles
+
+    targets = []
+    for index, entry in enumerate(subtitles):
+        time_range = entry.get("time")
+        if not isinstance(time_range, list) or len(time_range) < 2:
+            continue
+        start = parse_seconds(time_range[0], milliseconds=False)
+        end = parse_seconds(time_range[1], milliseconds=False)
+        if start is None or end is None or end <= start:
+            continue
+
+        asr_text = str(entry.get("zh") or entry.get("text") or entry.get("en") or "").strip()
+        reference_text = select_reference_context_for_asr(
+            summarize_reference_context(reference_subtitles, start, end),
+            asr_text
+        )
+        if not asr_text and not reference_text:
+            continue
+
+        preserve_terms = build_protected_terms(asr_text, reference_text, max_terms=12)
+        protected_terms = build_protected_terms(asr_text, max_terms=8)
+        masked_asr_text, placeholders = mask_preserved_terms(asr_text or reference_text, preserve_terms)
+        masked_reference_text, _ = mask_preserved_terms(reference_text, preserve_terms)
+        targets.append({
+            "index": index,
+            "time": [start, end],
+            "asr_text": masked_asr_text,
+            "reference_text": masked_reference_text,
+            "placeholders": placeholders,
+            "protected_terms": protected_terms,
+            "source_language": source_language
+        })
+
+    if not targets:
+        return subtitles
+
+    emit_stage("subtitle_align", f"正在结合 ASR 时间轴与参考字幕对齐 {len(targets)} 条字幕")
+    provider = get_text_llm_provider()
+    client = create_llm_client(provider=provider)
+    model = get_text_model_for_provider(provider)
+    prompt_template = load_prompt_text("run_asr_skill.md", "Reference Align Prompt")
+    prompt_template = (
+        prompt_template
+        + "\n\n补充要求：payload 中的 placeholders 映射只是候选保护项。"
+        + "只有当映射值是真实专有名词、公司/产品/协议名称、ticker、股票代码、常用缩写、法案名或账号名时，zh 才可以保留对应 [[TERM_n]]。"
+        + "如果映射值是普通英文单词、连接词、语气词、序数词、描述性短语或句首过渡词，zh 必须翻译成简体中文，不要输出该占位符。"
+        + "即使映射值是候选专有名词，只要它在中文财经/科技/加密语境里有稳定通用中文译名，zh 必须使用中文译名，不要输出该占位符。"
+        + "孤立单字母、残缺英文片段、ASR 听错的英文碎片，除非是明确 ticker、股票代码、常用缩写或账号名，否则必须结合上下文纠正、翻译或删去。"
+        + "zh 最终文本禁止出现被中文标点、空格或句首句尾孤立包围的单个拉丁字母。"
+        + "reference_text 可能仍包含相邻小句；必须以 asr_text 的当前时间片为范围，只纠正当前片段，不要把前后相邻片段内容扩进本条。"
+        + "如果 asr_text 是逗号前后的小句、短语或单个专有名词，zh 也必须保持同等范围和节奏。"
+        + "payload 中的 protected_terms 是从当前 ASR 时间片自动抽取的英文专有名词/缩写/人名/活动名；如果当前口播确实包含这些词，zh 中必须原样保留这些英文词，不要翻译成中文。"
+    )
+
+    updated_count = 0
+    repair_targets = []
+    for batch in chunked(targets, batch_size):
+        prompt = prompt_template.format(
+            source_language=source_language or "auto",
+            payload=json.dumps(batch, ensure_ascii=False)
+        )
+        response = generate_content(
+            client,
+            model=model,
+            contents=prompt,
+            response_mime_type="application/json",
+            provider=provider
+        )
+        results = parse_json_array_from_text(getattr(response, "text", response))
+        target_lookup = {item["index"]: item for item in batch if isinstance(item, dict) and "index" in item}
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= index < len(subtitles)):
+                continue
+            target = target_lookup.get(index, {})
+            apply_aligned_subtitle_result(subtitles, index, item, target)
+            missing_terms = find_missing_protected_terms(
+                subtitles[index].get("zh") or subtitles[index].get("text") or "",
+                target.get("protected_terms") or []
+            )
+            if missing_terms:
+                repair_targets.append({
+                    "index": index,
+                    "time": target.get("time") or subtitles[index].get("time"),
+                    "zh": subtitles[index].get("zh") or subtitles[index].get("text") or "",
+                    "en": subtitles[index].get("en") or "",
+                    "asr_text": restore_preserved_terms(str(target.get("asr_text") or ""), target.get("placeholders") or {}),
+                    "reference_text": restore_preserved_terms(str(target.get("reference_text") or ""), target.get("placeholders") or {}),
+                    "protected_terms": target.get("protected_terms") or [],
+                    "missing_protected_terms": missing_terms,
+                    "placeholders": {},
+                })
+            updated_count += 1
+
+    if repair_targets:
+        subtitles, _repaired_count = repair_alignment_protected_terms_with_llm(
+            subtitles,
+            repair_targets,
+            provider,
+            client,
+            model,
+            source_language=source_language,
+        )
+
+    print(f"   ✅ 已结合参考字幕对齐: {updated_count}/{len(targets)}")
+    return subtitles
+
+
+def repair_subtitles_with_reference_terms(subtitles, reference_subtitles):
+    if not subtitles or not reference_subtitles:
+        return subtitles
+
+    repaired_count = 0
+    for entry in subtitles:
+        if not isinstance(entry, dict):
+            continue
+        time_range = entry.get("time")
+        if not isinstance(time_range, list) or len(time_range) < 2:
+            continue
+        start = parse_seconds(time_range[0], milliseconds=False)
+        end = parse_seconds(time_range[1], milliseconds=False)
+        if start is None or end is None or end <= start:
+            continue
+
+        current_text = str(entry.get("zh") or entry.get("text") or entry.get("en") or "").strip()
+        reference_text = select_reference_context_for_asr(
+            summarize_reference_context(reference_subtitles, start, end),
+            current_text
+        )
+        if not reference_text:
+            continue
+
+        original_zh = str(entry.get("zh") or "").strip()
+        if original_zh:
+            repaired_zh = apply_domain_corrections(
+                repair_reference_subtitle_text(original_zh, reference_text)
+            )
+            if repaired_zh != original_zh:
+                entry["zh"] = repaired_zh
+                entry["text"] = repaired_zh
+                repaired_count += 1
+                continue
+
+        original_text = str(entry.get("text") or "").strip()
+        if original_text:
+            repaired_text = apply_domain_corrections(
+                repair_reference_subtitle_text(original_text, reference_text)
+            )
+            if repaired_text != original_text:
+                entry["text"] = repaired_text
+                if not entry.get("zh"):
+                    entry["zh"] = repaired_text
+                repaired_count += 1
+
+    if repaired_count:
+        print(f"   ✅ 已按参考文本补齐关键数字字幕: {repaired_count} 条")
+    return subtitles
+
+
+def refine_subtitles_with_llm(subtitles, source_language="", batch_size=24):
+    targets = []
+    for index, entry in enumerate(subtitles or []):
+        if not isinstance(entry, dict):
+            continue
+        time_range = entry.get("time")
+        if not isinstance(time_range, list) or len(time_range) < 2:
+            continue
+        start = parse_seconds(time_range[0], milliseconds=False)
+        end = parse_seconds(time_range[1], milliseconds=False)
+        if start is None or end is None or end <= start:
+            continue
+
+        zh_text = str(entry.get("zh") or entry.get("text") or "").strip()
+        en_text = str(entry.get("en") or "").strip()
+        primary_text = str(entry.get("text") or zh_text or en_text or "").strip()
+        if not (zh_text or en_text or primary_text):
+            continue
+
+        combined_terms_text = f"{zh_text}\n{en_text}\n{primary_text}"
+        preserve_terms = extract_preserve_terms(combined_terms_text)
+        _masked_combined, placeholders = mask_preserved_terms(combined_terms_text, preserve_terms)
+        masked_zh, _ = mask_preserved_terms(zh_text, preserve_terms)
+        masked_en, _ = mask_preserved_terms(en_text, preserve_terms)
+        masked_text, _ = mask_preserved_terms(primary_text, preserve_terms)
+        targets.append({
+            "index": index,
+            "time": [start, end],
+            "zh": masked_zh,
+            "en": masked_en,
+            "text": masked_text,
+            "placeholders": placeholders,
+        })
+
+    if not targets:
+        return subtitles
+
+    emit_stage("subtitle_refine", f"正在调用大模型精修 {len(targets)} 条字幕")
+    provider = get_text_llm_provider()
+    client = create_llm_client(provider=provider)
+    model = get_text_model_for_provider(provider)
+    prompt_template = load_prompt_text("run_asr_skill.md", "Refine Translate Prompt")
+    prompt_template = (
+        prompt_template
+        + "\n\n补充要求：每条输出必须包含输入里的 index 字段，方便按原条目回写。"
+        + "payload 中的 placeholders 映射只是候选保护项。"
+        + "只有当映射值是真实专有名词、公司/产品/协议名称、ticker、股票代码、常用缩写、法案名或账号名时，zh 才可以保留对应 [[TERM_n]]。"
+        + "如果映射值是普通英文单词、连接词、语气词、序数词、描述性短语或句首过渡词，zh 必须翻译成简体中文，不要输出该占位符。"
+        + "即使映射值是候选专有名词，只要它在中文财经/科技/加密语境里有稳定通用中文译名，zh 必须使用中文译名，不要输出该占位符。"
+        + "孤立单字母、残缺英文片段、ASR 听错的英文碎片，除非是明确 ticker、股票代码、常用缩写或账号名，否则必须结合上下文纠正、翻译或删去。"
+        + "zh 最终文本禁止出现被中文标点、空格或句首句尾孤立包围的单个拉丁字母。"
+        + "zh 字段必须使用简体中文。"
+    )
+
+    updated_count = 0
+    for batch in chunked(targets, batch_size):
+        prompt = prompt_template.format(
+            source_language=source_language or "auto",
+            payload=json.dumps(batch, ensure_ascii=False)
+        )
+        response = generate_content(
+            client,
+            model=model,
+            contents=prompt,
+            response_mime_type="application/json",
+            provider=provider
+        )
+        results = parse_json_array_from_text(getattr(response, "text", response))
+        target_lookup = {item["index"]: item for item in batch if isinstance(item, dict) and "index" in item}
+        for fallback_offset, item in enumerate(results):
+            if not isinstance(item, dict):
+                continue
+            fallback_index = batch[fallback_offset]["index"] if fallback_offset < len(batch) else None
+            try:
+                index = int(item.get("index", fallback_index))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= index < len(subtitles)):
+                continue
+
+            placeholders = target_lookup.get(index, {}).get("placeholders") or {}
+            zh_text = str(item.get("zh") or "").strip()
+            en_text = str(item.get("en") or "").strip()
+            if zh_text:
+                subtitles[index]["zh"] = apply_domain_corrections(
+                    restore_preserved_terms(zh_text, placeholders)
+                )
+            if en_text:
+                subtitles[index]["en"] = to_simplified_chinese(
+                    restore_preserved_terms(en_text, placeholders)
+                )
+            if subtitles[index].get("zh"):
+                subtitles[index]["text"] = subtitles[index]["zh"]
+            elif subtitles[index].get("en"):
+                subtitles[index]["text"] = subtitles[index]["en"]
+            updated_count += 1
+
+    print(f"   ✅ 已完成大模型字幕精修: {updated_count}/{len(targets)}")
+    return subtitles
+
+
+def get_subtitle_primary_text(entry):
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("zh") or entry.get("text") or entry.get("en") or "").strip()
+
+
+def build_reference_visible_texts(reference_subtitles):
+    texts = []
+    for item in reference_subtitles or []:
+        text = get_subtitle_primary_text(item)
+        normalized = visible_text(text)
+        if normalized:
+            texts.append(normalized)
+    return texts
+
+
+def reference_contains_contiguous_text(left_text, right_text, reference_visible_texts):
+    combined = visible_text(f"{left_text}{right_text}")
+    if not combined:
+        return False
+    return any(combined in ref_text for ref_text in reference_visible_texts)
+
+
+def forms_split_data_token(left_text, right_text):
+    left = re.sub(r"\s+", "", str(left_text or ""))
+    right = re.sub(r"\s+", "", str(right_text or ""))
+    if not left or not right:
+        return False
+    return bool(
+        (re.search(r"\d[.,]$", left) and re.match(r"^\d", right))
+        or (re.search(r"\d$", left) and re.match(r"^[.,]\d", right))
+        or (re.search(r"\d$", left) and right.startswith("%"))
+        or (left.endswith("$") and re.match(r"[A-Za-z0-9]", right))
+    )
+
+
+def is_short_orphan_subtitle(text):
+    normalized = visible_text(text)
+    return 0 < len(normalized) <= 2
+
+
+def should_merge_reference_continuation(previous, current, reference_visible_texts):
+    previous_text = get_subtitle_primary_text(previous)
+    current_text = get_subtitle_primary_text(current)
+    if not previous_text or not current_text:
+        return False
+    if forms_split_data_token(previous_text, current_text):
+        return True
+    return (
+        is_short_orphan_subtitle(current_text)
+        and reference_contains_contiguous_text(previous_text, current_text, reference_visible_texts)
+    )
+
+
+GENERIC_LOCATION_PREFIX_PATTERN = re.compile(r"^[\u4e00-\u9fff]{1,8}上[，,、\s]*")
+DUPLICATE_PREFIX_STRIP_CHARS = " \t\r\n，,、。.!?！？；;：:"
+DUPLICATE_PREFIX_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?")
+DUPLICATE_PREFIX_MIN_VISIBLE_CHARS = 4
+DUPLICATE_PREFIX_MIN_WORDS = 3
+DUPLICATE_PREFIX_MAX_WORDS = 10
+
+
+def strip_duplicate_prefix_boundary(text):
+    return str(text or "").lstrip(DUPLICATE_PREFIX_STRIP_CHARS)
+
+
+def raw_index_after_visible_prefix(text, visible_length):
+    if visible_length <= 0:
+        return 0
+
+    count = 0
+    for index, char in enumerate(str(text or "")):
+        visible_char = visible_text(char)
+        if not visible_char:
+            continue
+        count += len(visible_char)
+        if count >= visible_length:
+            return index + 1
+    return None
+
+
+def trim_duplicate_visible_prefix(previous_text, current_text, min_overlap=DUPLICATE_PREFIX_MIN_VISIBLE_CHARS):
+    current = str(current_text or "")
+    previous_visible = visible_text(previous_text).lower()
+    current_visible = visible_text(current).lower()
+    if len(previous_visible) < min_overlap or len(current_visible) < min_overlap:
+        return current
+
+    max_overlap = min(len(previous_visible), len(current_visible))
+    for overlap_length in range(max_overlap, min_overlap - 1, -1):
+        if not previous_visible.endswith(current_visible[:overlap_length]):
+            continue
+        raw_index = raw_index_after_visible_prefix(current, overlap_length)
+        if raw_index is None:
+            continue
+        trimmed = strip_duplicate_prefix_boundary(current[raw_index:])
+        if visible_text(trimmed):
+            return trimmed
+        return current
+    return current
+
+
+def normalize_duplicate_word(word):
+    normalized = str(word or "").lower()
+    if normalized.endswith("'s"):
+        normalized = normalized[:-2]
+    if len(normalized) > 3 and normalized.endswith("s"):
+        normalized = normalized[:-1]
+    return normalized
+
+
+def duplicate_words_with_spans(text):
+    words = []
+    for match in DUPLICATE_PREFIX_WORD_PATTERN.finditer(str(text or "")):
+        normalized = normalize_duplicate_word(match.group(0))
+        if normalized:
+            words.append((normalized, match.start(), match.end()))
+    return words
+
+
+def trim_duplicate_latin_prefix(previous_text, current_text):
+    current = str(current_text or "")
+    previous_words = [word for word, _start, _end in duplicate_words_with_spans(previous_text)]
+    current_words = duplicate_words_with_spans(current)
+    if len(previous_words) < DUPLICATE_PREFIX_MIN_WORDS or len(current_words) < DUPLICATE_PREFIX_MIN_WORDS:
+        return current
+
+    max_overlap = min(len(previous_words), len(current_words), DUPLICATE_PREFIX_MAX_WORDS)
+    current_normalized = [word for word, _start, _end in current_words]
+    for overlap_length in range(max_overlap, DUPLICATE_PREFIX_MIN_WORDS - 1, -1):
+        if previous_words[-overlap_length:] != current_normalized[:overlap_length]:
+            continue
+        trim_end = current_words[overlap_length - 1][2]
+        trimmed = strip_duplicate_prefix_boundary(current[trim_end:])
+        if re.search(r"[A-Za-z0-9\u4e00-\u9fff]", trimmed):
+            return trimmed
+        return current
+    return current
+
+
+def trim_reference_duplicate_prefix(previous, current, reference_visible_texts):
+    previous_text = get_subtitle_primary_text(previous)
+    current_text = get_subtitle_primary_text(current)
+    if not previous_text or not current_text:
+        return current, False
+
+    updated = None
+
+    duplicate_trimmed_text = trim_duplicate_visible_prefix(previous_text, current_text)
+    if duplicate_trimmed_text != current_text:
+        updated = dict(current)
+        if str(updated.get("zh") or "").strip():
+            updated["zh"] = duplicate_trimmed_text
+        updated["text"] = duplicate_trimmed_text
+        current = updated
+        current_text = duplicate_trimmed_text
+
+    previous_en = str(previous.get("en") or "").strip()
+    current_en = str(current.get("en") or "").strip()
+    if previous_en and current_en:
+        trimmed_en = trim_duplicate_latin_prefix(previous_en, current_en)
+        if trimmed_en == current_en:
+            trimmed_en = trim_duplicate_visible_prefix(previous_en, current_en, min_overlap=8)
+        if trimmed_en != current_en:
+            updated = dict(current)
+            updated["en"] = trimmed_en
+            current = updated
+
+    if updated is not None:
+        return current, True
+
+    match = GENERIC_LOCATION_PREFIX_PATTERN.match(current_text)
+    if not match:
+        return current, False
+
+    trimmed_text = current_text[match.end():].lstrip("，,、 ")
+    if not trimmed_text:
+        return current, False
+
+    previous_visible = visible_text(previous_text)
+    current_visible = visible_text(current_text)
+    trimmed_visible = visible_text(trimmed_text)
+    if not (previous_visible and current_visible and trimmed_visible):
+        return current, False
+
+    original_combined = f"{previous_visible}{current_visible}"
+    trimmed_combined = f"{previous_visible}{trimmed_visible}"
+    location_suffix_combined = f"{previous_visible}上{trimmed_visible}"
+    if any(original_combined in ref_text for ref_text in reference_visible_texts):
+        return current, False
+    if not any(
+        trimmed_combined in ref_text or location_suffix_combined in ref_text
+        for ref_text in reference_visible_texts
+    ):
+        return current, False
+
+    updated = dict(current)
+    for key in ("zh", "text"):
+        if str(updated.get(key) or "").strip() == current_text:
+            updated[key] = trimmed_text
+    return updated, True
+
+
+def join_subtitle_text(left_text, right_text):
+    left = str(left_text or "").strip()
+    right = str(right_text or "").strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if forms_split_data_token(left, right):
+        return f"{left}{right}"
+    if re.search(r"[\u4e00-\u9fff]$", left) or re.match(r"^[\u4e00-\u9fff]", right):
+        return f"{left}{right}"
+    return f"{left} {right}"
+
+
+def merge_subtitle_entries(previous, current):
+    merged = dict(previous)
+    previous_time = previous.get("time") if isinstance(previous.get("time"), list) else [previous.get("start"), previous.get("end")]
+    current_time = current.get("time") if isinstance(current.get("time"), list) else [current.get("start"), current.get("end")]
+    start = parse_seconds(previous_time[0], milliseconds=False)
+    end = parse_seconds(current_time[1], milliseconds=False)
+    if start is not None and end is not None and end > start:
+        merged["time"] = [start, end]
+
+    previous_text = get_subtitle_primary_text(previous)
+    current_text = get_subtitle_primary_text(current)
+    merged_text = apply_domain_corrections(join_subtitle_text(previous_text, current_text))
+    merged["zh"] = merged_text
+    merged["text"] = merged_text
+
+    previous_en = str(previous.get("en") or "").strip()
+    current_en = str(current.get("en") or "").strip()
+    if previous_en and current_en and forms_split_data_token(previous_en, current_en):
+        merged["en"] = join_subtitle_text(previous_en, current_en)
+    elif previous_en:
+        merged["en"] = previous_en
+    elif current_en:
+        merged["en"] = current_en
+
+    return merged
+
+
+def merge_reference_continuations(subtitles, reference_subtitles):
+    if not subtitles or not reference_subtitles:
+        return subtitles
+
+    reference_visible_texts = build_reference_visible_texts(reference_subtitles)
+    if not reference_visible_texts:
+        return subtitles
+
+    merged = []
+    merge_count = 0
+    trim_count = 0
+    for entry in subtitles:
+        if merged and should_merge_reference_continuation(merged[-1], entry, reference_visible_texts):
+            merged[-1] = merge_subtitle_entries(merged[-1], entry)
+            merge_count += 1
+        else:
+            if merged:
+                entry, trimmed = trim_reference_duplicate_prefix(merged[-1], entry, reference_visible_texts)
+                if trimmed:
+                    trim_count += 1
+            merged.append(entry)
+
+    if merge_count:
+        print(f"   ✅ 已合并参考文本连续字幕碎片: {merge_count} 处")
+    if trim_count:
+        print(f"   ✅ 已清理参考文本相邻重复前缀: {trim_count} 处")
+    return merged
+
+
+def backfill_chinese_subtitles(subtitles, source_language="", batch_size=40):
+    subtitles = normalize_subtitles_to_simplified(subtitles)
+    targets = []
+    for index, entry in enumerate(subtitles):
+        zh_text = str(entry.get("zh") or entry.get("text") or "").strip()
+        en_text = str(entry.get("en") or "").strip()
+        source_text = en_text or zh_text
+        if not source_text:
+            continue
+        if has_cjk(zh_text) and zh_text != en_text:
+            continue
+        if is_english_language(source_language) or is_english_like(source_text) or not has_cjk(zh_text):
+            masked_text, placeholders = mask_preserved_terms(source_text)
+            targets.append({
+                "index": index,
+                "text": masked_text,
+                "placeholders": placeholders,
+                "source_text": source_text
+            })
+
+    if not targets:
+        return subtitles
+
+    emit_stage("subtitle_translate", f"正在翻译 {len(targets)} 条中文字幕")
+    provider = get_text_llm_provider()
+    client = create_llm_client(provider=provider)
+    model = get_text_model_for_provider(provider)
+    prompt_template = load_prompt_text("run_asr_skill.md", "Chinese Backfill Prompt")
+    prompt_template = (
+        prompt_template
+        + "\n\n补充要求：payload 中的 placeholders 映射只是候选保护项。"
+        + "只有当映射值是真实专有名词、公司/产品/协议名称、ticker、股票代码、常用缩写、法案名或账号名时，zh 才可以保留对应 [[TERM_n]]。"
+        + "如果映射值是普通英文单词、连接词、语气词、序数词、描述性短语或句首过渡词，zh 必须翻译成简体中文，不要输出该占位符。"
+        + "即使映射值是候选专有名词，只要它在中文财经/科技/加密语境里有稳定通用中文译名，zh 必须使用中文译名，不要输出该占位符。"
+        + "孤立单字母、残缺英文片段、ASR 听错的英文碎片，除非是明确 ticker、股票代码、常用缩写或账号名，否则必须结合上下文纠正、翻译或删去。"
+        + "zh 最终文本禁止出现被中文标点、空格或句首句尾孤立包围的单个拉丁字母。"
+    )
+
+    translated_count = 0
+    for batch in chunked(targets, batch_size):
+        prompt = prompt_template.format(payload=json.dumps(batch, ensure_ascii=False))
+        response = generate_content(
+            client,
+            model=model,
+            contents=prompt,
+            response_mime_type="application/json",
+            provider=provider
+        )
+        results = parse_json_array_from_text(getattr(response, "text", response))
+        target_lookup = {item["index"]: item for item in batch if isinstance(item, dict) and "index" in item}
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            zh_text = str(item.get("zh") or "").strip()
+            if 0 <= index < len(subtitles) and zh_text:
+                placeholders = target_lookup.get(index, {}).get("placeholders") or {}
+                restored_text = restore_preserved_terms(zh_text, placeholders)
+                subtitles[index]["zh"] = apply_domain_corrections(restored_text)
+                translated_count += 1
+
+    print(f"   ✅ 已补全中文字幕: {translated_count}/{len(targets)}")
     return subtitles
 
 
@@ -885,17 +2046,21 @@ def main():
     parser.add_argument("--audio-json", default="audio.json", help="Output audio timeline JSON file.")
     parser.add_argument("--subtitles-json", default="subtitles.json", help="Output subtitles JSON file.")
     parser.add_argument("--speaker-scene-json", default="speaker_scene.json", help="Output speaker/scene JSON file.")
+    parser.add_argument("--reference-subtitles-json", default="", help="Reference subtitle JSON file used to align ASR timing with more accurate text.")
     parser.add_argument("--max-chunk-duration", type=float, default=DEFAULT_SPLIT_CONFIG["max_chunk_duration"], help="Maximum subtitle chunk duration in seconds.")
     parser.add_argument("--soft-chunk-duration", type=float, default=DEFAULT_SPLIT_CONFIG["soft_chunk_duration"], help="Preferred subtitle chunk duration in seconds.")
     parser.add_argument("--max-visible-chars", type=int, default=DEFAULT_SPLIT_CONFIG["max_visible_chars"], help="Maximum visible characters before forcing a split.")
     parser.add_argument("--max-words-per-chunk", type=int, default=DEFAULT_SPLIT_CONFIG["max_words_per_chunk"], help="Maximum token count before forcing a split.")
     parser.add_argument("--pause-threshold", type=float, default=DEFAULT_SPLIT_CONFIG["pause_threshold"], help="Pause threshold in seconds for natural splits.")
     parser.add_argument("--force-english-rescue", action="store_true", help="Always run an extra English rescue transcription pass.")
+    parser.add_argument("--translate-subtitles", action="store_true", help="Backfill Chinese subtitles with the configured text LLM.")
+    parser.add_argument("--refine-subtitles", action="store_true", help="Run an LLM subtitle refinement pass without changing timing.")
     args = parser.parse_args()
     input_video = args.input
     audio_json_path = args.audio_json
     subtitles_json_path = args.subtitles_json
     speaker_scene_json_path = args.speaker_scene_json
+    reference_subtitles = read_reference_subtitles(args.reference_subtitles_json)
 
     emit_stage("audio_probe", f"正在检测视频音轨: {input_video}")
     if not video_has_audio_stream(input_video):
@@ -981,9 +2146,43 @@ def main():
         print("Whisper 未能识别出任何有效文本。")
         final_subtitles = []
     else:
-        print("   -> 跳过 LLM 字幕精修与翻译，直接使用 ASR 原始文本。")
         final_subtitles = build_raw_subtitles(raw_segments, detected_language)
+        if reference_subtitles:
+            try:
+                print("   -> 正在结合参考字幕与 ASR 时间轴进行对齐。")
+                final_subtitles = align_subtitles_with_reference(final_subtitles, reference_subtitles, detected_language)
+            except Exception as err:
+                print(f"   ⚠️ 参考字幕对齐失败，继续使用 ASR 原始文本: {err}")
+                if args.translate_subtitles:
+                    try:
+                        print("   -> 正在调用 LLM 补全中文字幕。")
+                        final_subtitles = backfill_chinese_subtitles(final_subtitles, detected_language)
+                    except Exception as err2:
+                        print(f"   ⚠️ 中文字幕补全失败，继续使用 ASR 原始文本: {err2}")
+        elif args.translate_subtitles:
+            try:
+                print("   -> 正在调用 LLM 补全中文字幕。")
+                final_subtitles = backfill_chinese_subtitles(final_subtitles, detected_language)
+            except Exception as err:
+                print(f"   ⚠️ 中文字幕补全失败，继续使用 ASR 原始文本: {err}")
+        else:
+            print("   -> 跳过 LLM 字幕精修与翻译，直接使用 ASR 原始文本。")
 
+    if reference_subtitles and final_subtitles:
+        final_subtitles = merge_reference_continuations(final_subtitles, reference_subtitles)
+
+    if args.refine_subtitles and final_subtitles:
+        try:
+            print("   -> 正在调用 LLM 精修字幕文本，保留 ASR 时间轴。")
+            final_subtitles = refine_subtitles_with_llm(final_subtitles, detected_language)
+        except Exception as err:
+            print(f"   ⚠️ 大模型字幕精修失败，继续使用当前字幕: {err}")
+
+    if reference_subtitles and final_subtitles:
+        final_subtitles = repair_subtitles_with_reference_terms(final_subtitles, reference_subtitles)
+        final_subtitles = merge_reference_continuations(final_subtitles, reference_subtitles)
+
+    final_subtitles = normalize_subtitles_to_simplified(final_subtitles)
     director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["text"]} for seg in final_subtitles]
     with open(audio_json_path, "w", encoding="utf-8") as f:
         json.dump(director_data, f, ensure_ascii=False, indent=2)

@@ -24,9 +24,7 @@ function createPublishHandlers(deps) {
     retryWechatRpa,
     cancelWechatRpa,
     checkWechatLogin,
-    triggerAutoPilotNow,
-    readReviewConfig,
-    readMediaMetadata
+    triggerAutoPilotNow
   } = deps;
 
   return {
@@ -95,7 +93,7 @@ function createPublishHandlers(deps) {
       try {
         const assets = collectPublishAssets();
         const assetId = String(req.body?.assetId || '').trim();
-        const tagStrategy = String(req.body?.tagStrategy || 'system').trim() === 'model' ? 'model' : 'system';
+        const tagStrategy = String(req.body?.tagStrategy || 'model').trim() === 'system' ? 'system' : 'model';
         if (!assetId) return sendError(res, { status: 400, code: 'PUBLISH_ASSET_MISSING', stage: 'publish.description', error: '请选择要发布的视频素材' });
 
         const asset = assets.find((item) => item.id === assetId);
@@ -208,10 +206,11 @@ function createPublishHandlers(deps) {
         const incomingSelections = req.body?.platformSelections && typeof req.body.platformSelections === 'object' ? req.body.platformSelections : {};
         const title = String(req.body?.title || '').trim();
         const description = String(req.body?.description || '').trim();
-        const tags = Array.isArray(req.body?.tags) ? req.body.tags : String(req.body?.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+        const incomingTags = Array.isArray(req.body?.tags) ? req.body.tags : String(req.body?.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
         const coverUrl = String(req.body?.coverUrl || '').trim();
         const scheduledTime = String(req.body?.scheduledTime || '').trim();
-        const tagStrategy = String(req.body?.tagStrategy || 'system').trim() === 'model' ? 'model' : 'system';
+        const tagStrategy = String(req.body?.tagStrategy || 'model').trim() === 'system' ? 'system' : 'model';
+        const tags = tagStrategy === 'model' ? [] : incomingTags;
 
         if (!assetId) return sendError(res, { status: 400, code: 'PUBLISH_ASSET_MISSING', stage: 'publish.create_job', error: '请选择要发布的视频素材' });
         if (!title) return sendError(res, { status: 400, code: 'PUBLISH_TITLE_MISSING', stage: 'publish.create_job', error: '请填写发布标题' });
@@ -219,44 +218,6 @@ function createPublishHandlers(deps) {
 
         const asset = assets.find((item) => item.id === assetId);
         if (!asset) return sendError(res, { status: 404, code: 'PUBLISH_ASSET_NOT_FOUND', stage: 'publish.create_job', error: '所选视频素材不存在' });
-
-        // 检查AI审核状态
-        if (readReviewConfig && readMediaMetadata) {
-          try {
-            const reviewConfig = readReviewConfig();
-            if (reviewConfig.enabled && reviewConfig.require_manual_confirm) {
-              const metadata = readMediaMetadata(asset.path);
-              const aiReview = metadata?.aiReview;
-
-              if (!aiReview || aiReview.status === 'pending' || aiReview.status === 'reviewing') {
-                return sendError(res, {
-                  status: 400,
-                  code: 'REVIEW_REQUIRED',
-                  stage: 'publish.create_job',
-                  error: '该视频尚未通过AI审核，请先完成审核',
-                  hint: '可以在素材列表中点击"审核"按钮，或手动跳过审核'
-                });
-              }
-
-              if (aiReview.status === 'failed' && !aiReview.manuallySkipped) {
-                return sendError(res, {
-                  status: 400,
-                  code: 'REVIEW_FAILED',
-                  stage: 'publish.create_job',
-                  error: `该视频AI审核未通过（得分：${aiReview.overallScore || 0}/${reviewConfig.min_pass_score}）`,
-                  hint: '请查看修复建议后重新生成，或手动跳过审核',
-                  reviewResult: {
-                    overallScore: aiReview.overallScore,
-                    scores: aiReview.scores,
-                    fixSuggestions: aiReview.fixSuggestions
-                  }
-                });
-              }
-            }
-          } catch (err) {
-            console.warn('审核状态检查失败，继续创建任务:', err.message);
-          }
-        }
 
         const shortTitle = buildShortTitle(title, '热点速递');
         let finalDescription = description;
@@ -312,6 +273,9 @@ function createPublishHandlers(deps) {
           }
           platformSelections[platformKey] = normalizedSelection;
           const task = buildPublishTask(platformKey, publishData, asset.url, platformConfig, normalizedSelection);
+          if (scheduledTime && ['pending', 'pending_integration', 'ready', 'rpa_available'].includes(String(task.status || ''))) {
+            task.status = 'scheduled_wait';
+          }
           const validation = platformKey === 'wechatChannels'
             ? validateWechatTaskConfig(platformConfig, task)
             : collectPlatformValidation(platformKey, platformConfig, task.requiredFields || []);

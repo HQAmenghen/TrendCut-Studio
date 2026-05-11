@@ -397,11 +397,12 @@ function buildScoreDeltaTags(comparison) {
 async function refreshList() {
   loading.value = true;
   try {
-    const res = await fetch('/api/publish/assets');
+    const res = await fetch('/api/publish/assets?refresh=1');
     const data = await res.json();
     if (data.success) {
       videos.value = (data.assets || [])
         .filter((asset) => String(asset?.path || '').toLowerCase().endsWith('.mp4'))
+        .filter((asset) => !asset?.metadata?.reviewCenterHiddenAt)
         .map((asset) => {
           const rawReview = asset?.metadata?.aiReview || null;
           const normalizedReview = rawReview ? {
@@ -467,10 +468,12 @@ async function reviewVideo(video) {
     if (data.success) {
       await refreshList();
     } else {
+      await refreshList();
       alert('审核失败: ' + (data.error || '未知错误'));
     }
   } catch (err) {
     console.error('审核失败:', err);
+    await refreshList();
     alert('审核失败: ' + err.message);
   } finally {
     setReviewing(video.path, false);
@@ -498,7 +501,8 @@ async function deleteReview(video) {
   if (!confirm('确定删除审核记录吗？')) return;
 
   try {
-    const res = await fetch(`/api/review/${video.reviewStatus.reviewId}`, {
+    const params = new URLSearchParams({ videoPath: video.path });
+    const res = await fetch(`/api/review/${encodeURIComponent(video.reviewStatus.reviewId)}?${params.toString()}`, {
       method: 'DELETE'
     });
     const data = await res.json();

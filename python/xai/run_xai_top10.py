@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import re
@@ -88,6 +89,18 @@ RUN_LOG_PATH = BASE_DIR / "run_log.txt"
 RUN_ERROR_PATH = BASE_DIR / "run_error.log"
 X_SEARCH_COST_PER_1000 = 5.0
 ACCOUNTS_CONFIG_PATH = BASE_DIR / "xai_accounts.json"
+DEFAULT_PARTITION_ID = "crypto"
+DEFAULT_PARTITION_META = {
+    "crypto": {"label": "加密", "description": "Crypto / Web3 热点账号池"},
+    "finance": {"label": "金融", "description": "宏观、市场和金融账号池"},
+    "tech": {"label": "科技", "description": "科技产品和创业账号池"},
+    "ai": {"label": "AI", "description": "AI 模型、应用和研究账号池"},
+}
+CURRENT_PARTITION = {
+    "id": DEFAULT_PARTITION_ID,
+    "label": DEFAULT_PARTITION_META[DEFAULT_PARTITION_ID]["label"],
+    "description": DEFAULT_PARTITION_META[DEFAULT_PARTITION_ID]["description"],
+}
 XAI_INPUT_COST_PER_1M = float(os.getenv("XAI_INPUT_COST_PER_1M", "3.0"))
 XAI_CACHED_INPUT_COST_PER_1M = float(os.getenv("XAI_CACHED_INPUT_COST_PER_1M", "0.75"))
 XAI_OUTPUT_COST_PER_1M = float(os.getenv("XAI_OUTPUT_COST_PER_1M", "15.0"))
@@ -152,22 +165,110 @@ def clean_secret(value: str | None) -> str | None:
     return cleaned or None
 
 
-def load_accounts() -> list[str]:
-    accounts = list(DEFAULT_ACCOUNTS)
-    seen = set(DEFAULT_ACCOUNTS)
-    try:
-        if not ACCOUNTS_CONFIG_PATH.exists():
-            return accounts
-        payload = json.loads(ACCOUNTS_CONFIG_PATH.read_text(encoding="utf-8"))
-        for account in payload.get("accounts", []):
+def normalize_partition_id(value: str | None, fallback: str = DEFAULT_PARTITION_ID) -> str:
+    raw = str(value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", raw).strip("-")[:40]
+    return normalized or fallback
+
+
+def sanitize_account_list(values) -> list[str]:
+    accounts: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(values, list):
+        return accounts
+    for account in values:
+        normalized = str(account).strip().lstrip("@")
+        if not normalized or normalized in seen:
+            continue
+        accounts.append(normalized)
+        seen.add(normalized)
+    return accounts
+
+
+def merge_account_lists(*groups: list[str]) -> list[str]:
+    accounts: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for account in group:
             normalized = str(account).strip().lstrip("@")
             if not normalized or normalized in seen:
                 continue
             accounts.append(normalized)
             seen.add(normalized)
+    return accounts
+
+
+def load_accounts(partition_id: str = DEFAULT_PARTITION_ID) -> tuple[list[str], dict]:
+    selected_id = normalize_partition_id(partition_id)
+    default_meta = DEFAULT_PARTITION_META.get(selected_id, {})
+    selected_meta = {
+        "id": selected_id,
+        "label": default_meta.get("label") or selected_id,
+        "description": default_meta.get("description") or "",
+    }
+    try:
+        if not ACCOUNTS_CONFIG_PATH.exists():
+            accounts = list(DEFAULT_ACCOUNTS) if selected_id == DEFAULT_PARTITION_ID else []
+            return accounts, selected_meta
+        payload = json.loads(ACCOUNTS_CONFIG_PATH.read_text(encoding="utf-8"))
+
+        partitions = payload.get("partitions")
+        if isinstance(partitions, list):
+            selected_partition = None
+            for partition in partitions:
+                if not isinstance(partition, dict):
+                    continue
+                candidate_id = normalize_partition_id(partition.get("id") or partition.get("key") or partition.get("label"))
+                if candidate_id == selected_id:
+                    selected_partition = partition
+                    break
+
+            if selected_partition is None:
+                selected_partition = next((item for item in partitions if isinstance(item, dict)), {})
+                selected_id = normalize_partition_id(selected_partition.get("id") if isinstance(selected_partition, dict) else None)
+
+            if isinstance(selected_partition, dict):
+                default_meta = DEFAULT_PARTITION_META.get(selected_id, {})
+                selected_meta = {
+                    "id": selected_id,
+                    "label": str(selected_partition.get("label") or selected_partition.get("name") or default_meta.get("label") or selected_id).strip(),
+                    "description": str(selected_partition.get("description") or default_meta.get("description") or "").strip(),
+                }
+                configured_accounts = sanitize_account_list(selected_partition.get("accounts"))
+                accounts = configured_accounts
+                if selected_id == DEFAULT_PARTITION_ID:
+                    accounts = merge_account_lists(list(DEFAULT_ACCOUNTS), configured_accounts)
+                return accounts, selected_meta
+
+        configured_accounts = sanitize_account_list(payload.get("accounts"))
+        accounts = configured_accounts
+        if selected_id == DEFAULT_PARTITION_ID:
+            accounts = merge_account_lists(list(DEFAULT_ACCOUNTS), configured_accounts)
+        return accounts, selected_meta
     except (json.JSONDecodeError, OSError, TypeError, AttributeError):
         pass
-    return accounts
+    accounts = list(DEFAULT_ACCOUNTS) if selected_id == DEFAULT_PARTITION_ID else []
+    return accounts, selected_meta
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run xAI Top10 discovery for a configured account partition.")
+    parser.add_argument("--partition-id", default=DEFAULT_PARTITION_ID)
+    parser.add_argument("--result", default=str(RESULT_PATH))
+    parser.add_argument("--partial", default=str(PARTIAL_PATH))
+    parser.add_argument("--log", default=str(RUN_LOG_PATH))
+    parser.add_argument("--error-log", default=str(RUN_ERROR_PATH))
+    return parser.parse_args(argv)
+
+
+def configure_run_paths(args: argparse.Namespace) -> None:
+    global RESULT_PATH, PARTIAL_PATH, RUN_LOG_PATH, RUN_ERROR_PATH
+    RESULT_PATH = Path(args.result)
+    PARTIAL_PATH = Path(args.partial)
+    RUN_LOG_PATH = Path(args.log)
+    RUN_ERROR_PATH = Path(args.error_log)
+    for target in [RESULT_PATH, PARTIAL_PATH, RUN_LOG_PATH, RUN_ERROR_PATH]:
+        target.parent.mkdir(parents=True, exist_ok=True)
 
 
 def build_client() -> OpenAI:
@@ -247,6 +348,7 @@ def write_partial(stage: str, done: int, total: int, collected: int) -> None:
                 "done": done,
                 "total": total,
                 "collected_items": collected,
+                "partition": CURRENT_PARTITION,
             },
             ensure_ascii=False,
             indent=2,
@@ -1145,13 +1247,19 @@ def build_cost_estimate(total_accounts: int, total_enrich: int, total_followers:
 
 
 def main() -> int:
+    global CURRENT_PARTITION
+    args = parse_args()
+    configure_run_paths(args)
     RUN_LOG_PATH.write_text("", encoding="utf-8")
     RUN_ERROR_PATH.write_text("", encoding="utf-8")
     PARTIAL_PATH.write_text("", encoding="utf-8")
     log("Run started.")
-    emit_stage("bootstrap", "正在启动 xAI Top10 榜单任务")
+    accounts, partition = load_accounts(args.partition_id)
+    CURRENT_PARTITION = partition
+    if not accounts:
+        raise RuntimeError(f"Partition {partition.get('label') or partition.get('id')} has no accounts configured.")
+    emit_stage("bootstrap", f"正在启动 {partition.get('label')} Top10 榜单任务")
     reset_usage_totals()
-    accounts = load_accounts()
 
     try:
         build_client()
@@ -1183,8 +1291,8 @@ def main() -> int:
     candidates = []
     completed = 0
     total_accounts = len(accounts)
-    log(f"Starting candidate scan for {total_accounts} accounts with concurrency {CANDIDATE_WORKERS}.")
-    emit_stage("candidate_scan", f"开始扫描 {total_accounts} 个账号的候选视频")
+    log(f"Starting candidate scan for {total_accounts} accounts in partition {partition.get('id')} with concurrency {CANDIDATE_WORKERS}.")
+    emit_stage("candidate_scan", f"开始扫描「{partition.get('label')}」{total_accounts} 个账号的候选视频")
 
     with ThreadPoolExecutor(max_workers=CANDIDATE_WORKERS) as executor:
         future_map = {
@@ -1312,11 +1420,14 @@ def main() -> int:
                 "video_resolution": item.get("video_resolution"),
                 "video_meets_720p": item.get("video_meets_720p"),
                 "video_variant_count": item.get("video_variant_count"),
+                "source_partition_id": partition.get("id"),
+                "source_partition_label": partition.get("label"),
             }
         )
 
     output = {
-        "title": f"过去24小时Top10视频（仅保留播放量>={MIN_REQUIRED_VIEWS}，按复刻爆款潜力排序）",
+        "title": f"{partition.get('label')}过去24小时Top10视频（仅保留播放量>={MIN_REQUIRED_VIEWS}，按复刻爆款潜力排序）",
+        "partition": partition,
         "time_range": {
             "since": since_iso,
             "until": until_iso,

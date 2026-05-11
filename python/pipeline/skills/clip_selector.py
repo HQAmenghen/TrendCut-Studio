@@ -241,15 +241,25 @@ class ClipSelectorSkill(BaseSkill):
                 return 0.85
         return 0.35
 
-    def _event_type_score(self, expected_types: List[str], actual_type: str, cosine_similarity: float) -> tuple[float, bool]:
+    def _event_type_score(
+        self,
+        expected_types: List[str],
+        actual_type: str,
+        cosine_similarity: float,
+        evidence_type: str = "",
+    ) -> tuple[float, bool]:
         normalized_expected = [item.strip().lower() for item in expected_types if str(item or "").strip()]
         actual_type = str(actual_type or "").strip().lower()
+        evidence_type = str(evidence_type or "").strip().lower()
         expanded_expected = self._expand_event_type_aliases(normalized_expected)
         expanded_actual = self._expand_event_type_aliases([actual_type]) if actual_type else set()
+        expanded_evidence = self._expand_event_type_aliases([evidence_type]) if evidence_type else set()
         if not expanded_expected:
-            return (0.65 if actual_type else 0.4), False
+            return (0.65 if actual_type or evidence_type else 0.4), False
         if expanded_actual & expanded_expected:
             return 1.0, False
+        if expanded_evidence & expanded_expected:
+            return 0.92, False
         for expected in expanded_expected:
             if actual_type in EVENT_TYPE_COMPATIBILITY.get(expected, {expected}) or expanded_actual & EVENT_TYPE_COMPATIBILITY.get(expected, {expected}):
                 return 0.8, False
@@ -298,6 +308,7 @@ class ClipSelectorSkill(BaseSkill):
         must_match = evidence.get("must_match") or {}
         preferred = evidence.get("preferred_match") or {}
         negative = evidence.get("negative_constraints") or {}
+        segment_evidence = segment.get("evidence") if isinstance(segment.get("evidence"), dict) else {}
         segment_entities = self._segment_entities(segment)
         segment_search_text = self._segment_search_text(segment)
         event = segment.get("event") if isinstance(segment.get("event"), dict) else {}
@@ -342,7 +353,12 @@ class ClipSelectorSkill(BaseSkill):
 
         expected_event_types = self._normalize_string_list(must_match.get("event_types"))
         event_type = str(event.get("event_type") or "").strip()
-        event_type_score, event_type_reject = self._event_type_score(expected_event_types, event_type, cosine_similarity)
+        event_type_score, event_type_reject = self._event_type_score(
+            expected_event_types,
+            event_type,
+            cosine_similarity,
+            str(segment_evidence.get("evidence_type") or ""),
+        )
         if event_type_reject:
             reject_reasons.append("event_type_mismatch")
 

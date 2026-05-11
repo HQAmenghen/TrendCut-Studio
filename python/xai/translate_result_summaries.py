@@ -1,12 +1,15 @@
 import argparse
-import io
 import json
 import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 from pathlib import Path
 

@@ -141,10 +141,10 @@ GET /api/system/self-check
 
 ## 推荐阅读
 
-1. [docs/README.md](/Users/PC/Desktop/comfy_panel_demo/docs/README.md)
-2. [docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md](/Users/PC/Desktop/comfy_panel_demo/docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md)
-3. [docs/MATERIAL_DRIVEN_WORKFLOW.md](/Users/PC/Desktop/comfy_panel_demo/docs/MATERIAL_DRIVEN_WORKFLOW.md)
-4. [docs/MODULE_GUIDE.md](/Users/PC/Desktop/comfy_panel_demo/docs/MODULE_GUIDE.md)
-5. [docs/SETUP_AND_OPERATIONS.md](/Users/PC/Desktop/comfy_panel_demo/docs/SETUP_AND_OPERATIONS.md)
-6. [docs/PROJECT_STRUCTURE.md](/Users/PC/Desktop/comfy_panel_demo/docs/PROJECT_STRUCTURE.md)
-7. [docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md](/Users/PC/Desktop/comfy_panel_demo/docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)
+1. [docs/README.md](docs/README.md)
+2. [docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md](docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md)
+3. [docs/MATERIAL_DRIVEN_WORKFLOW.md](docs/MATERIAL_DRIVEN_WORKFLOW.md)
+4. [docs/MODULE_GUIDE.md](docs/MODULE_GUIDE.md)
+5. [docs/SETUP_AND_OPERATIONS.md](docs/SETUP_AND_OPERATIONS.md)
+6. [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
+7. [docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md](docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)

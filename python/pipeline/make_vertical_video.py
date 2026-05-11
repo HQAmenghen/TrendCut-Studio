@@ -14,6 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from script_protocol import emit_error, emit_result, emit_stage
 from llm_client import create_llm_client, generate_content, get_text_llm_provider
 from skills.prompt_skill_loader import load_prompt_text
+try:
+    from subtitle_terms import mask_preserved_terms, restore_preserved_terms, to_simplified_chinese
+except ImportError:
+    from pipeline.subtitle_terms import mask_preserved_terms, restore_preserved_terms, to_simplified_chinese
 
 # 终极防崩溃补丁
 sys.stdout.reconfigure(encoding='utf-8')
@@ -57,6 +61,23 @@ DEFAULT_EN_MAX_LINES = 3
 def load_json(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def normalize_subtitles_for_display(subtitles: list[dict]) -> list[dict]:
+    if not isinstance(subtitles, list):
+        return []
+
+    normalized = []
+    for entry in subtitles:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        for key in ("zh", "text", "en"):
+            if item.get(key):
+                item[key] = to_simplified_chinese(str(item[key]).strip())
+        normalized.append(item)
+    return normalized
+
 
 def probe_media(input_video: Path) -> dict:
     cmd = [
@@ -387,12 +408,19 @@ def make_background(content: dict, output_path: Path, title_font_size: int, titl
     image.save(output_path, quality=95)
 
 def translate_subtitles_batch(subtitles: list[dict]):
+    subtitles = normalize_subtitles_for_display(subtitles)
     targets = []
     for i, entry in enumerate(subtitles):
         zh_text = entry.get("zh", entry.get("text", "")).strip()
         en_text = entry.get("en", "").strip()
         if zh_text and not en_text:
-            targets.append({"index": i, "text": zh_text})
+            masked_text, placeholders = mask_preserved_terms(zh_text)
+            targets.append({
+                "index": i,
+                "text": masked_text,
+                "placeholders": placeholders,
+                "source_text": zh_text
+            })
     
     if not targets:
         return subtitles
@@ -407,6 +435,7 @@ def translate_subtitles_batch(subtitles: list[dict]):
         # 强制补充 index 要求，否则 Refine Translate Prompt 默认不返回 index 导致映射失败
         base_prompt = load_prompt_text("run_asr_skill.md", "Refine Translate Prompt")
         custom_instructions = "\n\nCRITICAL: You MUST include the original 'index' (int) field in your output for each object so I can map them back."
+        custom_instructions += "\nPreserve any [[TERM_n]] placeholders exactly as they appear; restore them to the original English names, tickers, acronyms, or numbers in the final English subtitle."
         prompt = (base_prompt + custom_instructions).format(
             source_language="zh", 
             payload=json.dumps(targets, ensure_ascii=False)
@@ -428,12 +457,18 @@ def translate_subtitles_batch(subtitles: list[dict]):
         )
         
         results = json.loads(response.text)
+        target_lookup = {item["index"]: item for item in targets if isinstance(item, dict) and "index" in item}
         if isinstance(results, list):
             for res in results:
-                idx = res.get("index")
+                try:
+                    idx = int(res.get("index"))
+                except (TypeError, ValueError):
+                    continue
                 en = res.get("en")
-                if idx is not None and 0 <= idx < len(subtitles) and en:
-                    subtitles[idx]["en"] = en
+                if 0 <= idx < len(subtitles) and en:
+                    placeholders = target_lookup.get(idx, {}).get("placeholders") or {}
+                    restored_en = restore_preserved_terms(str(en).strip(), placeholders)
+                    subtitles[idx]["en"] = restored_en
             print(f"   ✅ Successfully translated {len(results)} items.")
     except Exception as e:
         print(f"   ⚠️ Auto-translation failed: {e}")
@@ -441,9 +476,47 @@ def translate_subtitles_batch(subtitles: list[dict]):
     return subtitles
 
 
+def is_numeric_separator(text: str, index: int) -> bool:
+    if not (0 <= index < len(text)):
+        return False
+    if text[index] not in ".,，":
+        return False
+    previous_char = text[index - 1] if index > 0 else ""
+    next_char = text[index + 1] if index + 1 < len(text) else ""
+    return previous_char.isdigit() and next_char.isdigit()
+
+
+def split_subtitle_text_chunks(text: str, min_visible_chars: int = 4) -> list[str]:
+    sample = str(text or "").strip()
+    if not sample:
+        return []
+
+    chunks = []
+    current = ""
+    for index, char in enumerate(sample):
+        current += char
+        is_break = char in "。！？；：、" or (char in "，," and not is_numeric_separator(sample, index))
+        if is_break:
+            chunk = current.strip()
+            if chunk:
+                chunks.append(chunk)
+            current = ""
+    if current.strip():
+        chunks.append(current.strip())
+
+    compacted = []
+    for chunk in chunks:
+        if compacted and visible_text_len(chunk) < min_visible_chars:
+            compacted[-1] = f"{compacted[-1]}{chunk}"
+        else:
+            compacted.append(chunk)
+    return compacted
+
+
 def split_long_subtitles(subtitles: list[dict], max_chars: int = 32):
     new_subs = []
     for entry in subtitles:
+        entry = normalize_subtitles_for_display([entry])[0] if isinstance(entry, dict) else entry
         zh = entry.get("zh", entry.get("text", "")).strip()
         en = entry.get("en", "").strip()
         time_range = entry.get("time")
@@ -454,62 +527,40 @@ def split_long_subtitles(subtitles: list[dict], max_chars: int = 32):
         start, end = float(time_range[0]), float(time_range[1])
         duration = end - start
         
-        # Only split if it's long and has enough duration (> 2.5s) to avoid "too fast" switching
         if len(zh) > max_chars and duration > 2.5:
-            # Split by punctuation
-            parts = re.split(r'([，。！？；：])', zh)
-            chunks = []
-            current = ""
-            for p in parts:
-                if p in "，。！？；：":
-                    current += p
-                    chunks.append(current)
-                    current = ""
-                else:
-                    current += p
-            if current: chunks.append(current)
-            
-            # If splitting by punctuation didn't shorten enough, or no punctuation, split in middle
-            if len(chunks) == 1 or any(len(c) > max_chars + 10 for c in chunks):
-                text_to_split = "".join(chunks)
-                mid = len(text_to_split) // 2
-                chunks = [text_to_split[:mid], text_to_split[mid:]]
-            
-            chunks = [c.strip() for c in chunks if c.strip()]
+            chunks = split_subtitle_text_chunks(zh)
             if len(chunks) <= 1:
                 new_subs.append(entry)
                 continue
-                
-            # 智能拆分：根据子句字符长度比例分配时间，而非机械平分
+
             total_chars = sum(len(c) for c in chunks)
             print(f"   -> Splitting long segment: '{zh[:10]}...' into {len(chunks)} fragments with weighted timing.")
             en_words = en.split()
-            
+
             accumulated_time = start
             for i, chunk_zh in enumerate(chunks):
-                chunk_len = len(chunk_zh)
-                # 计算该片段应占的时长比例
-                ratio = chunk_len / total_chars
+                ratio = len(chunk_zh) / total_chars if total_chars > 0 else 1.0 / len(chunks)
                 c_duration = duration * ratio
                 c_start = accumulated_time
                 c_end = c_start + c_duration
-                accumulated_time = c_end # 为下一段更新起始点
-                
-                # 同理分配英文单词 (按比例)
+                accumulated_time = c_end
+
                 chunk_en = ""
                 if en_words:
-                    word_start_idx = int((sum(len(chunks[j]) for j in range(i)) / total_chars) * len(en_words))
-                    word_end_idx = int((sum(len(chunks[j]) for j in range(i+1)) / total_chars) * len(en_words))
-                    if i == len(chunks) - 1: word_end_idx = len(en_words)
+                    word_start_idx = int((sum(len(chunks[j]) for j in range(i)) / total_chars) * len(en_words)) if total_chars > 0 else 0
+                    word_end_idx = int((sum(len(chunks[j]) for j in range(i + 1)) / total_chars) * len(en_words)) if total_chars > 0 else len(en_words)
+                    if i == len(chunks) - 1:
+                        word_end_idx = len(en_words)
                     chunk_en = " ".join(en_words[word_start_idx:word_end_idx])
-                
+
                 new_subs.append({
                     "time": [round(c_start, 3), round(c_end, 3)],
                     "zh": chunk_zh,
                     "en": chunk_en or en
                 })
-        else:
-            new_subs.append(entry)
+            continue
+
+        new_subs.append(entry)
     return new_subs
 
 
@@ -536,7 +587,7 @@ def deduplicate_subtitles(subtitles: list[dict]):
 def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min_size: int, zh_max_lines: int, en_font_size: int, en_min_size: int, en_max_lines: int):
     card = Image.new("RGBA", SUBTITLE_CARD_SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
-    zh_text_content = entry.get("zh", entry.get("text", ""))
+    zh_text_content = to_simplified_chinese(entry.get("zh", entry.get("text", "")))
     en_text_content = entry.get("en", "")
 
     box_y_offset = 10
@@ -708,6 +759,8 @@ def main():
             elif not subtitles:
                 print("INFO: Subtitles file is empty (list length is 0).")
             else:
+                subtitles = normalize_subtitles_for_display(subtitles)
+                subtitles_file.write_text(json.dumps(subtitles, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"INFO: Successfully loaded {len(subtitles)} subtitle entries from {subtitles_file.name}")
         except Exception as e:
             print(f"ERROR: Failed to parse subtitles JSON: {e}")

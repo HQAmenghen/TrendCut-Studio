@@ -341,7 +341,7 @@ const handleToVertical = async () => {
 
         if (finalSubs && finalSubs.length > 0) {
           standalone.form.value.subtitlesPayload = JSON.stringify(finalSubs);
-          standalone.form.value.useASR = false; 
+          standalone.form.value.useASR = true;
         } else {
           console.warn(`[Vertical Sync] 未发现有效的结构化字幕文件，将启用 AI 自动打轴提取中英双语...`);
           standalone.form.value.useASR = true;

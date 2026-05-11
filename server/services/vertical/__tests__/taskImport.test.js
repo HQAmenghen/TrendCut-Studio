@@ -159,6 +159,35 @@ describe('vertical material task import', () => {
     ]);
   });
 
+  test('prefers avatar segment subtitles over execution plan subtitles when both exist', () => {
+    const taskDir = path.join(projectsDir, 'material_avatar_segments_priority');
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, 'output_final.mp4'), 'video');
+    writeJson(path.join(taskDir, 'execution_plan.json'), [
+      { start_time: 0, end_time: 3, subtitle_text: '执行计划字幕' }
+    ]);
+    writeJson(path.join(taskDir, 'avatar_segments.json'), {
+      avatar_video_ref: path.join(taskDir, 'aiman.mp4'),
+      audio_ref: null,
+      timing_mode: 'estimated_scaled',
+      segments: [
+        { id: 'avatar_segment_001', script_ref: 'script_001', text: '数字人句一', start: 0, end: 1.2, duration: 1.2 },
+        { id: 'avatar_segment_002', script_ref: 'script_002', text: '数字人句二', start: 1.2, end: 2.6, duration: 1.4 }
+      ]
+    });
+
+    const resolved = resolveMaterialTaskImport({
+      projectsDir,
+      taskDir: 'material_avatar_segments_priority'
+    });
+
+    expect(resolved.subtitleSource).toBe('avatar_segments.json');
+    expect(resolved.subtitles).toEqual([
+      { time: [0, 1.2], zh: '数字人句一' },
+      { time: [1.2, 2.6], zh: '数字人句二' }
+    ]);
+  });
+
   test('rejects task directory traversal', () => {
     expect(() => resolveMaterialTaskImport({
       projectsDir,
