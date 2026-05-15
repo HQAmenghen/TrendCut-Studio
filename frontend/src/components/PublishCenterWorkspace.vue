@@ -1084,9 +1084,9 @@ const requiredFieldMap = {
 };
 
 const platformTips = {
-  wechatChannels: '按官方公开能力先保存视频号主体与视频号助手信息，当前以手动发布包为主。',
-  douyin: '预留抖音开放平台字段，后续接入真实上传流程。',
-  xiaohongshu: '预留小红书平台账号和凭据字段。',
+  wechatChannels: '使用视频号助手浏览器 RPA，首次运行需要扫码登录；每个账号使用独立浏览器环境。',
+  douyin: '草稿填充走本地浏览器 RPA；自动发表优先复用 social-auto-upload，需要填写 SAU 账号名。',
+  xiaohongshu: '草稿填充走本地浏览器 RPA；自动发表优先复用 social-auto-upload，需要填写 SAU 账号名。',
   x: '预留 X 平台 API 字段，便于后续接入。',
   youtube: '预留 YouTube 频道 OAuth 字段。'
 };

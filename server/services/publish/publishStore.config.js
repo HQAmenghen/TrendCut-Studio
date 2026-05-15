@@ -221,8 +221,8 @@ function createPublishConfigService(deps) {
         avatarPipelineConfig: {}
       },
       wechatChannels: { enabled: false, accounts: [] },
-      douyin: { enabled: false, displayName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
-      xiaohongshu: { enabled: false, displayName: '', appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
+      douyin: { enabled: false, displayName: '', sauAccountName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
+      xiaohongshu: { enabled: false, displayName: '', sauAccountName: '', appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
       x: { enabled: false, displayName: '', apiKey: '', apiSecret: '', accessToken: '', accessSecret: '', bearerToken: '', notes: '' },
       youtube: { enabled: false, displayName: '', clientId: '', clientSecret: '', refreshToken: '', channelId: '', notes: '' }
     };

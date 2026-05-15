@@ -151,7 +151,7 @@ function summarizePythonError(error, stderrLines = 20, stdoutLines = 12) {
 function runPythonScript(scriptPath, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const protocol = createProtocolState();
-    const proc = spawn('python', buildPythonArgs(scriptPath, args), {
+    const proc = spawn(options.command || 'python', buildPythonArgs(scriptPath, args), {
       cwd: options.cwd,
       env: buildPythonEnv(options.env)
     });
@@ -241,7 +241,7 @@ function runPythonScriptCancellable(scriptPath, args = [], options = {}) {
 
   const promise = new Promise((resolve, reject) => {
     const protocol = createProtocolState();
-    proc = spawn('python', buildPythonArgs(scriptPath, args), {
+    proc = spawn(options.command || 'python', buildPythonArgs(scriptPath, args), {
       cwd: options.cwd,
       env: buildPythonEnv(options.env)
     });
@@ -342,7 +342,7 @@ function runPythonScriptCancellable(scriptPath, args = [], options = {}) {
 }
 
 function runPythonScriptSync(scriptPath, args = [], options = {}) {
-  const proc = spawnSync('python', buildPythonArgs(scriptPath, args), {
+  const proc = spawnSync(options.command || 'python', buildPythonArgs(scriptPath, args), {
     cwd: options.cwd,
     env: buildPythonEnv(options.env),
     encoding: 'utf-8',

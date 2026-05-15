@@ -74,6 +74,7 @@
   - AI 视频审核
 - `python/publish/`
   - 发布文案生成、微信视频号 RPA、登录检测
+  - 抖音/小红书草稿填充走本地浏览器 RPA；自动发表可选复用本机 `social-auto-upload` checkout
 - `python/xai/`
   - 热点榜单抓取与翻译
 
@@ -116,6 +117,8 @@ Copy-Item .env.example .env
 - `XAI_API_KEY`
 - `LLM_PROVIDER`
 - `AI_REVIEW_ENABLED`
+- `SOCIAL_AUTO_UPLOAD_DIR`（可选，指向 `https://github.com/dreammis/social-auto-upload` 本地目录）
+- `SOCIAL_AUTO_UPLOAD_PYTHON`（可选，指向该项目虚拟环境的 `python.exe`）
 
 ### 3. 启动服务
 

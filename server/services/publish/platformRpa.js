@@ -24,6 +24,8 @@ function createPlatformRpaService(deps) {
     platformRpaScript,
     platformRpaTaskDir,
     platformRpaProfileRoot,
+    socialAutoUploadDir,
+    socialAutoUploadPython,
     readPublishJobs,
     readPublishConfig,
     updatePublishPlatformTask,
@@ -161,6 +163,56 @@ function createPlatformRpaService(deps) {
     };
   }
 
+  function getSocialAutoUploadDir() {
+    return String(socialAutoUploadDir || process.env.SOCIAL_AUTO_UPLOAD_DIR || '').trim();
+  }
+
+  function getSocialAutoUploadPython() {
+    return String(socialAutoUploadPython || process.env.SOCIAL_AUTO_UPLOAD_PYTHON || 'python').trim() || 'python';
+  }
+
+  function getSauAccountName(platformKey, platformConfig = {}) {
+    return String(
+      platformConfig.sauAccountName
+      || platformConfig.accountName
+      || platformConfig.accountId
+      || platformConfig.openId
+      || platformConfig.displayName
+      || platformKey
+    ).trim();
+  }
+
+  function supportsSocialAutoUpload(platformKey, platformConfig = {}, publishMode = 'draft') {
+    if (publishMode !== 'publish') return false;
+    if (!['douyin', 'xiaohongshu'].includes(platformKey)) return false;
+    if (!getSocialAutoUploadDir()) return false;
+    return Boolean(getSauAccountName(platformKey, platformConfig));
+  }
+
+  function buildSocialAutoUploadArgs(platformKey, job, platformConfig, videoPath) {
+    const accountName = getSauAccountName(platformKey, platformConfig);
+    const args = [
+      '-m',
+      'sau_cli',
+      platformKey,
+      'upload-video',
+      '--account',
+      accountName,
+      '--file',
+      videoPath,
+      '--title',
+      job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布',
+      '--desc',
+      job.publishData?.description || job.asset?.metadata?.suggestedDescription || '',
+      '--headed'
+    ];
+    const tags = Array.isArray(job.publishData?.tags) ? job.publishData.tags.map((tag) => String(tag).trim()).filter(Boolean) : [];
+    if (tags.length) {
+      args.push('--tags', tags.join(','));
+    }
+    return args;
+  }
+
   async function startBrowserPlatformRpa(jobId, platformKey, publishMode = 'draft') {
     const definition = getPlatformDefinition(platformKey);
     if (!definition) {
@@ -188,8 +240,12 @@ function createPlatformRpaService(deps) {
     if (!videoPath || !fs.existsSync(videoPath)) {
       throw new Error('待发布视频文件不存在');
     }
-    if (!fs.existsSync(platformRpaScript)) {
+    if (!supportsSocialAutoUpload(platformKey, platformConfig, publishMode) && !fs.existsSync(platformRpaScript)) {
       throw new Error('平台浏览器 RPA 脚本不存在');
+    }
+
+    if (supportsSocialAutoUpload(platformKey, platformConfig, publishMode)) {
+      return startSocialAutoUploadRpa(jobId, platformKey, job, platformConfig, publishMode, videoPath, task);
     }
 
     const browserPayload = buildBrowserPayload(job, platformKey, platformConfig, publishMode, videoPath);
@@ -319,6 +375,123 @@ function createPlatformRpaService(deps) {
       });
   }
 
+  async function startSocialAutoUploadRpa(jobId, platformKey, job, platformConfig, publishMode, videoPath, task) {
+    const definition = getPlatformDefinition(platformKey);
+    const runtimeKey = `${jobId}:${platformKey}`;
+    const cwd = getSocialAutoUploadDir();
+    if (!fs.existsSync(cwd)) {
+      throw new Error(`social-auto-upload 目录不存在: ${cwd}`);
+    }
+
+    const args = buildSocialAutoUploadArgs(platformKey, job, platformConfig, videoPath);
+    const scriptPath = args[0];
+    const scriptArgs = args.slice(1);
+    const runtimeEntry = {
+      proc: null,
+      cancel: null,
+      jobId,
+      platform: platformKey,
+      publishMode,
+      cancelledByUser: false,
+      currentState: 'starting'
+    };
+    runtimeProcesses.set(runtimeKey, runtimeEntry);
+
+    safeUpdatePublishPlatformTask(jobId, platformKey, {
+      status: 'publishing',
+      lastRunAt: new Date().toISOString(),
+      lastRunMode: publishMode,
+      retryCount: Number(task?.retryCount || 0),
+      runtime: {
+        state: 'starting',
+        lastMessage: `正在通过 social-auto-upload 启动${definition.label}自动发表...`,
+        updatedAt: new Date().toISOString(),
+        publishMode,
+        progress: 3,
+        adapter: 'social-auto-upload',
+        logs: [`启动 social-auto-upload: ${getSocialAutoUploadPython()} ${args.join(' ')}`]
+      }
+    });
+
+    const handleOutput = (chunk) => {
+      const lines = chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      for (const line of lines) {
+        appendRuntimeLog(jobId, platformKey, line, publishMode, runtimeEntry.currentState, line, getStateProgress(runtimeEntry.currentState));
+      }
+    };
+
+    let proc;
+    let promise;
+    let cancel;
+    try {
+      ({ process: proc, promise, cancel } = runPythonScriptCancellable(
+        scriptPath,
+        scriptArgs,
+        {
+          cwd,
+          command: getSocialAutoUploadPython(),
+          onStdout: handleOutput,
+          onStderr: handleOutput
+        }
+      ));
+    } catch (err) {
+      runtimeProcesses.delete(runtimeKey);
+      throw err;
+    }
+
+    runtimeEntry.proc = proc;
+    runtimeEntry.cancel = cancel;
+    runtimeEntry.currentState = 'publishing';
+
+    promise
+      .then(() => {
+        runtimeProcesses.delete(runtimeKey);
+        safeUpdatePublishPlatformTask(jobId, platformKey, {
+          status: 'published',
+          runtime: {
+            state: 'success',
+            lastMessage: `${definition.label}已由 social-auto-upload 提交发布`,
+            updatedAt: new Date().toISOString(),
+            publishMode,
+            progress: 100,
+            adapter: 'social-auto-upload',
+            logs: [...getRuntimeLogs(jobId, platformKey), '[success] social-auto-upload 已完成发布提交'].slice(-120)
+          }
+        });
+      })
+      .catch((error) => {
+        runtimeProcesses.delete(runtimeKey);
+        if (runtimeEntry.cancelledByUser) return;
+
+        const errorMessage = error?.code === 'PYTHON_SCRIPT_CANCELLED'
+          ? `用户已取消${definition.label} social-auto-upload 任务`
+          : error.message;
+        const failureSummary = error?.code
+          ? createFailureSummaryFromPythonError(error, `publish_${platformKey}`, {
+            stage: runtimeEntry.currentState || 'unknown',
+            context: { jobId, platform: platformKey, publishMode, adapter: 'social-auto-upload' }
+          })
+          : createFailureSummaryFromError(error, `publish_${platformKey}`, runtimeEntry.currentState || 'unknown', {
+            context: { jobId, platform: platformKey, publishMode, adapter: 'social-auto-upload' }
+          });
+
+        safeUpdatePublishPlatformTask(jobId, platformKey, {
+          status: 'failed',
+          lastFailureAt: new Date().toISOString(),
+          failureSummary,
+          runtime: {
+            state: 'failed',
+            lastMessage: errorMessage,
+            updatedAt: new Date().toISOString(),
+            publishMode,
+            progress: 100,
+            adapter: 'social-auto-upload',
+            logs: [...getRuntimeLogs(jobId, platformKey), `[error] ${errorMessage}`].slice(-120)
+          }
+        });
+      });
+  }
+
   async function startPlatformRpa(jobId, platformKey, publishMode = 'draft') {
     const normalizedPlatform = normalizePlatformKey(platformKey);
     if (normalizedPlatform === 'wechatChannels') {
@@ -392,5 +565,6 @@ function createPlatformRpaService(deps) {
 }
 
 module.exports = {
-  createPlatformRpaService
+  createPlatformRpaService,
+  BROWSER_RPA_PLATFORMS
 };
