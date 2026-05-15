@@ -74,8 +74,12 @@
   - AI 视频审核
 - `python/publish/`
   - 发布文案生成、微信视频号 RPA、登录检测
+  - 抖音/小红书通过项目内 `vendor/social-auto-upload` 源码执行上传；草稿模式停在发布前，自动发表模式继续提交
 - `python/xai/`
   - 热点榜单抓取与翻译
+- `vendor/social-auto-upload/`
+  - 随当前项目打包的 `social-auto-upload` 精简源码副本
+  - 仅包含抖音/小红书上传链路需要的源码；不包含 `.venv`、cookies、logs、db、示例视频等运行态内容
 
 ### 4. 运行时目录
 
@@ -116,6 +120,11 @@ Copy-Item .env.example .env
 - `XAI_API_KEY`
 - `LLM_PROVIDER`
 - `AI_REVIEW_ENABLED`
+
+抖音/小红书发布代码已经内置在 `vendor/social-auto-upload/`，打包时会随当前项目一起走。
+登录 cookie、二维码和日志会写入 `data/social-auto-upload-runtime/`，不会写入 vendor 源码目录。
+只有需要临时切换到另一个 `social-auto-upload` checkout 时，才设置 `SOCIAL_AUTO_UPLOAD_DIR` 作为高级覆盖项；
+通常不需要设置 `SOCIAL_AUTO_UPLOAD_PYTHON`，直接使用当前项目的 Python 环境即可。
 
 ### 3. 启动服务
 

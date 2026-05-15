@@ -504,6 +504,95 @@
                     </div>
                   </div>
                 </template>
+                <template v-else-if="isSauPlatform(platform.key)">
+                  <div v-if="isSauPlatform(platform.key)" class="setup-guide">
+                    <div class="guide-row">
+                      <span class="guide-step" :class="{ done: !!center.config.value?.[platform.key]?.enabled }">1</span>
+                      <div>
+                        <strong>启用{{ platform.label }}</strong>
+                        <p>开启后，新建发布任务时才能选择这个平台。</p>
+                      </div>
+                    </div>
+                    <div class="guide-row">
+                      <span class="guide-step" :class="{ done: sauAccounts(platform.key).length > 0 }">2</span>
+                      <div>
+                        <strong>添加发布账号</strong>
+                        <p>{{ platform.label }} 会把每个账号的登录态保存到当前项目运行目录；登录账号别名用于区分 cookie。</p>
+                      </div>
+                    </div>
+                    <div class="guide-row">
+                      <span class="guide-step">3</span>
+                      <div>
+                        <strong>保存授权信息</strong>
+                        <p>保存后去右侧创建发布任务，先点“草稿测试”。</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="account-manager">
+                    <div class="account-manager-head">
+                      <div class="platform-tip">首次检测会弹出二维码；扫码后复用 <code>data/social-auto-upload-runtime/cookies</code> 中的登录态。</div>
+                      <button type="button" class="ghost-btn compact-btn" @click="center.addSauAccount(platform.key)">新增账号</button>
+                    </div>
+                    <div v-if="!sauAccounts(platform.key).length" class="issue-box">还没有配置{{ platform.label }}账号。</div>
+                    <div v-for="account in sauAccounts(platform.key)" :key="account.id" class="account-card">
+                      <div class="account-card-head" @click="toggleAccountExpand(account.id)" style="cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                          <span class="expand-icon" :class="{ expanded: expandedAccounts.has(account.id) }">▶</span>
+                          <strong>{{ account.displayName || account.sauAccountName || account.accountId || account.openId || account.id }}</strong>
+                        </div>
+                        <div style="display: flex; gap: 8px;" @click.stop>
+                          <button
+                            type="button"
+                            class="ghost-btn compact-btn"
+                            :disabled="checkingLoginAccounts.has(`${platform.key}:${account.id}`)"
+                            @click="center.checkPlatformAccountLogin(platform.key, account.id)"
+                          >
+                            {{ checkingLoginAccounts.has(`${platform.key}:${account.id}`) ? '检测中...' : '检测登录' }}
+                          </button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.removeSauAccount(platform.key, account.id)">删除</button>
+                        </div>
+                      </div>
+                      <div v-show="expandedAccounts.has(account.id)" class="platform-fields">
+                        <input
+                          class="input-dark text-sm"
+                          :value="account.displayName || ''"
+                          placeholder="账号备注 / Account Alias"
+                          @input="center.updateSauAccountField(platform.key, account.id, 'displayName', $event.target.value)"
+                        />
+                        <div>
+                          <label class="control-label field-label">
+                            <span>登录账号别名</span>
+                            <span class="required-tag">Required</span>
+                          </label>
+                          <div class="field-help">示例：{{ defaultSauAccountName(platform.key) }}。不要和同平台其他账号重复。</div>
+                          <input
+                            :class="['input-dark text-sm', !(account.sauAccountName || '').trim() ? 'missing-field' : '']"
+                            :placeholder="defaultSauAccountName(platform.key)"
+                            :value="account.sauAccountName || ''"
+                            @input="center.updateSauAccountField(platform.key, account.id, 'sauAccountName', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>{{ platform.key === 'douyin' ? 'Open ID（选填）' : '账号 ID（选填）' }}</span>
+                          </label>
+                          <input
+                            class="input-dark text-sm"
+                            :value="platform.key === 'douyin' ? (account.openId || '') : (account.accountId || '')"
+                            @input="center.updateSauAccountField(platform.key, account.id, platform.key === 'douyin' ? 'openId' : 'accountId', $event.target.value)"
+                          />
+                        </div>
+                        <textarea
+                          class="input-dark text-sm"
+                          rows="2"
+                          :value="account.notes || ''"
+                          placeholder="备注"
+                          @input="center.updateSauAccountField(platform.key, account.id, 'notes', $event.target.value)"
+                        ></textarea>
+                      </div>
+                    </div>
+                  </div>
+                </template>
                 <template v-else>
                   <input
                     class="input-dark text-sm"
@@ -519,6 +608,7 @@
                     <input
                       :type="center.isSecretField(field) ? 'password' : 'text'"
                       :class="['input-dark text-sm', isMissing(platform.key, field) ? 'missing-field' : '']"
+                      :placeholder="fieldPlaceholder(platform.key, field)"
                       :value="center.config.value?.[platform.key]?.[field] || ''"
                       @input="center.updateConfigField(platform.key, field, $event.target.value)"
                     />
@@ -677,6 +767,20 @@
                     >
                       <option value="">请选择视频号账号</option>
                       <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
+                        {{ account.label }}
+                      </option>
+                    </select>
+                  </div>
+
+                  <div v-for="platformKey in ['douyin', 'xiaohongshu']" :key="`editor-account-${platformKey}`" v-show="center.editor.value.platforms.includes(platformKey)">
+                    <label class="control-label">{{ platformLabel(platformKey) }}发布账号</label>
+                    <select
+                      class="input-dark text-sm"
+                      :value="center.editor.value.platformSelections[platformKey]?.accountId || ''"
+                      @change="setEditorPlatformAccount(platformKey, $event.target.value)"
+                    >
+                      <option value="">请选择{{ platformLabel(platformKey) }}账号</option>
+                      <option v-for="account in center.getPlatformAccountOptions(platformKey)" :key="account.id" :value="account.id">
                         {{ account.label }}
                       </option>
                     </select>
@@ -864,9 +968,12 @@
                   <div v-if="task.validation?.missingFieldLabels?.length" class="summary-note compact-note">
                     缺少配置：{{ task.validation.missingFieldLabels.join('，') }}
                   </div>
+                  <div v-if="isSauPlatform(task.platform)" class="summary-note compact-note safe-test-note">
+                    第一次建议点“草稿测试”：系统会打开浏览器，完成登录和内容填充后停在发布前。
+                  </div>
                   <div v-if="task.automationModes?.length" class="job-actions">
-                    <button type="button" class="ghost-btn compact-btn" @click="center.runPlatform(job, task.platform, 'draft')" :disabled="!center.canRunPlatform(job, task.platform)">打开并填充到待发布页</button>
-                    <button type="button" class="ghost-btn compact-btn" @click="center.runPlatform(job, task.platform, 'publish')" :disabled="!center.canRunPlatform(job, task.platform)">自动上传并发表</button>
+                    <button type="button" class="primary-btn compact-btn" @click="center.runPlatform(job, task.platform, 'draft')" :disabled="!center.canRunPlatform(job, task.platform)">草稿测试</button>
+                    <button type="button" class="ghost-btn compact-btn danger-action" @click="center.runPlatform(job, task.platform, 'publish')" :disabled="!center.canRunPlatform(job, task.platform)">自动发表</button>
                     <button type="button" class="ghost-btn compact-btn" @click="center.retryPlatform(job, task.platform)">失败后重试</button>
                     <button type="button" class="ghost-btn compact-btn" @click="center.cancelPlatform(job, task.platform)">取消任务</button>
                   </div>
@@ -905,7 +1012,7 @@
       @click.self="center.closeQrCodeModal"
     >
       <div class="qr-modal-content">
-        <h4 class="qr-modal-title">微信视频号登录</h4>
+        <h4 class="qr-modal-title">{{ center.qrCodeData.value.accountLabel || '平台' }}登录</h4>
         <div class="qr-state-box">
           <div v-if="center.qrCodeData.value.status === 'loading'">
             ⏳ {{ center.qrCodeData.value.message || '正在打开浏览器...' }}
@@ -914,7 +1021,7 @@
             <img
               v-if="center.qrCodeData.value.base64"
               :src="center.qrCodeData.value.base64"
-              alt="微信扫码二维码"
+              :alt="`${center.qrCodeData.value.accountLabel || '平台'}扫码二维码`"
               class="qr-image"
             />
             <div>{{ center.qrCodeData.value.message || '请在弹出的浏览器窗口中扫描二维码' }}</div>
@@ -1084,12 +1191,17 @@ const requiredFieldMap = {
 };
 
 const platformTips = {
-  wechatChannels: '按官方公开能力先保存视频号主体与视频号助手信息，当前以手动发布包为主。',
-  douyin: '预留抖音开放平台字段，后续接入真实上传流程。',
-  xiaohongshu: '预留小红书平台账号和凭据字段。',
+  wechatChannels: '使用视频号助手浏览器 RPA，首次运行需要扫码登录；每个账号使用独立浏览器环境。',
+  douyin: '已内置抖音上传脚本。先保存账号别名，再用草稿测试确认页面填充。',
+  xiaohongshu: '已内置小红书上传脚本。先保存账号别名，再用草稿测试确认页面填充。',
   x: '预留 X 平台 API 字段，便于后续接入。',
   youtube: '预留 YouTube 频道 OAuth 字段。'
 };
+
+const sauPlatformKeys = new Set(['douyin', 'xiaohongshu']);
+const sauAccounts = (platformKey) => Array.isArray(props.center.config.value?.[platformKey]?.accounts)
+  ? props.center.config.value[platformKey].accounts
+  : [];
 
 const editorHealth = computed(() => {
   let score = 0;
@@ -1108,7 +1220,7 @@ const editableFields = (platformKey) => {
     return ['finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'];
   }
   const source = props.center.config.value?.[platformKey] || {};
-  return Object.keys(source).filter((field) => !['enabled', 'displayName', 'notes'].includes(field));
+  return Object.keys(source).filter((field) => !['enabled', 'displayName', 'notes', 'accounts'].includes(field));
 };
 
 const requiredFields = (platformKey) => requiredFieldMap[platformKey] || [];
@@ -1134,6 +1246,8 @@ const missingLabels = (platformKey) => {
 const hasIssue = (platformKey) => !!props.center.config.value?.[platformKey]?.enabled && missingLabels(platformKey).length > 0;
 const platformTip = (platformKey) => platformTips[platformKey] || '平台接入说明';
 const platformLabel = (key) => props.center.platformDefs.find((platform) => platform.key === key)?.label || key;
+const isSauPlatform = (platformKey) => sauPlatformKeys.has(platformKey);
+const defaultSauAccountName = (platformKey) => (platformKey === 'douyin' ? 'douyin_main' : 'xhs_main');
 const wechatTask = (job) => props.center.getTask(job, 'wechatChannels');
 const platformTasks = (job) => Array.isArray(job?.platformTasks) ? job.platformTasks : [];
 const selectedPlatformLabels = (job) => {
@@ -1142,6 +1256,27 @@ const selectedPlatformLabels = (job) => {
     : platformTasks(job).map((task) => task.platform);
   return selected.length ? selected.map(platformLabel).join(' / ') : '未选择平台';
 };
+
+function applySauDefaults(platformKey) {
+  props.center.updateConfigField(platformKey, 'enabled', true);
+  if (!sauAccounts(platformKey).length) {
+    props.center.addSauAccount(platformKey);
+  }
+}
+
+function setEditorPlatformAccount(platformKey, accountId) {
+  if (!props.center.editor.value.platformSelections[platformKey]) {
+    props.center.editor.value.platformSelections[platformKey] = { accountId: '' };
+  }
+  props.center.editor.value.platformSelections[platformKey].accountId = accountId;
+}
+
+function fieldPlaceholder(platformKey, field) {
+  if (isSauPlatform(platformKey) && field === 'sauAccountName') {
+    return defaultSauAccountName(platformKey);
+  }
+  return '';
+}
 
 function formatDateTime(value) {
   if (!value) return '-';
@@ -1904,6 +2039,11 @@ function selfCheckStatusLabel(status) {
   padding: 10px 12px;
 }
 
+.danger-action {
+  border-color: rgba(239, 68, 68, 0.42);
+  color: #fecaca;
+}
+
 .config-scroll {
   max-height: 920px;
   overflow-y: auto;
@@ -1936,6 +2076,72 @@ function selfCheckStatusLabel(status) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.setup-guide {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 12px;
+  background: rgba(14, 165, 233, 0.08);
+}
+
+.guide-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.guide-step {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.36);
+  color: var(--muted-text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.guide-step.done {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+.guide-row strong {
+  display: block;
+  color: var(--strong-text);
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.guide-row p,
+.field-help,
+.quick-config-actions span {
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-help {
+  margin-bottom: 8px;
+}
+
+.field-help code {
+  color: var(--strong-text);
+}
+
+.quick-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .account-manager,

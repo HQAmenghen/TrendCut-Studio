@@ -195,6 +195,9 @@ async function generatePublishDescription(sourceText, options = {}) {
 }
 
 function buildPublishTask(platformKey, publishData, assetUrl, platformConfig, platformOptions = {}) {
+    const selectedAccountId = String(platformOptions?.accountId || '').trim();
+    const selectedAccountLabel = String(platformOptions?.accountLabel || '').trim();
+    const selectedSauAccountName = String(platformOptions?.sauAccountName || '').trim();
     const common = {
         platform: platformKey,
         title: publishData.title,
@@ -206,13 +209,12 @@ function buildPublishTask(platformKey, publishData, assetUrl, platformConfig, pl
     };
     switch (platformKey) {
         case 'wechatChannels':
-            const accountId = String(platformOptions?.accountId || '').trim();
             return {
                 ...common,
                 status: 'rpa_available',
                 guide: '当前基于视频号助手 Web 端的 RPA 自动化实现扫码登录、自动上传、自动填写文案。公开文档未提供通用直发 API，因此这里走浏览器自动化而非官方内容发布接口。首次运行前需要安装 Playwright Chromium 浏览器。',
-                accountId,
-                accountLabel: String(platformOptions?.accountLabel || '').trim(),
+                accountId: selectedAccountId,
+                accountLabel: selectedAccountLabel,
                 requiredFields: ['finderUserName', 'helperAccount'],
                 docLinks: [
                     'https://developers.weixin.qq.com/miniprogram/dev/framework/open-ability/channels-live.html',
@@ -230,7 +232,10 @@ function buildPublishTask(platformKey, publishData, assetUrl, platformConfig, pl
                 ...common,
                 status: 'rpa_available',
                 guide: '当前通过抖音创作者服务平台的浏览器 RPA 路径打开上传页并尝试填充视频、标题和文案；如页面结构变化，任务会停在浏览器中供人工确认。',
-                requiredFields: [],
+                accountId: selectedAccountId,
+                accountLabel: selectedAccountLabel,
+                sauAccountName: selectedSauAccountName,
+                requiredFields: ['sauAccountName'],
                 automationModes: ['draft', 'publish'],
                 runtime: {
                     state: 'idle',
@@ -243,7 +248,10 @@ function buildPublishTask(platformKey, publishData, assetUrl, platformConfig, pl
                 ...common,
                 status: 'rpa_available',
                 guide: '当前通过小红书创作服务平台的浏览器 RPA 路径打开发布页并尝试填充视频、标题和文案；如页面结构变化，任务会停在浏览器中供人工确认。',
-                requiredFields: [],
+                accountId: selectedAccountId,
+                accountLabel: selectedAccountLabel,
+                sauAccountName: selectedSauAccountName,
+                requiredFields: ['sauAccountName'],
                 automationModes: ['draft', 'publish'],
                 runtime: {
                     state: 'idle',
@@ -307,6 +315,8 @@ const publishStore = createPublishStore({
 
 const {
     getWechatAccountMap,
+    getSauAccountMap,
+    getSauPlatformAccounts,
     readPublishConfig,
     writePublishConfig,
     readPublishJobs,
@@ -319,6 +329,7 @@ const {
     collectPlatformValidation,
     sanitizePlatformConfigInput,
     validateWechatTaskConfig,
+    validateSauTaskConfig,
     reconcileAndPersistPublishJobs
 } = publishStore;
 
@@ -334,8 +345,12 @@ const wechatRpaService = createWechatRpaService({
     wechatRpaTaskDir: paths.WECHAT_RPA_TASK_DIR,
     wechatRpaProfileRoot: paths.WECHAT_RPA_PROFILE_ROOT,
     platformRpaScript: paths.PLATFORM_RPA_SCRIPT,
+    socialAutoUploadAdapterScript: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT,
     platformRpaTaskDir: paths.PLATFORM_RPA_TASK_DIR,
     platformRpaProfileRoot: paths.PLATFORM_RPA_PROFILE_ROOT,
+    socialAutoUploadDir: process.env.SOCIAL_AUTO_UPLOAD_DIR || paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR,
+    socialAutoUploadRuntimeDir: paths.SOCIAL_AUTO_UPLOAD_RUNTIME_DIR,
+    socialAutoUploadPython: process.env.SOCIAL_AUTO_UPLOAD_PYTHON || '',
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
@@ -351,7 +366,10 @@ const {
     retryPlatformRpa,
     cancelPlatformRpa,
     checkWechatLogin,
-    openWechatContentManager
+    openWechatContentManager,
+    checkPlatformLogin,
+    openPlatformContentManager,
+    checkPlatformLoginStatus
 } = wechatRpaService;
 
     const systemHandlers = createSystemHandlers({
@@ -374,7 +392,8 @@ const {
                 { key: 'public', label: 'public 目录', path: paths.PUBLIC_DIR },
                 { key: 'uploads', label: 'uploads 目录', path: paths.UPLOADS_DIR },
                 { key: 'runtime', label: 'runtime_jobs 目录', path: paths.RUNTIME_ROOT, level: 'warn' },
-                { key: 'publish', label: 'publish 目录', path: paths.PUBLISH_CENTER_DIR }
+                { key: 'publish', label: 'publish 目录', path: paths.PUBLISH_CENTER_DIR },
+                { key: 'social_auto_upload', label: '项目内 social-auto-upload vendor', path: paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR, level: 'warn' }
             ],
             fileChecks: [
                 { key: 'workflow', label: '工作流配置', path: paths.WORKFLOW_PATH },
@@ -382,6 +401,7 @@ const {
                 { key: 'generate_title', label: '标题生成脚本', path: path.join(paths.PIPELINE_DIR, 'generate_title.py') },
                 { key: 'publish_description', label: '发布描述脚本', path: paths.PUBLISH_DESCRIPTION_SCRIPT },
                 { key: 'wechat_rpa', label: '微信发布脚本', path: paths.WECHAT_RPA_SCRIPT },
+                { key: 'social_auto_upload_adapter', label: 'social-auto-upload 适配脚本', path: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT },
                 { key: 'xai_runner', label: 'xAI 榜单脚本', path: paths.XAI_TOP10_SCRIPT }
             ],
             commandChecks: [
@@ -711,7 +731,9 @@ const {
     const accountDashboardService = createAccountDashboardService({
         readPublishConfig,
         readPublishJobs,
-        loginStatusService
+        loginStatusService,
+        getSauPlatformAccounts,
+        checkPlatformLoginStatus
     });
 
     console.log('[AccountDashboard] 账号看板服务已初始化');
@@ -734,8 +756,10 @@ const {
         buildShortTitle,
         generatePublishDescription,
         getWechatAccountMap,
+        getSauAccountMap,
         buildPublishTask,
         validateWechatTaskConfig,
+        validateSauTaskConfig,
         collectPlatformValidation,
         startWechatRpa,
         retryWechatRpa,
@@ -745,6 +769,8 @@ const {
         cancelPlatformRpa,
         checkWechatLogin,
         openWechatContentManager,
+        checkPlatformLogin,
+        openPlatformContentManager,
         triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
         accountDashboardService
     });

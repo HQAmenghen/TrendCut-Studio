@@ -8,21 +8,49 @@ function createAccountDashboardService(deps) {
   const {
     readPublishConfig,
     readPublishJobs,
-    loginStatusService
+    loginStatusService,
+    getSauPlatformAccounts,
+    checkPlatformLoginStatus
   } = deps;
+
+  const platformLabels = {
+    wechatChannels: '微信视频号',
+    douyin: '抖音',
+    xiaohongshu: '小红书'
+  };
+
+  function getAccountKey(platformKey, accountId) {
+    return `${platformKey}:${accountId}`;
+  }
+
+  function getTaskAccountValue(task) {
+    return String(task?.accountId || task?.sauAccountName || '').trim();
+  }
+
+  function matchesAccountTask(task, platformKey, account) {
+    if (!task || task.platform !== platformKey) return false;
+    const accountId = String(account?.id || '').trim();
+    if (String(task.accountId || '').trim() === accountId) return true;
+    if (platformKey === 'wechatChannels') return false;
+    const taskAccount = getTaskAccountValue(task);
+    return [
+      accountId,
+      String(account?.sauAccountName || '').trim(),
+      String(account?.accountId || '').trim(),
+      String(account?.openId || '').trim(),
+      String(account?.displayName || '').trim()
+    ].filter(Boolean).includes(taskAccount);
+  }
 
   /**
    * 获取账号统计数据
    */
-  function getAccountStats(accountId, jobs) {
+  function getAccountStats(platformKey, account, jobs) {
     const now = Date.now();
     const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
 
     const accountJobs = jobs.filter(job => {
-      const task = (job.platformTasks || []).find(t =>
-        t.platform === 'wechatChannels' &&
-        t.accountId === accountId
-      );
+      const task = (job.platformTasks || []).find(t => matchesAccountTask(t, platformKey, account));
       return task;
     });
 
@@ -40,10 +68,7 @@ function createAccountDashboardService(deps) {
     let lastFailure = null;
 
     for (const job of accountJobs) {
-      const task = (job.platformTasks || []).find(t =>
-        t.platform === 'wechatChannels' &&
-        t.accountId === accountId
-      );
+      const task = (job.platformTasks || []).find(t => matchesAccountTask(t, platformKey, account));
 
       if (!task) continue;
 
@@ -98,12 +123,11 @@ function createAccountDashboardService(deps) {
   async function getAccountDashboard() {
     const config = readPublishConfig();
     const jobs = (readPublishJobs()?.jobs || []);
-    const accounts = config?.wechatChannels?.accounts || [];
-
     const accountsData = [];
 
-    for (const account of accounts) {
+    for (const account of config?.wechatChannels?.accounts || []) {
       const accountId = account.id;
+      const accountKey = getAccountKey('wechatChannels', accountId);
 
       // 获取登录状态
       let loginStatus = null;
@@ -116,10 +140,13 @@ function createAccountDashboardService(deps) {
       }
 
       // 获取统计数据
-      const stats = getAccountStats(accountId, jobs);
+      const stats = getAccountStats('wechatChannels', account, jobs);
 
       accountsData.push({
-        id: accountId,
+        id: accountKey,
+        accountId,
+        platform: 'wechatChannels',
+        platformLabel: platformLabels.wechatChannels,
         displayName: account.displayName || account.helperAccount || account.finderUserName || accountId,
         finderUserName: account.finderUserName || '',
         helperAccount: account.helperAccount || '',
@@ -131,6 +158,35 @@ function createAccountDashboardService(deps) {
         } : null,
         stats
       });
+    }
+
+    for (const platformKey of ['douyin', 'xiaohongshu']) {
+      const platformConfig = config?.[platformKey] || {};
+      const accounts = typeof getSauPlatformAccounts === 'function'
+        ? getSauPlatformAccounts(platformKey, config)
+        : (Array.isArray(platformConfig.accounts) ? platformConfig.accounts : []);
+      for (const account of accounts) {
+        const accountId = String(account.id || '').trim();
+        if (!accountId) continue;
+        let loginStatus = null;
+        if (typeof checkPlatformLoginStatus === 'function') {
+          try {
+            loginStatus = checkPlatformLoginStatus(platformKey, account);
+          } catch (_err) {}
+        }
+        const stats = getAccountStats(platformKey, account, jobs);
+        accountsData.push({
+          id: getAccountKey(platformKey, accountId),
+          accountId,
+          platform: platformKey,
+          platformLabel: platformLabels[platformKey] || platformKey,
+          displayName: account.displayName || account.sauAccountName || account.accountId || account.openId || accountId,
+          sauAccountName: account.sauAccountName || '',
+          enabled: Boolean(platformConfig.enabled),
+          loginStatus,
+          stats
+        });
+      }
     }
 
     return {
@@ -151,23 +207,22 @@ function createAccountDashboardService(deps) {
    */
   function getAccountJobs(accountId, options = {}) {
     const jobs = (readPublishJobs()?.jobs || []);
-    const { status, limit = 50 } = options;
+    const { status, limit = 50, platform = 'wechatChannels' } = options;
+    const config = readPublishConfig();
+    const sourceAccounts = platform === 'wechatChannels'
+      ? (config?.wechatChannels?.accounts || [])
+      : (typeof getSauPlatformAccounts === 'function' ? getSauPlatformAccounts(platform, config) : (config?.[platform]?.accounts || []));
+    const account = sourceAccounts.find((item) => String(item.id || '').trim() === String(accountId || '').trim()) || { id: accountId };
 
     let accountJobs = jobs.filter(job => {
-      const task = (job.platformTasks || []).find(t =>
-        t.platform === 'wechatChannels' &&
-        t.accountId === accountId
-      );
+      const task = (job.platformTasks || []).find(t => matchesAccountTask(t, platform, account));
       return task;
     });
 
     // 按状态过滤
     if (status) {
       accountJobs = accountJobs.filter(job => {
-        const task = (job.platformTasks || []).find(t =>
-          t.platform === 'wechatChannels' &&
-          t.accountId === accountId
-        );
+        const task = (job.platformTasks || []).find(t => matchesAccountTask(t, platform, account));
         return task && task.status === status;
       });
     }
@@ -181,8 +236,8 @@ function createAccountDashboardService(deps) {
   /**
    * 获取账号的失败任务列表
    */
-  function getAccountFailedJobs(accountId, limit = 20) {
-    return getAccountJobs(accountId, { status: 'failed', limit });
+  function getAccountFailedJobs(accountId, limit = 20, platform = 'wechatChannels') {
+    return getAccountJobs(accountId, { status: 'failed', limit, platform });
   }
 
   return {

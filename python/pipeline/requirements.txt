@@ -8,5 +8,10 @@ requests
 requests-oauthlib
 oss2
 playwright
+patchright==1.58.2
+loguru==0.7.3
+opencv-python>=4.13.0.92
+qrcode==8.2
+segno>=1.6.6
 moviepy
 opencc-python-reimplemented

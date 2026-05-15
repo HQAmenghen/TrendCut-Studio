@@ -7,7 +7,7 @@
           <div class="section-kicker">Account Portfolio</div>
           <div>
             <h3>账号看板</h3>
-            <p>全方位监控视频号账号资产，实时掌握登录状态与发布表现。通过自动化检测与一键修复，确保发布流水线持续稳定运行。</p>
+            <p>集中监控微信视频号、抖音和小红书账号资产，实时掌握登录状态与发布表现，确保发布流水线持续稳定运行。</p>
           </div>
           <div class="flow-pills">
             <span class="flow-pill">实时状态监控</span>
@@ -19,7 +19,7 @@
           <div class="dashboard-stat">
             <span>资产总量</span>
             <strong>{{ summary.totalAccounts || 0 }}</strong>
-            <p>已配置的视频号账号</p>
+            <p>已配置的社交媒体账号</p>
           </div>
           <div class="dashboard-stat">
             <span>在线状态</span>
@@ -105,7 +105,7 @@
               <div class="avatar-placeholder">{{ account.displayName?.charAt(0) || 'U' }}</div>
               <div class="name-box">
                 <div class="account-name">{{ account.displayName }}</div>
-                <div class="account-id-tag">{{ account.finderUserName || account.id }}</div>
+                <div class="account-id-tag">{{ account.platformLabel }} · {{ account.finderUserName || account.sauAccountName || account.accountId || account.id }}</div>
               </div>
             </div>
             <div class="status-indicator">
@@ -139,7 +139,7 @@
               <span class="text">最近发布: {{ formatDateTime(account.stats.lastPublishedAt) }}</span>
             </div>
             <div class="detail-item">
-              <span class="icon" :class="{ 'pulsing': checkingLoginAccounts.has(account.id) }">📡</span>
+              <span class="icon" :class="{ 'pulsing': checkingLoginAccounts.has(statusKey(account)) }">📡</span>
               <span class="text">最后检测: {{ formatDateTime(account.loginStatus?.lastCheckedAt) }}</span>
             </div>
           </div>
@@ -158,22 +158,57 @@
           <div class="card-actions">
             <button 
               class="action-btn" 
-              @click="handleSingleCheck(account.id)"
-              :disabled="checkingLoginAccounts.has(account.id)"
+              @click="handleSingleCheck(account)"
+              :disabled="checkingLoginAccounts.has(statusKey(account))"
             >
-              {{ checkingLoginAccounts.has(account.id) ? '检测中' : '检测登录态' }}
+              {{ checkingLoginAccounts.has(statusKey(account)) ? '检测中' : '检测登录态' }}
             </button>
             <button
               class="action-btn"
-              @click="handleOpenContentManager(account.id)"
-              :disabled="Boolean(contentManagerActionLabels[account.id])"
+              @click="handleOpenContentManager(account)"
+              :disabled="Boolean(contentManagerActionLabels[statusKey(account)])"
             >
-              {{ contentManagerActionLabels[account.id] || '内容管理' }}
+              {{ contentManagerActionLabels[statusKey(account)] || '内容管理' }}
             </button>
             <button class="action-btn secondary" @click="goToAccountSettings(account.id)">
               配置参数
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="pc.qrCodeData.value.show"
+      class="qr-modal-backdrop"
+      @click.self="pc.closeQrCodeModal"
+    >
+      <div class="qr-modal-content">
+        <h4 class="qr-modal-title">{{ pc.qrCodeData.value.accountLabel || '平台' }}登录</h4>
+        <div class="qr-state-box">
+          <div v-if="pc.qrCodeData.value.status === 'loading'">
+            {{ pc.qrCodeData.value.message || '正在打开浏览器...' }}
+          </div>
+          <template v-else-if="pc.qrCodeData.value.status === 'need_scan'">
+            <img
+              v-if="pc.qrCodeData.value.base64"
+              :src="pc.qrCodeData.value.base64"
+              :alt="`${pc.qrCodeData.value.accountLabel || '平台'}扫码二维码`"
+              class="qr-image"
+            />
+            <div>{{ pc.qrCodeData.value.message || '请扫描二维码登录' }}</div>
+          </template>
+          <template v-else-if="pc.qrCodeData.value.status === 'logged_in'">
+            <strong>登录成功</strong>
+            <div>{{ pc.qrCodeData.value.message || '登录态已恢复' }}</div>
+          </template>
+          <template v-else-if="pc.qrCodeData.value.status === 'error'">
+            <strong>检测失败</strong>
+            <div>{{ pc.qrCodeData.value.error || '请稍后重试' }}</div>
+          </template>
+        </div>
+        <div class="qr-modal-actions">
+          <button type="button" class="ghost-btn" @click="pc.closeQrCodeModal">关闭</button>
         </div>
       </div>
     </div>
@@ -190,6 +225,7 @@ const {
   checkingLoginAccounts, 
   checkingBatchLogin,
   checkSingleAccountLogin,
+  checkPlatformAccountLogin,
   checkSelectedAccountsLogin,
   loadAllLoginStatus
 } = pc;
@@ -244,6 +280,7 @@ async function loadDashboard() {
     accounts.value.forEach(acc => {
       if (acc.loginStatus) {
         accountLoginStatus.value[acc.id] = acc.loginStatus;
+        accountLoginStatus.value[statusKey(acc)] = acc.loginStatus;
       }
     });
   } catch (err) {
@@ -257,8 +294,12 @@ async function loadDashboard() {
 
 function getAccountStatus(account) {
   // 优先使用实时的登录状态
-  const liveStatus = accountLoginStatus.value[account.id];
+  const liveStatus = accountLoginStatus.value[statusKey(account)] || accountLoginStatus.value[account.id];
   return liveStatus?.status || account.loginStatus?.status || 'unknown';
+}
+
+function statusKey(account) {
+  return account.platform === 'wechatChannels' ? account.accountId : account.id;
 }
 
 function getStatusDetail(account) {
@@ -280,12 +321,17 @@ function calculateSuccessRate(account) {
   return Math.round((success / total) * 100);
 }
 
-async function handleSingleCheck(accountId) {
-  await checkSingleAccountLogin(accountId);
+async function handleSingleCheck(account) {
+  const key = statusKey(account);
+  if (account.platform === 'wechatChannels') {
+    await checkSingleAccountLogin(account.accountId);
+  } else {
+    await checkPlatformAccountLogin(account.platform, account.accountId);
+  }
   // 更新本地账号列表中的状态（如果是为了同步 UI）
-  const acc = accounts.value.find(a => a.id === accountId);
+  const acc = accounts.value.find(a => a.id === account.id);
   if (acc) {
-    acc.loginStatus = accountLoginStatus.value[accountId];
+    acc.loginStatus = accountLoginStatus.value[key];
   }
 }
 
@@ -316,50 +362,61 @@ function clearContentManagerActionLabel(accountId) {
   contentManagerActionLabels.value = next;
 }
 
-function updateLocalAccountLoginStatus(accountId, result) {
+function updateLocalAccountLoginStatus(account, result) {
+  const key = statusKey(account);
   const status = result?.status || 'unknown';
   const nextStatus = {
-    ...(accountLoginStatus.value[accountId] || {}),
+    ...(accountLoginStatus.value[key] || {}),
     ...result,
     status,
     lastCheckedAt: new Date().toISOString()
   };
   accountLoginStatus.value = {
     ...accountLoginStatus.value,
-    [accountId]: nextStatus
+    [key]: nextStatus
   };
-  const acc = accounts.value.find(a => a.id === accountId);
+  const acc = accounts.value.find(a => a.id === account.id);
   if (acc) {
     acc.loginStatus = nextStatus;
   }
 }
 
-async function checkLoginBeforeOpening(accountId) {
-  const response = await fetch(`/api/login-status/check/${encodeURIComponent(accountId)}`, {
+async function checkLoginBeforeOpening(account) {
+  if (account.platform !== 'wechatChannels') {
+    const result = await checkPlatformAccountLogin(account.platform, account.accountId);
+    updateLocalAccountLoginStatus(account, result || { status: 'unknown' });
+    return result || {};
+  }
+  const response = await fetch(`/api/login-status/check/${encodeURIComponent(account.accountId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
   });
   const data = await readJsonResponse(response, '登录检测失败，请稍后重试');
   const result = data.result || {};
-  updateLocalAccountLoginStatus(accountId, result);
+  updateLocalAccountLoginStatus(account, result);
   return result;
 }
 
-async function handleOpenContentManager(accountId) {
-  if (!accountId || contentManagerActionLabels.value[accountId]) return;
+async function handleOpenContentManager(account) {
+  const accountId = account.accountId;
+  const actionKey = statusKey(account);
+  if (!accountId || contentManagerActionLabels.value[actionKey]) return;
   error.value = '';
   actionMessage.value = '';
   try {
-    setContentManagerActionLabel(accountId, '检测登录');
-    const loginResult = await checkLoginBeforeOpening(accountId);
+    setContentManagerActionLabel(actionKey, '检测登录');
+    const loginResult = await checkLoginBeforeOpening(account);
     if (loginResult.status !== 'logged_in') {
       errorTitle.value = '需要登录';
       error.value = loginResult.error || '该账号当前未登录，已打开登录检测窗口。请先扫码登录，完成后再点击内容管理。';
       return;
     }
 
-    setContentManagerActionLabel(accountId, '打开中');
-    const response = await fetch(`/api/publish/wechat/content-manager/${encodeURIComponent(accountId)}`, {
+    setContentManagerActionLabel(actionKey, '打开中');
+    const url = account.platform === 'wechatChannels'
+      ? `/api/publish/wechat/content-manager/${encodeURIComponent(accountId)}`
+      : `/api/publish/platforms/${encodeURIComponent(account.platform)}/accounts/${encodeURIComponent(accountId)}/content-manager`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
@@ -375,7 +432,7 @@ async function handleOpenContentManager(accountId) {
       throw new Error(data.error || data.details || '打开内容管理页失败');
     }
     actionMessage.value = data.status === 'already_open'
-      ? '内容管理页已经在独立浏览器窗口中打开。如果没有看到，请查看任务栏中的微信视频号浏览器窗口。'
+      ? '内容管理页已经在独立浏览器窗口中打开。如果没有看到，请查看任务栏中的平台浏览器窗口。'
       : '内容管理页已在对应账号的独立浏览器窗口中打开。';
   } catch (err) {
     if (err.payload?.status === 'need_login') {
@@ -387,21 +444,28 @@ async function handleOpenContentManager(accountId) {
     }
     console.error('打开内容管理页失败:', err);
   } finally {
-    clearContentManagerActionLabel(accountId);
+    clearContentManagerActionLabel(actionKey);
   }
 }
 
 async function handleBatchCheck() {
-  const ids = accounts.value.map(a => a.id);
-  const result = await checkSelectedAccountsLogin(ids);
-  if (result) {
-    // 重新加载看板以刷新统计汇总
+  checkingBatchLogin.value = true;
+  try {
+    const wechatIds = accounts.value.filter(a => a.platform === 'wechatChannels').map(a => a.accountId);
+    if (wechatIds.length) {
+      await checkSelectedAccountsLogin(wechatIds);
+    }
+    for (const account of accounts.value.filter(a => a.platform !== 'wechatChannels')) {
+      await checkPlatformAccountLogin(account.platform, account.accountId);
+    }
     await loadDashboard();
+  } finally {
+    checkingBatchLogin.value = false;
   }
 }
 
 function formatDateTime(isoString) {
-  if (!isoString) return '从未发布';
+  if (!isoString) return '-';
   try {
     const date = new Date(isoString);
     const now = new Date();
@@ -882,6 +946,57 @@ onMounted(() => {
 
 .pulsing {
   animation: pulse 1.5s infinite;
+}
+
+.qr-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.5);
+  padding: 24px;
+}
+
+.qr-modal-content {
+  width: min(420px, 100%);
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+  padding: 24px;
+}
+
+.qr-modal-title {
+  margin: 0 0 16px;
+  color: var(--strong-text);
+  font-size: 1.2rem;
+}
+
+.qr-state-box {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text);
+  text-align: center;
+}
+
+.qr-image {
+  width: 200px;
+  height: 200px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: white;
+}
+
+.qr-modal-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
 }
 
 @keyframes pulse {

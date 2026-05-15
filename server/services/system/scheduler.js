@@ -339,7 +339,7 @@ function findExistingAutoPilotPublishJob(jobs, identity) {
 }
 
 
-function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, taskStore, generatePublishDescription, publishAssetsService, loginStatusService, feishuService, materialDrivenStarter }) {
+function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, taskStore, generatePublishDescription, publishAssetsService, loginStatusService, materialDrivenStarter }) {
   logInfo('[Scheduler] 初始化定时调度引擎 - node-cron', {
     timeZone: SCHEDULER_TIME_ZONE,
     logPath: SCHEDULER_LOG_PATH
@@ -1285,7 +1285,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     cron.schedule(cronExpression, async () => {
       try {
         logInfo('[Scheduler -> 登录检测] 开始定时检测登录状态');
-        const summary = await loginStatusService.checkAllAccounts();
+        const summary = await loginStatusService.checkAllAccounts({ notifyFeishu: false });
 
         logInfo('[Scheduler -> 登录检测] 检测完成', {
           checked: summary.checked,
@@ -1294,17 +1294,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           error: summary.error
         });
 
-        // 如果有账号需要登录，发送汇总通知
-        if (summary.need_login > 0 && feishuService && process.env.FEISHU_NOTIFY_LOGIN_STATUS !== 'false') {
-          const needLoginAccounts = summary.results.filter(r => r.status === 'need_login');
-          const accountNames = needLoginAccounts.map(r => r.accountLabel).join('、');
-
-          await feishuService.sendText(
-            `⚠️ 登录状态检测：${summary.need_login} 个账号需要重新登录\n` +
-            `账号：${accountNames}\n` +
-            '请及时处理以确保自动发布功能正常运行'
-          );
-        }
+        // 登录检查只更新本地状态缓存和二维码信息，不自动推送飞书。
       } catch (err) {
         logError('[Scheduler -> 登录检测] 定时检测失败', err);
       }
