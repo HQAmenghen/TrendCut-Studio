@@ -59,10 +59,19 @@ function createPlatformRpaService(deps) {
     return Array.isArray(currentTask?.runtime?.logs) ? currentTask.runtime.logs : [];
   }
 
+  function getCurrentRuntime(jobId, platformKey) {
+    const payload = readPublishJobs();
+    const currentJob = (payload.jobs || []).find((item) => item.id === jobId);
+    const currentTask = (currentJob?.platformTasks || []).find((item) => item.platform === platformKey);
+    return currentTask?.runtime && typeof currentTask.runtime === 'object' ? currentTask.runtime : {};
+  }
+
   function appendRuntimeLog(jobId, platformKey, line, publishMode, state, message, progress) {
     if (!line) return;
+    const currentRuntime = getCurrentRuntime(jobId, platformKey);
     safeUpdatePublishPlatformTask(jobId, platformKey, {
       runtime: {
+        ...currentRuntime,
         state,
         lastMessage: message,
         updatedAt: new Date().toISOString(),
@@ -330,11 +339,13 @@ function createPlatformRpaService(deps) {
         latestRuntimeMessage = parsed.message;
         latestRuntimeProgress = Number.isFinite(Number(parsed.extra?.percent)) ? Number(parsed.extra.percent) : getStateProgress(parsed.state);
         runtimeEntry.currentState = parsed.state;
+        const currentRuntime = getCurrentRuntime(jobId, platformKey);
         safeUpdatePublishPlatformTask(jobId, platformKey, {
           status: parsed.state === 'success'
             ? (publishMode === 'publish' ? 'published' : 'ready_for_manual_publish')
             : parsed.state,
           runtime: {
+            ...currentRuntime,
             state: parsed.state,
             lastMessage: parsed.message,
             updatedAt: new Date().toISOString(),
@@ -468,11 +479,13 @@ function createPlatformRpaService(deps) {
         latestRuntimeMessage = parsed.message;
         latestRuntimeProgress = Number.isFinite(Number(parsed.extra?.percent)) ? Number(parsed.extra.percent) : getStateProgress(parsed.state);
         runtimeEntry.currentState = parsed.state;
+        const currentRuntime = getCurrentRuntime(jobId, platformKey);
         safeUpdatePublishPlatformTask(jobId, platformKey, {
           status: parsed.state === 'success'
             ? (publishMode === 'publish' ? 'published' : 'ready_for_manual_publish')
             : parsed.state,
           runtime: {
+            ...currentRuntime,
             state: parsed.state,
             lastMessage: parsed.message,
             updatedAt: new Date().toISOString(),

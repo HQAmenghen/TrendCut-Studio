@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -17,6 +18,26 @@ def emit(state: str, message: str, percent: int = 0, **extra) -> None:
         f"{json.dumps(payload, ensure_ascii=False)}",
         flush=True,
     )
+
+
+def normalize_qrcode_payload(payload: dict | None, platform_label: str, account_name: str) -> dict:
+    source = payload if isinstance(payload, dict) else {}
+    image_data_url = str(source.get("image_data_url") or "").strip()
+    image_path = str(source.get("image_path") or "").strip()
+    qr_code_base64 = image_data_url
+    if not qr_code_base64 and image_path:
+        try:
+            with open(image_path, "rb") as file:
+                qr_code_base64 = "data:image/png;base64," + base64.b64encode(file.read()).decode("ascii")
+        except OSError:
+            qr_code_base64 = ""
+
+    return {
+        "qrCodeBase64": qr_code_base64,
+        "qrCodePath": image_path,
+        "accountLabel": platform_label,
+        "accountId": account_name,
+    }
 
 
 def log(message: str) -> None:
@@ -118,10 +139,26 @@ async def ensure_cookie_ready(modules: dict, runtime_dir: Path, platform: str, a
     account_file = resolve_account_file(runtime_dir, platform, account_name)
     setup_fn = modules["douyin_setup"] if platform == "douyin" else modules["xiaohongshu_setup"]
     emit("checking_login", f"正在检查{platform}登录态", 10)
-    ready = await setup_fn(str(account_file), handle=True, return_detail=True, headless=headless)
+    platform_label = "抖音" if platform == "douyin" else "小红书"
+
+    def handle_qrcode(qrcode_payload: dict) -> None:
+        emit(
+            "need_login",
+            f"{platform_label}需要扫码登录，请在控制台扫描二维码",
+            20,
+            **normalize_qrcode_payload(qrcode_payload, platform_label, account_name),
+        )
+
+    ready = await setup_fn(
+        str(account_file),
+        handle=True,
+        return_detail=True,
+        qrcode_callback=handle_qrcode,
+        headless=headless,
+    )
     if not ready.get("success"):
         raise RuntimeError(ready.get("message") or f"{platform}登录态不可用")
-    emit("login_ready", f"{platform}登录态可用", 25)
+    emit("login_ready", f"{platform_label}登录态可用", 25, accountLabel=platform_label, accountId=account_name)
     return account_file
 
 

@@ -207,10 +207,13 @@ export function usePublishCenter() {
     if (error.value) appendError(error.value);
   };
 
-    const qrCodeData = ref({
+  const qrCodeData = ref({
     show: false,
     accountId: '',
+    accountLabel: '',
+    source: '',
     base64: '',
+    qrCodePath: '',
     status: '',
     error: '',
     message: ''
@@ -231,7 +234,10 @@ export function usePublishCenter() {
       qrCodeData.value = {
         show: true,
         accountId,
+        accountLabel: payload.accountLabel || accountId,
+        source: payload.source || 'login-check',
         base64: '',
+        qrCodePath: '',
         status: 'logged_in',
         error: '',
         message: '✅ 登录成功，浏览器即将关闭'
@@ -250,7 +256,10 @@ export function usePublishCenter() {
       qrCodeData.value = {
         show: true,
         accountId,
+        accountLabel: payload.accountLabel || accountId,
+        source: payload.source || 'login-check',
         base64: payload.qrCodeBase64 || '',
+        qrCodePath: payload.qrCodePath || '',
         status: 'need_scan',
         error: '',
         message: payload.message || '请在弹出的浏览器窗口中扫描二维码'
@@ -266,6 +275,29 @@ export function usePublishCenter() {
       qrCodeData.value.status = 'loading';
       qrCodeData.value.message = '正在打开浏览器...';
     }
+  };
+
+  const applyPublishRuntimeQr = (jobId, platformKey, payload = {}) => {
+    if (!jobId || !platformKey) return;
+    const platformLabel = PLATFORM_DEFS.find((item) => item.key === platformKey)?.label || platformKey;
+    const rawBase64 = String(payload.qrCodeBase64 || '').trim();
+    const rawPath = String(payload.qrCodePath || '').trim();
+    const qrImage = rawBase64
+      ? rawBase64.startsWith('data:image/')
+        ? rawBase64
+        : `data:image/png;base64,${rawBase64}`
+      : '';
+    qrCodeData.value = {
+      show: true,
+      accountId: String(payload.accountId || jobId).trim() || jobId,
+      accountLabel: String(payload.accountLabel || platformLabel).trim() || platformLabel,
+      source: 'publish-runtime',
+      base64: qrImage,
+      qrCodePath: rawPath,
+      status: qrImage || rawPath ? 'need_scan' : 'loading',
+      error: '',
+      message: payload.message || `正在为 ${platformLabel} 准备登录二维码...`
+    };
   };
 
   const pollWechatLoginStatus = (accountId) => {
@@ -332,7 +364,47 @@ export function usePublishCenter() {
     qrCodeData.value.show = false;
   };
 
-const clearErrorState = () => {
+  const refreshRuntimeQrFromJobs = () => {
+    const currentJobs = Array.isArray(jobs.value) ? jobs.value : [];
+    const candidate = currentJobs
+      .flatMap((job) => (Array.isArray(job.platformTasks) ? job.platformTasks.map((task) => ({ job, task })) : []))
+      .find(({ task }) => {
+        const state = String(task?.runtime?.state || task?.status || '').trim();
+        return ['need_login', 'checking_login', 'login_ready', 'starting', 'navigating', 'uploading'].includes(state)
+          && String(task?.runtime?.qrCodeBase64 || task?.runtime?.qrCodePath || '').trim();
+      });
+
+    if (!candidate) {
+      if (qrCodeData.value.source === 'publish-runtime' && qrCodeData.value.status === 'need_scan') {
+        qrCodeData.value.show = false;
+      }
+      return;
+    }
+    const { job, task } = candidate;
+    const currentKey = `${job.id}:${task.platform}`;
+    const nextBase64 = task.runtime?.qrCodeBase64 || '';
+    const nextPath = task.runtime?.qrCodePath || '';
+    if (
+      qrCodeData.value.show
+      && qrCodeData.value.source === 'publish-runtime'
+      && qrCodeData.value.accountId === currentKey
+      && qrCodeData.value.status === 'need_scan'
+      && qrCodeData.value.base64 === nextBase64
+      && qrCodeData.value.qrCodePath === nextPath
+    ) {
+      return;
+    }
+    applyPublishRuntimeQr(job.id, task.platform, {
+      accountId: currentKey,
+      accountLabel: task.accountLabel || task.platformLabel || getPlatformLabel(task.platform),
+      qrCodeBase64: nextBase64,
+      qrCodePath: nextPath,
+      message: task.runtime?.lastMessage || '请扫描二维码登录',
+      status: 'need_scan'
+    });
+  };
+
+  const clearErrorState = () => {
     errorState.value = { message: '', code: '', stage: '', hint: '', details: '' };
     error.value = '';
   };
@@ -608,6 +680,7 @@ const clearErrorState = () => {
     try {
       const res = await axios.get('/api/publish/jobs');
       jobs.value = res.data?.jobs || [];
+      refreshRuntimeQrFromJobs();
     } catch (err) {
       const normalized = normalizeApiError(err, '读取发布任务失败');
       errorState.value = normalized;
@@ -650,6 +723,7 @@ const clearErrorState = () => {
       ]);
       assets.value = assetsRes.data.assets || [];
       jobs.value = jobsRes.data.jobs || [];
+      refreshRuntimeQrFromJobs();
       config.value = configRes.data.config || {};
       selfCheck.value = selfCheckRes.data?.report || null;
       xaiPartitions.value = xaiConfigRes.data?.config?.partitions || [];

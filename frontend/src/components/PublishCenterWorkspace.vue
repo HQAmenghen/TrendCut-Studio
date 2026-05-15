@@ -946,7 +946,7 @@
       @click.self="center.closeQrCodeModal"
     >
       <div class="qr-modal-content">
-        <h4 class="qr-modal-title">微信视频号登录</h4>
+        <h4 class="qr-modal-title">{{ center.qrCodeData.value.accountLabel || '平台' }}登录</h4>
         <div class="qr-state-box">
           <div v-if="center.qrCodeData.value.status === 'loading'">
             ⏳ {{ center.qrCodeData.value.message || '正在打开浏览器...' }}
@@ -955,7 +955,7 @@
             <img
               v-if="center.qrCodeData.value.base64"
               :src="center.qrCodeData.value.base64"
-              alt="微信扫码二维码"
+              :alt="`${center.qrCodeData.value.accountLabel || '平台'}扫码二维码`"
               class="qr-image"
             />
             <div>{{ center.qrCodeData.value.message || '请在弹出的浏览器窗口中扫描二维码' }}</div>

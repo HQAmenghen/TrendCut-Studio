@@ -193,6 +193,52 @@ describe('platform RPA service', () => {
     });
   });
 
+  test('preserves social-auto-upload QR runtime fields across later status events', async () => {
+    const videoPath = path.join(tempRoot, 'video.mp4');
+    const sauDir = path.join(tempRoot, 'social-auto-upload');
+    const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
+    const payloadDir = path.join(tempRoot, 'payloads');
+    fs.writeFileSync(videoPath, 'video');
+    fs.mkdirSync(sauDir, { recursive: true });
+    fs.writeFileSync(adapterScript, 'print("ok")');
+
+    const jobs = [createJob('job_qr', videoPath, 'douyin')];
+    const readPublishJobs = jest.fn(() => ({ jobs }));
+    const updatePublishPlatformTask = jest.fn((jobId, platformKey, patch) => {
+      const job = jobs.find((item) => item.id === jobId);
+      const task = job.platformTasks.find((item) => item.platform === platformKey);
+      Object.assign(task, patch);
+    });
+    let onStdout = null;
+    const runPythonScriptCancellable = jest.fn((_script, _args, options) => {
+      onStdout = options.onStdout;
+      return {
+        process: {},
+        promise: new Promise(() => {}),
+        cancel: jest.fn()
+      };
+    });
+    const service = createService({
+      jobs,
+      readPublishJobs,
+      updatePublishPlatformTask,
+      socialAutoUploadDir: sauDir,
+      socialAutoUploadAdapterScript: adapterScript,
+      platformRpaTaskDir: payloadDir,
+      runPythonScriptCancellable
+    });
+
+    await service.startPlatformRpa('job_qr', 'douyin', 'draft');
+    onStdout('STATUS|need_login|social-auto-upload|请扫码|{"percent":20,"qrCodeBase64":"data:image/png;base64,abc","qrCodePath":"C:/tmp/qr.png"}\n');
+    onStdout('STATUS|login_ready|social-auto-upload|登录态可用|{"percent":25}\n');
+
+    expect(jobs[0].platformTasks[0].runtime).toMatchObject({
+      state: 'login_ready',
+      qrCodeBase64: 'data:image/png;base64,abc',
+      qrCodePath: 'C:/tmp/qr.png'
+    });
+  });
+
   test('discovers external social-auto-upload directory and venv python from USERPROFILE when vendor is absent', async () => {
     const previousCwd = process.cwd();
     const previousUserProfile = process.env.USERPROFILE;
