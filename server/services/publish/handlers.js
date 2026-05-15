@@ -23,9 +23,43 @@ function createPublishHandlers(deps) {
     startWechatRpa,
     retryWechatRpa,
     cancelWechatRpa,
+    startPlatformRpa,
+    retryPlatformRpa,
+    cancelPlatformRpa,
     checkWechatLogin,
+    openWechatContentManager,
     triggerAutoPilotNow
   } = deps;
+
+  async function startSelectedPlatformRpa(jobId, platformKey, mode) {
+    if (typeof startPlatformRpa === 'function') {
+      return startPlatformRpa(jobId, platformKey, mode);
+    }
+    if (platformKey === 'wechatChannels') {
+      return startWechatRpa(jobId, mode);
+    }
+    throw new Error(`平台暂未接入自动化: ${platformKey}`);
+  }
+
+  function retrySelectedPlatformRpa(jobId, platformKey, mode) {
+    if (typeof retryPlatformRpa === 'function') {
+      return retryPlatformRpa(jobId, platformKey, mode);
+    }
+    if (platformKey === 'wechatChannels') {
+      return retryWechatRpa(jobId, mode);
+    }
+    throw new Error(`平台暂未接入自动化: ${platformKey}`);
+  }
+
+  function cancelSelectedPlatformRpa(jobId, platformKey) {
+    if (typeof cancelPlatformRpa === 'function') {
+      return cancelPlatformRpa(jobId, platformKey);
+    }
+    if (platformKey === 'wechatChannels') {
+      return cancelWechatRpa(jobId);
+    }
+    throw new Error(`平台暂未接入自动化: ${platformKey}`);
+  }
 
   return {
     getConfig: (_req, res) => {
@@ -420,6 +454,23 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_START_FAILED', stage: 'publish.wechat', error: '启动微信视频号任务失败', details: err.message });
       }
     },
+    runPlatform: async (req, res) => {
+      try {
+        const jobId = String(req.params.jobId || '').trim();
+        const platformKey = String(req.params.platformKey || '').trim();
+        const mode = String(req.body?.mode || 'draft').trim();
+        if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.platform', error: '缺少任务 ID' });
+        if (!platformKey) return sendError(res, { status: 400, code: 'PUBLISH_PLATFORM_MISSING', stage: 'publish.platform', error: '缺少平台' });
+        if (!['draft', 'publish'].includes(mode)) {
+          return sendError(res, { status: 400, code: 'PUBLISH_MODE_INVALID', stage: 'publish.platform', error: 'mode 仅支持 draft 或 publish' });
+        }
+        await startSelectedPlatformRpa(jobId, platformKey, mode);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_START_FAILED', stage: 'publish.platform', error: '启动平台发布任务失败', details: err.message });
+      }
+    },
     retryWechat: (req, res) => {
       try {
         const jobId = String(req.params.jobId || '').trim();
@@ -430,6 +481,20 @@ function createPublishHandlers(deps) {
         res.json({ success: true, jobs: payload.jobs || [] });
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_RETRY_FAILED', stage: 'publish.wechat', error: '重试微信视频号任务失败', details: err.message });
+      }
+    },
+    retryPlatform: (req, res) => {
+      try {
+        const jobId = String(req.params.jobId || '').trim();
+        const platformKey = String(req.params.platformKey || '').trim();
+        const mode = String(req.body?.mode || '').trim();
+        if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.platform', error: '缺少任务 ID' });
+        if (!platformKey) return sendError(res, { status: 400, code: 'PUBLISH_PLATFORM_MISSING', stage: 'publish.platform', error: '缺少平台' });
+        retrySelectedPlatformRpa(jobId, platformKey, mode);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_RETRY_FAILED', stage: 'publish.platform', error: '重试平台发布任务失败', details: err.message });
       }
     },
     cancelWechat: (req, res) => {
@@ -443,6 +508,19 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_CANCEL_FAILED', stage: 'publish.wechat', error: '取消微信视频号任务失败', details: err.message });
       }
     },
+    cancelPlatform: (req, res) => {
+      try {
+        const jobId = String(req.params.jobId || '').trim();
+        const platformKey = String(req.params.platformKey || '').trim();
+        if (!jobId) return sendError(res, { status: 400, code: 'PUBLISH_JOB_ID_MISSING', stage: 'publish.platform', error: '缺少任务 ID' });
+        if (!platformKey) return sendError(res, { status: 400, code: 'PUBLISH_PLATFORM_MISSING', stage: 'publish.platform', error: '缺少平台' });
+        cancelSelectedPlatformRpa(jobId, platformKey);
+        const payload = readPublishJobs();
+        res.json({ success: true, jobs: payload.jobs || [] });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_CANCEL_FAILED', stage: 'publish.platform', error: '取消平台发布任务失败', details: err.message });
+      }
+    },
     testWechatLogin: async (req, res) => {
       try {
         const accountId = String(req.params.accountId || '').trim();
@@ -453,6 +531,37 @@ function createPublishHandlers(deps) {
         res.json(result);
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_TEST_LOGIN_FAILED', stage: 'publish.wechat', error: '测试视频号登录状态失败', details: err.message });
+      }
+    },
+    openWechatContentManager: async (req, res) => {
+      try {
+        const accountId = String(req.params.accountId || '').trim();
+        if (!accountId) return sendError(res, { status: 400, code: 'PUBLISH_ACCOUNT_ID_MISSING', stage: 'publish.wechat', error: '缺少账号 ID' });
+        const config = readPublishConfig();
+        const account = getWechatAccountMap(config).get(accountId) || null;
+        if (!account) return sendError(res, { status: 404, code: 'PUBLISH_WECHAT_ACCOUNT_NOT_FOUND', stage: 'publish.wechat', error: '未找到对应的视频号发布账号' });
+        if (typeof openWechatContentManager !== 'function') {
+          return sendError(res, { status: 500, code: 'PUBLISH_WECHAT_CONTENT_MANAGER_UNAVAILABLE', stage: 'publish.wechat', error: '内容管理打开服务未初始化' });
+        }
+        const result = await openWechatContentManager(accountId);
+        if (result?.success === false) {
+          return res.json({
+            ...result,
+            success: false,
+            accountId
+          });
+        }
+        res.json({
+          ...result,
+          success: true,
+          accountId,
+          account: {
+            id: account.id,
+            displayName: account.displayName || account.helperAccount || account.finderUserName || account.id
+          }
+        });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_WECHAT_CONTENT_MANAGER_FAILED', stage: 'publish.wechat', error: '打开内容管理页失败', details: err.message });
       }
     },
     getAccountDashboard: async (req, res) => {

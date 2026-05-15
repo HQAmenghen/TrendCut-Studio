@@ -15,7 +15,11 @@ function registerPublishRoutes(app, handlers) {
   app.post('/api/publish/jobs/:jobId/wechat-channels', handlers.runWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/retry', handlers.retryWechat);
   app.post('/api/publish/jobs/:jobId/wechat-channels/cancel', handlers.cancelWechat);
+  app.post('/api/publish/jobs/:jobId/platforms/:platformKey/start', handlers.runPlatform);
+  app.post('/api/publish/jobs/:jobId/platforms/:platformKey/retry', handlers.retryPlatform);
+  app.post('/api/publish/jobs/:jobId/platforms/:platformKey/cancel', handlers.cancelPlatform);
   app.post('/api/publish/wechat/test-login/:accountId', handlers.testWechatLogin);
+  app.post('/api/publish/wechat/content-manager/:accountId', handlers.openWechatContentManager);
 
   // Account dashboard routes
   app.get('/api/publish/accounts/dashboard', handlers.getAccountDashboard);

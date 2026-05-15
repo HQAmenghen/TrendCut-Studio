@@ -76,6 +76,7 @@ describe('publish handlers', () => {
       retryWechatRpa: jest.fn(),
       cancelWechatRpa: jest.fn(),
       checkWechatLogin: jest.fn(),
+      openWechatContentManager: jest.fn(),
       triggerAutoPilotNow: jest.fn()
     });
 
@@ -177,6 +178,7 @@ describe('publish handlers', () => {
       retryWechatRpa: jest.fn(),
       cancelWechatRpa: jest.fn(),
       checkWechatLogin: jest.fn(),
+      openWechatContentManager: jest.fn(),
       triggerAutoPilotNow: jest.fn(),
       readReviewConfig,
       readMediaMetadata
@@ -208,5 +210,113 @@ describe('publish handlers', () => {
     }));
     expect(readReviewConfig).not.toHaveBeenCalled();
     expect(readMediaMetadata).not.toHaveBeenCalled();
+  });
+
+  test('openWechatContentManager validates account before opening account-scoped browser', async () => {
+    const openWechatContentManager = jest.fn(async () => ({
+      status: 'opened',
+      url: 'https://channels.weixin.qq.com/platform/post/list'
+    }));
+
+    const handlers = createPublishHandlers({
+      sendError: (res, options) => res.status(options.status || 500).json({ success: false, ...options }),
+      readPublishConfig: () => ({
+        wechatChannels: {
+          enabled: true,
+          accounts: [{ id: 'acct_1', displayName: 'Account 1' }]
+        }
+      }),
+      maskPlatformConfig: jest.fn(),
+      sanitizePlatformConfigInput: jest.fn(),
+      writePublishConfig: jest.fn(),
+      reconcileAndPersistPublishJobs: jest.fn(),
+      getCachedPublishAssets: jest.fn(),
+      readPublishJobs: jest.fn(),
+      writePublishJobs: jest.fn(),
+      updatePublishJob: jest.fn(),
+      archivePublishJob: jest.fn(),
+      archiveCompletedPublishJobs: jest.fn(),
+      collectPublishAssets: jest.fn(),
+      makeJobId: jest.fn(),
+      buildShortTitle: jest.fn(),
+      generatePublishDescription: jest.fn(),
+      getWechatAccountMap: () => new Map([['acct_1', { id: 'acct_1', displayName: 'Account 1' }]]),
+      buildPublishTask: jest.fn(),
+      validateWechatTaskConfig: jest.fn(),
+      collectPlatformValidation: jest.fn(),
+      startWechatRpa: jest.fn(),
+      retryWechatRpa: jest.fn(),
+      cancelWechatRpa: jest.fn(),
+      checkWechatLogin: jest.fn(),
+      openWechatContentManager,
+      triggerAutoPilotNow: jest.fn()
+    });
+
+    const req = { params: { accountId: 'acct_1' } };
+    const res = createMockResponse();
+
+    await handlers.openWechatContentManager(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(openWechatContentManager).toHaveBeenCalledWith('acct_1');
+    expect(res.body).toEqual(expect.objectContaining({
+      success: true,
+      status: 'opened',
+      accountId: 'acct_1'
+    }));
+  });
+
+  test('openWechatContentManager forwards need-login result without marking it successful', async () => {
+    const openWechatContentManager = jest.fn(async () => ({
+      success: false,
+      status: 'need_login',
+      error: '账号未登录或登录态已失效，请先扫码登录'
+    }));
+
+    const handlers = createPublishHandlers({
+      sendError: (res, options) => res.status(options.status || 500).json({ success: false, ...options }),
+      readPublishConfig: () => ({
+        wechatChannels: {
+          enabled: true,
+          accounts: [{ id: 'acct_1', displayName: 'Account 1' }]
+        }
+      }),
+      maskPlatformConfig: jest.fn(),
+      sanitizePlatformConfigInput: jest.fn(),
+      writePublishConfig: jest.fn(),
+      reconcileAndPersistPublishJobs: jest.fn(),
+      getCachedPublishAssets: jest.fn(),
+      readPublishJobs: jest.fn(),
+      writePublishJobs: jest.fn(),
+      updatePublishJob: jest.fn(),
+      archivePublishJob: jest.fn(),
+      archiveCompletedPublishJobs: jest.fn(),
+      collectPublishAssets: jest.fn(),
+      makeJobId: jest.fn(),
+      buildShortTitle: jest.fn(),
+      generatePublishDescription: jest.fn(),
+      getWechatAccountMap: () => new Map([['acct_1', { id: 'acct_1', displayName: 'Account 1' }]]),
+      buildPublishTask: jest.fn(),
+      validateWechatTaskConfig: jest.fn(),
+      collectPlatformValidation: jest.fn(),
+      startWechatRpa: jest.fn(),
+      retryWechatRpa: jest.fn(),
+      cancelWechatRpa: jest.fn(),
+      checkWechatLogin: jest.fn(),
+      openWechatContentManager,
+      triggerAutoPilotNow: jest.fn()
+    });
+
+    const req = { params: { accountId: 'acct_1' } };
+    const res = createMockResponse();
+
+    await handlers.openWechatContentManager(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      success: false,
+      status: 'need_login',
+      accountId: 'acct_1'
+    }));
   });
 });

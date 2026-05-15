@@ -537,6 +537,123 @@ class MaterialDrivenPipelineReuseTest(unittest.TestCase):
             self.assertAlmostEqual(plan[0]["start"], 12.5, places=2)
             self.assertAlmostEqual(plan[0]["end"], 18.5, places=2)
 
+    def test_execution_plan_honors_cutaway_layout_even_when_block_type_is_avatar_talk(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "script_units.json").write_text(
+                json.dumps(
+                    {
+                        "script_units": [
+                            {
+                                "id": "script_001",
+                                "role": "hook",
+                                "text": "开头规则要求先插入素材画面。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "avatar_segments.json").write_text(
+                json.dumps(
+                    {
+                        "segments": [
+                            {
+                                "id": "avatar_segment_001",
+                                "script_ref": "script_001",
+                                "start": 0,
+                                "end": 10.0,
+                                "duration": 10.0,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "edit_plan.json").write_text(
+                json.dumps(
+                    {
+                        "constraints": {
+                            "min_single_clip_sec": 4.0,
+                            "min_hook_clip_sec": 4.5,
+                            "max_single_clip_sec": 8.0,
+                        },
+                        "blocks": [
+                            {
+                                "id": "block_001",
+                                "type": "avatar_talk",
+                                "duration": 5.0,
+                                "source_ref": "aiman.mp4",
+                                "script_ref": "script_001",
+                                "visual_layout": "cutaway_silent",
+                                "role": "hook",
+                                "text": "开头规则要求先插入素材画面。",
+                                "use_cutaway": False,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "selected_segments.json").write_text(
+                json.dumps(
+                    {
+                        "segments": [
+                            {
+                                "id": "seg_opening",
+                                "start": 4.08,
+                                "end": 10.08,
+                                "duration_sec": 6.0,
+                                "text": "素材中的开头证据画面。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "material_segments_scored.json").write_text(
+                json.dumps({"segments": []}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (output_dir / "clip_matches.json").write_text(
+                json.dumps(
+                    {
+                        "clip_matches": [
+                            {
+                                "script_ref": "script_001",
+                                "segment_id": "seg_opening",
+                                "material_cut_start": 4.08,
+                                "material_cut_end": 10.08,
+                                "recommended_duration": 6.0,
+                                "use_cutaway": False,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            pipeline = MaterialDrivenPipeline(
+                material_path=str(output_dir / "material.mp4"),
+                output_dir=str(output_dir),
+            )
+
+            with patch.object(pipeline, "get_video_duration", return_value=68.0):
+                self.assertTrue(pipeline.build_execution_plan_from_edit_plan())
+
+            plan = json.loads((output_dir / "execution_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan[0]["type"], "material_cutaway")
+            self.assertEqual(plan[0]["script_ref"], "script_001")
+            self.assertEqual(plan[0]["visual_layout"], "cutaway_silent")
+            self.assertAlmostEqual(plan[0]["start_time"], 0.0, places=2)
+            self.assertAlmostEqual(plan[0]["start"], 4.08, places=2)
+            self.assertAlmostEqual(plan[0]["duration"], 5.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

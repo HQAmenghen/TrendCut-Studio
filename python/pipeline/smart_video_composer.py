@@ -786,8 +786,12 @@ class SmartVideoComposer:
 
             # 3. 根据OST策略剪辑片段
             clip_paths = []
+            required_clip_paths = set()
             for i, segment in enumerate(segments):
                 clip_path = temp_dir / f"clip_{i:03d}.mp4"
+                is_required_cutaway = segment.get('type') == 'material_cutaway'
+                if is_required_cutaway:
+                    required_clip_paths.add(str(clip_path))
 
                 if use_smart_clip:
                     success = self._clip_segment_with_ost(
@@ -801,6 +805,9 @@ class SmartVideoComposer:
                 if success:
                     clip_paths.append(str(clip_path))
                 else:
+                    if is_required_cutaway:
+                        logger.error(f"必需素材插片 {i} 剪辑失败，停止渲染以避免输出缺失插片的成片")
+                        return False
                     logger.warning(f"片段 {i} 剪辑失败，跳过")
 
             if not clip_paths:
@@ -809,7 +816,7 @@ class SmartVideoComposer:
 
             # 4. 使用MoviePy合成最终视频
             logger.info(f"开始合成 {len(clip_paths)} 个片段")
-            success = self._compose_with_moviepy(clip_paths, output_path)
+            success = self._compose_with_moviepy(clip_paths, output_path, required_clip_paths=required_clip_paths)
 
             # 5. 清理临时文件
             if success:
@@ -1430,7 +1437,8 @@ class SmartVideoComposer:
     def _compose_with_moviepy(
         self,
         clip_paths: List[str],
-        output_path: str
+        output_path: str,
+        required_clip_paths: Optional[set] = None
     ) -> bool:
         """
         使用MoviePy合成最终视频
@@ -1442,11 +1450,15 @@ class SmartVideoComposer:
 
             # 1. 加载所有片段
             clips = []
+            required_clip_paths = set(required_clip_paths or [])
             for clip_path in clip_paths:
                 try:
                     clip = VideoFileClip(clip_path)
                     clips.append(clip)
                 except Exception as e:
+                    if clip_path in required_clip_paths:
+                        logger.error(f"必需素材插片加载失败 {clip_path}: {e}")
+                        return False
                     logger.warning(f"加载片段失败 {clip_path}: {e}")
 
             if not clips:

@@ -66,7 +66,7 @@
             <strong>{{ executionPlanSegmentCount || '待生成' }}</strong>
           </div>
         </div>
-        <video :src="finalVideoUrl" controls class="result-video"></video>
+        <video :key="finalVideoUrl" :src="finalVideoUrl" controls class="result-video"></video>
         <div class="action-buttons">
           <a :href="finalVideoUrl" download class="primary-btn shrink-none">
             📥 下载视频

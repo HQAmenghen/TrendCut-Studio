@@ -10,6 +10,8 @@ const SUCCESS_STATUSES = new Set(['SUCCESS', 'SUCCEEDED', 'COMPLETED', 'FINISHED
 const FAILURE_STATUSES = new Set(['FAILED', 'FAILURE', 'ERROR', 'CANCELED', 'CANCELLED']);
 const VIDEO_FILE_TYPES = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'video']);
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+const TRANSIENT_QUERY_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_QUERY_ERROR_CODES = new Set(['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT']);
 
 function sanitizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/u, '');
@@ -124,6 +126,17 @@ function formatRunningHubErrorMessage(payload, options = {}) {
 
   const detail = failureReason || apiMsg || JSON.stringify(payload);
   return `[RunningHub 任务失败] taskId=${taskId}, status=${status}${errorCode}${errorMessage}, detail=${detail}`;
+}
+
+function isTransientRunningHubQueryError(err) {
+  const status = Number(err?.response?.status || 0);
+  if (TRANSIENT_QUERY_STATUS_CODES.has(status)) return true;
+
+  const code = String(err?.code || '').trim().toUpperCase();
+  if (TRANSIENT_QUERY_ERROR_CODES.has(code)) return true;
+
+  const message = String(err?.message || '').trim();
+  return /timeout|timed out|socket hang up|network error/iu.test(message);
 }
 
 function collectOutputItems(value, items = []) {
@@ -267,9 +280,19 @@ function createRunningHubClient(deps = {}) {
   async function waitForOutputs(options = {}) {
     const maxAttempts = Number(options.maxAttempts || DEFAULT_MAX_ATTEMPTS);
     const pollIntervalMs = Number(options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS);
+    let lastTransientError = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const payload = await queryTask(options);
+      let payload;
+      try {
+        payload = await queryTask(options);
+        lastTransientError = null;
+      } catch (err) {
+        if (!isTransientRunningHubQueryError(err)) throw err;
+        lastTransientError = err;
+        await new Promise((resolve) => setTimeoutFn(resolve, pollIntervalMs));
+        continue;
+      }
       const status = extractRunningHubTaskStatus(payload);
       const outputUrl = extractRunningHubOutputUrl(payload, options);
       if (outputUrl && (!status || SUCCESS_STATUSES.has(status))) {
@@ -285,10 +308,32 @@ function createRunningHubClient(deps = {}) {
       await new Promise((resolve) => setTimeoutFn(resolve, pollIntervalMs));
     }
 
+    if (lastTransientError) {
+      throw new Error(`等待 RunningHub 结果超时: taskId=${options.taskId}, 最后一次查询失败: ${lastTransientError.message}`);
+    }
     throw new Error(`等待 RunningHub 结果超时: taskId=${options.taskId}`);
   }
 
   async function renderExternalAudio(options = {}) {
+    const resumeTaskId = String(options.resumeTaskId || options.taskId || '').trim();
+    if (resumeTaskId) {
+      const output = await waitForOutputs({
+        ...options,
+        taskId: resumeTaskId
+      });
+      return {
+        provider: 'runninghub',
+        taskId: resumeTaskId,
+        resumed: true,
+        status: output.status,
+        videoUrl: output.outputUrl,
+        remoteAudioName: String(options.remoteAudioName || ''),
+        remoteImageName: String(options.remoteImageName || ''),
+        nodeInfoList: Array.isArray(options.nodeInfoList) ? options.nodeInfoList : [],
+        outputResponse: output.response
+      };
+    }
+
     const audioFileName = await uploadResource(options.audioPath, options);
     const imageFileName = await uploadResource(options.imagePath, options);
     const nodeInfoList = [
@@ -307,10 +352,30 @@ function createRunningHubClient(deps = {}) {
       ...options,
       nodeInfoList
     });
-    const output = await waitForOutputs({
-      ...options,
-      taskId: submission.taskId
-    });
+    if (typeof options.onSubmitted === 'function') {
+      options.onSubmitted({
+        provider: 'runninghub',
+        taskId: submission.taskId,
+        status: submission.status,
+        remoteAudioName: audioFileName,
+        remoteImageName: imageFileName,
+        nodeInfoList,
+        submitResponse: submission.response
+      });
+    }
+    let output;
+    try {
+      output = await waitForOutputs({
+        ...options,
+        taskId: submission.taskId
+      });
+    } catch (err) {
+      err.runningHubTaskId = submission.taskId;
+      err.remoteAudioName = audioFileName;
+      err.remoteImageName = imageFileName;
+      err.nodeInfoList = nodeInfoList;
+      throw err;
+    }
 
     return {
       provider: 'runninghub',
@@ -341,6 +406,7 @@ module.exports = {
   extractRunningHubFailureReason,
   extractRunningHubOutputUrl,
   formatRunningHubErrorMessage,
+  isTransientRunningHubQueryError,
   normalizeRunningHubBaseUrl,
   resolveRunningHubApiKey
 };

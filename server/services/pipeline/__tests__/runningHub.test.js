@@ -115,4 +115,83 @@ describe('RunningHub workflow API helpers', () => {
 
     expect(outputUrl).toBe('https://example.com/avatar.mp4');
   });
+
+  test('keeps polling when a RunningHub query returns a transient 504', async () => {
+    const fakeAxios = {
+      post: jest
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('Request failed with status code 504'), {
+          response: { status: 504 }
+        }))
+        .mockResolvedValueOnce({
+          data: {
+            code: 0,
+            data: {
+              taskStatus: 'SUCCESS',
+              results: [
+                { fileUrl: 'https://example.com/avatar.mp4', fileType: 'mp4' }
+              ]
+            }
+          }
+        })
+    };
+    const client = createRunningHubClient({
+      axiosClient: fakeAxios,
+      setTimeoutFn: (callback) => callback()
+    });
+
+    await expect(client.waitForOutputs({
+      apiKey: 'rh-key',
+      baseUrl: 'https://www.runninghub.cn/openapi/v2',
+      taskId: 'task-1',
+      maxAttempts: 3,
+      pollIntervalMs: 1
+    })).resolves.toMatchObject({
+      outputUrl: 'https://example.com/avatar.mp4',
+      status: 'SUCCESS'
+    });
+
+    expect(fakeAxios.post).toHaveBeenCalledTimes(2);
+  });
+
+  test('resumes an existing RunningHub task without uploading or submitting again', async () => {
+    const fakeAxios = {
+      post: jest.fn(async () => ({
+        data: {
+          code: 0,
+          data: {
+            taskStatus: 'SUCCESS',
+            results: [
+              { fileUrl: 'https://example.com/resumed.mp4', fileType: 'mp4' }
+            ]
+          }
+        }
+      }))
+    };
+    const createReadStream = jest.fn();
+    const client = createRunningHubClient({
+      axiosClient: fakeAxios,
+      fsImpl: { createReadStream }
+    });
+
+    await expect(client.renderExternalAudio({
+      apiKey: 'rh-key',
+      baseUrl: 'https://www.runninghub.cn/openapi/v2',
+      resumeTaskId: 'task-resume',
+      audioPath: 'C:/tmp/avatar.wav',
+      imagePath: 'C:/tmp/avatar.png'
+    })).resolves.toMatchObject({
+      provider: 'runninghub',
+      taskId: 'task-resume',
+      resumed: true,
+      videoUrl: 'https://example.com/resumed.mp4'
+    });
+
+    expect(createReadStream).not.toHaveBeenCalled();
+    expect(fakeAxios.post).toHaveBeenCalledWith(
+      'https://www.runninghub.cn/openapi/v2/query',
+      expect.objectContaining({ taskId: 'task-resume' }),
+      expect.any(Object)
+    );
+  });
 });

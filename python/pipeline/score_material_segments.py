@@ -306,6 +306,15 @@ def extract_source_handle(source_post):
     return ""
 
 
+def is_source_handle_entity(entity, speaker_handle):
+    handle = str(speaker_handle or "").strip().lower()
+    if not handle or not isinstance(entity, dict):
+        return False
+    name = str(entity.get("name") or "").strip().lower()
+    sources = {str(item or "").strip().lower() for item in normalize_string_list(entity.get("source"))}
+    return name == handle and sources == {"source_post"}
+
+
 def build_scoring_context():
     source_post = load_json("source_post.json", {}) or {}
     speaker_scene = load_json("speaker_scene.json", {}) or {}
@@ -559,9 +568,18 @@ def merge_structured_segment(seg, scored, context=None):
     if default_visual_type.lower() == "market_screen" and speaker_visible_by_summary:
         default_visual_type = "interview"
     persons = normalize_named_entities(entities.get("persons"))
-    if not persons and str(context.get("speaker_handle") or "").strip():
+    speaker_handle = str(context.get("speaker_handle") or "").strip()
+    if persons and speaker_handle and speaker_visible_by_summary:
+        visible_persons = [
+            item
+            for item in persons
+            if not is_source_handle_entity(item, speaker_handle)
+        ]
+        if visible_persons:
+            persons = visible_persons
+    if not persons and speaker_handle and not speaker_visible_by_summary:
         persons = normalize_named_entities([{
-            "name": str(context.get("speaker_handle") or "").strip(),
+            "name": speaker_handle,
             "confidence": 0.55,
             "source": ["source_post"],
         }])

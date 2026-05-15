@@ -1,7 +1,9 @@
 const {
+  normalizeBillIdentifiersForSpeech,
   prepareAvatarExternalAudioWorkflow,
   prepareAvatarSpeechWorkflow,
   prepareNarrationTextForAvatarWorkflow,
+  prepareNarrationTextForSpeech,
   resolveAvatarSeed,
   resolveAvatarSpeechNodeId,
   sanitizeNarrationText
@@ -18,6 +20,29 @@ describe('sanitizeNarrationText', () => {
   });
 });
 
+describe('normalizeBillIdentifiersForSpeech', () => {
+  test('spells bill identifiers with comma-separated companion numbers digit by digit', () => {
+    expect(normalizeBillIdentifiersForSpeech('法案编号HR 3000,633在投票中通过'))
+      .toBe('法案编号H R 三零零零，六三三在投票中通过');
+    expect(normalizeBillIdentifiersForSpeech('H.R. 3000, S. 633 moved forward'))
+      .toBe('H R 三零零零，S 六三三 moved forward');
+  });
+
+  test('does not rewrite ordinary comma numbers or asset ticker values', () => {
+    expect(normalizeBillIdentifiersForSpeech('播放量 3,000,633，BTC 3000,633 不是法案编号'))
+      .toBe('播放量 3,000,633，BTC 3000,633 不是法案编号');
+    expect(normalizeBillIdentifiersForSpeech('S 3000,633 without a period is left alone'))
+      .toBe('S 3000,633 without a period is left alone');
+  });
+});
+
+describe('prepareNarrationTextForSpeech', () => {
+  test('sanitizes narration and protects bill identifiers before TTS', () => {
+    expect(prepareNarrationTextForSpeech('法案编号HR 3000,633在投票中通过\n结束'))
+      .toBe('法案编号H R 三零零零，六三三在投票中通过。');
+  });
+});
+
 describe('prepareNarrationTextForAvatarWorkflow', () => {
   test('keeps raw multiline text for workflow while using sanitized text only for validation', () => {
     const rawText = [
@@ -30,6 +55,15 @@ describe('prepareNarrationTextForAvatarWorkflow', () => {
 
     expect(prepared.workflowText).toBe(rawText);
     expect(prepared.validationText).toBe('第一行没有句号。第二行也要保留换行。第三行继续保留。');
+    expect(prepared.speechText).toBe('第一行没有句号。第二行也要保留换行。第三行继续保留。');
+    expect(prepared.isUsable).toBe(true);
+  });
+
+  test('keeps display validation text unchanged while protecting speech text for bill identifiers', () => {
+    const prepared = prepareNarrationTextForAvatarWorkflow('法案编号HR 3000,633在投票中通过');
+
+    expect(prepared.validationText).toBe('法案编号HR 3000,633在投票中通过。');
+    expect(prepared.speechText).toBe('法案编号H R 三零零零，六三三在投票中通过。');
     expect(prepared.isUsable).toBe(true);
   });
 });

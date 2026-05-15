@@ -19,6 +19,14 @@ const preCommitHook = `#!/bin/sh
 # Git pre-commit hook
 # 在提交前运行测试，确保代码质量
 
+echo "🔒 检查是否误提交运行产物..."
+node scripts/check-runtime-artifacts.js --staged
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ 检测到运行产物，提交被阻止"
+  exit 1
+fi
+
 echo "🔍 运行 pre-commit 检查..."
 
 # 运行测试
@@ -34,6 +42,21 @@ fi
 
 echo ""
 echo "✅ 所有检查通过"
+exit 0
+`;
+
+const prePushHook = `#!/bin/sh
+
+# Git pre-push hook
+# 防止把本地运行产物、账号配置、数据库或媒体文件推到远端。
+
+node scripts/check-runtime-artifacts.js --pre-push
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ 检测到运行产物，推送被阻止"
+  exit 1
+fi
+
 exit 0
 `;
 
@@ -72,7 +95,8 @@ function main() {
   console.log('===========================================\n');
 
   const hooks = [
-    { name: 'pre-commit', content: preCommitHook }
+    { name: 'pre-commit', content: preCommitHook },
+    { name: 'pre-push', content: prePushHook }
   ];
 
   let allSuccess = true;

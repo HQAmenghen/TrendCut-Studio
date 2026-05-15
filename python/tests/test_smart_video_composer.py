@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 import tempfile
 import math
+import json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -174,6 +175,49 @@ class SmartVideoComposerAudioPolicyTest(unittest.TestCase):
 
         self.assertGreaterEqual(main_audio.loudness, -18.1)
         self.assertLessEqual(bgm_audio.loudness, main_audio.loudness - 12.0)
+
+
+class SmartVideoComposerCutawayGuardTest(unittest.TestCase):
+    def test_compose_from_director_plan_fails_when_planned_cutaway_clip_fails(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            plan_path = Path(work_dir) / "execution_plan.json"
+            plan_path.write_text(
+                json.dumps([
+                    {
+                        "type": "aiman",
+                        "start": 0,
+                        "end": 1,
+                        "duration": 1,
+                    },
+                    {
+                        "type": "material_cutaway",
+                        "start": 3,
+                        "end": 7,
+                        "duration": 4,
+                        "material_cut_start": 3,
+                        "material_cut_end": 7,
+                    },
+                ]),
+                encoding="utf-8",
+            )
+            composer = SmartVideoComposer.__new__(SmartVideoComposer)
+            composer.work_dir = Path(work_dir)
+
+            def fake_clip(segment, _material_video, _aiman_video, _output_path):
+                return segment.get("type") != "material_cutaway"
+
+            composer._clip_segment_with_ost = fake_clip
+            composer._compose_with_moviepy = mock.Mock(return_value=True)
+
+            self.assertFalse(
+                composer.compose_from_director_plan(
+                    director_plan_path=str(plan_path),
+                    material_video="material.mp4",
+                    aiman_video="aiman.mp4",
+                    output_path=str(Path(work_dir) / "output_final.mp4"),
+                )
+            )
+            composer._compose_with_moviepy.assert_not_called()
 
 
 if __name__ == "__main__":

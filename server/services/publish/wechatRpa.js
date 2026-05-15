@@ -10,18 +10,23 @@
 const { createWechatRuntimeService } = require('./wechatRpa.runtime');
 const { createWechatLoginService } = require('./wechatRpa.login');
 const { createWechatProcessService } = require('./wechatRpa.process');
+const { createPlatformRpaService } = require('./platformRpa');
 
 function createWechatRpaService(deps) {
   const {
     fs,
     path,
     spawn,
+    stopProcessTree,
     runPythonScriptCancellable,
     slugifyText,
     publishCenterDir,
     wechatRpaScript,
     wechatRpaTaskDir,
     wechatRpaProfileRoot,
+    platformRpaScript,
+    platformRpaTaskDir,
+    platformRpaProfileRoot,
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
@@ -65,9 +70,27 @@ function createWechatRpaService(deps) {
     fs,
     path,
     spawn,
+    stopProcessTree,
     publishCenterDir,
     buildWechatProfileDir: runtimeService.buildWechatProfileDir,
     getActiveWechatRuntimeForAccount: processService.getActiveWechatRuntimeForAccount
+  });
+
+  const platformRpaService = createPlatformRpaService({
+    fs,
+    path,
+    slugifyText,
+    runPythonScriptCancellable,
+    publishCenterDir,
+    platformRpaScript,
+    platformRpaTaskDir,
+    platformRpaProfileRoot,
+    readPublishJobs,
+    readPublishConfig,
+    updatePublishPlatformTask,
+    startWechatRpa: processService.startWechatRpa,
+    retryWechatRpa: processService.retryWechatRpa,
+    cancelWechatRpa: processService.cancelWechatRpa
   });
 
   // 导出统一接口
@@ -75,7 +98,11 @@ function createWechatRpaService(deps) {
     startWechatRpa: processService.startWechatRpa,
     retryWechatRpa: processService.retryWechatRpa,
     cancelWechatRpa: processService.cancelWechatRpa,
-    checkWechatLogin: loginService.checkWechatLogin
+    startPlatformRpa: platformRpaService.startPlatformRpa,
+    retryPlatformRpa: platformRpaService.retryPlatformRpa,
+    cancelPlatformRpa: platformRpaService.cancelPlatformRpa,
+    checkWechatLogin: loginService.checkWechatLogin,
+    openWechatContentManager: loginService.openWechatContentManager
   };
 }
 

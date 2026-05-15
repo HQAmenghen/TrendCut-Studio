@@ -63,5 +63,6 @@ async function synthesizeQwenTtsSpeech(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_OUTPUT_FILENAME,
   synthesizeQwenTtsSpeech
 };

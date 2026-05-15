@@ -1,5 +1,11 @@
 const CHINESE_CHARACTER_PATTERN = /[\u4e00-\u9fff]/u;
 const ASCII_ENGLISH_PATTERN = /^[A-Za-z0-9\s.,!?'"():;%+\-/]+$/u;
+const BILL_IDENTIFIER_LEADING_PREFIX_PATTERN = '(?:H\\.?\\s*R\\.?|H\\.?\\s*B\\.?|S\\.?\\s*B\\.?|A\\.?\\s*B\\.?|S\\.|H\\.?\\s*RES\\.?|S\\.?\\s*RES\\.?|H\\.?\\s*J\\.?\\s*RES\\.?|S\\.?\\s*J\\.?\\s*RES\\.?|H\\.?\\s*CON\\.?\\s*RES\\.?|S\\.?\\s*CON\\.?\\s*RES\\.?)';
+const BILL_IDENTIFIER_FOLLOWUP_PREFIX_PATTERN = '(?:H\\.?\\s*R\\.?|H\\.?\\s*B\\.?|S\\.?\\s*B\\.?|A\\.?\\s*B\\.?|S\\.?|H\\.?\\s*RES\\.?|S\\.?\\s*RES\\.?|H\\.?\\s*J\\.?\\s*RES\\.?|S\\.?\\s*J\\.?\\s*RES\\.?|H\\.?\\s*CON\\.?\\s*RES\\.?|S\\.?\\s*CON\\.?\\s*RES\\.?)';
+const BILL_IDENTIFIER_PATTERN = new RegExp(
+  `\\b(${BILL_IDENTIFIER_LEADING_PREFIX_PATTERN})\\s*(\\d{1,6})(?:\\s*[,，]\\s*(${BILL_IDENTIFIER_FOLLOWUP_PREFIX_PATTERN}\\s*)?(\\d{1,6}))+`,
+  'giu'
+);
 const CONTROL_TAG_PATTERN = /<\|[^|>]+?\|>/gu;
 const HASH_END_MARKER_PATTERN = /#{3,}\s*结束\s*#{3,}/gu;
 const TERMINAL_PUNCTUATION_PATTERN = /[。！？!?…]$/u;
@@ -17,6 +23,18 @@ const EMBEDDED_TTS_CLASS_PATTERNS = [
   /^AudioListCombine$/u
 ];
 const EMBEDDED_TTS_NODE_IDS = new Set(['277', '278', '283', '287', '291']);
+const DIGIT_SPEECH_MAP = {
+  0: '零',
+  1: '一',
+  2: '二',
+  3: '三',
+  4: '四',
+  5: '五',
+  6: '六',
+  7: '七',
+  8: '八',
+  9: '九'
+};
 
 function stripInlineControlMarkers(text) {
   return String(text || '')
@@ -68,16 +86,56 @@ function sanitizeNarrationText(text) {
   return cleaned;
 }
 
+function normalizeBillIdentifierPrefix(prefix) {
+  return String(prefix || '')
+    .replace(/\./gu, '')
+    .replace(/\s+/gu, '')
+    .toUpperCase()
+    .split('')
+    .join(' ');
+}
+
+function spellBillIdentifierNumberForSpeech(numberText) {
+  return String(numberText || '')
+    .split('')
+    .map((digit) => DIGIT_SPEECH_MAP[digit] || digit)
+    .join('');
+}
+
+function normalizeBillIdentifiersForSpeech(text) {
+  return String(text || '').replace(BILL_IDENTIFIER_PATTERN, (match, prefix, firstNumber) => {
+    const normalizedPrefix = normalizeBillIdentifierPrefix(prefix);
+    const parts = [`${normalizedPrefix} ${spellBillIdentifierNumberForSpeech(firstNumber)}`];
+    const restPattern = new RegExp(`[,，]\\s*(${BILL_IDENTIFIER_FOLLOWUP_PREFIX_PATTERN}\\s*)?(\\d{1,6})`, 'giu');
+    let restMatch = restPattern.exec(match);
+    while (restMatch) {
+      const [, nextPrefix, nextNumber] = restMatch;
+      const normalizedNextPrefix = nextPrefix
+        ? `${normalizeBillIdentifierPrefix(nextPrefix)} `
+        : '';
+      parts.push(`${normalizedNextPrefix}${spellBillIdentifierNumberForSpeech(nextNumber)}`);
+      restMatch = restPattern.exec(match);
+    }
+    return parts.join('，');
+  });
+}
+
+function prepareNarrationTextForSpeech(text) {
+  return normalizeBillIdentifiersForSpeech(sanitizeNarrationText(text));
+}
+
 function prepareNarrationTextForAvatarWorkflow(text) {
   const workflowText = stripInlineControlMarkers(String(text || ''))
     .replace(/\r\n?/g, '\n')
     .trim();
   const validationText = sanitizeNarrationText(workflowText);
+  const speechText = prepareNarrationTextForSpeech(workflowText);
 
   return {
     workflowText,
     validationText,
-    isUsable: Boolean(validationText)
+    speechText,
+    isUsable: Boolean(speechText)
   };
 }
 
@@ -411,9 +469,11 @@ function prepareAvatarExternalAudioWorkflow(workflow, options = {}) {
 
 module.exports = {
   inferTargetLanguage,
+  normalizeBillIdentifiersForSpeech,
   prepareAvatarExternalAudioWorkflow,
   prepareAvatarSpeechWorkflow,
   prepareNarrationTextForAvatarWorkflow,
+  prepareNarrationTextForSpeech,
   resolveAvatarSpeechNodeId,
   resolveAvatarSeed,
   sanitizeNarrationText

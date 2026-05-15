@@ -138,8 +138,8 @@ function normalizeAvatarSegmentSubtitles(payload) {
 function readBestSubtitles(taskPath) {
   const subtitleFiles = [
     { fileName: 'aiman_subtitles.json', normalize: normalizeExistingSubtitles },
-    { fileName: 'avatar_segments.json', normalize: normalizeAvatarSegmentSubtitles },
     { fileName: 'execution_plan.json', normalize: normalizeExecutionPlanSubtitles },
+    { fileName: 'avatar_segments.json', normalize: normalizeAvatarSegmentSubtitles },
     { fileName: 'aiman_audio.json', normalize: normalizeExistingSubtitles },
     { fileName: 'subtitles.json', normalize: normalizeExistingSubtitles }
   ];

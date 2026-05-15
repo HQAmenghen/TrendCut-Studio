@@ -5,7 +5,7 @@ milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
 last_updated: "2026-05-08T06:04:00Z"
-last_activity: 2026-05-09 — Completed quick task: 无声音竖屏自动化产物不创建自动发布任务
+last_activity: 2026-05-11 — Completed quick task: 账号控制中心新增账号内容管理入口
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-08 — Completed quick task: Top10 分区 TopN 发布计划修正
+Last activity: 2026-05-11 — Completed quick task: 账号控制中心新增账号内容管理入口
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -105,6 +105,8 @@ None yet.
 | 2026-05-08 | 移除发布中心必须审核通过才能创建发布任务的限制 | `.planning/quick/260508-remove-publish-review-gate/SUMMARY.md` |
 | 2026-05-09 | 无声音竖屏自动化产物不创建自动发布任务 | `.planning/quick/260509-d0l-skip-silent-autopublish/SUMMARY.md` |
 | 2026-05-09 | 修复 xAI Top10 分区删除后刷新回弹 | `.planning/quick/260509-xai-partition-delete-persist/SUMMARY.md` |
+| 2026-05-11 | 账号控制中心新增账号内容管理入口 | `.planning/quick/260511-ov3-account-content-management-button/260511-ov3-SUMMARY.md` |
+| 2026-05-15 | 口播稿编号安全化，避免法案编号被 TTS 误读成大数字 | `.planning/quick/260515-d5l-fix-tts-narration-so-law-bill-identifier/SUMMARY.md` |
 
 ## Session Continuity
 

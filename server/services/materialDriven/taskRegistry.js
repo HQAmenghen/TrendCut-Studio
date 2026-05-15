@@ -3,7 +3,7 @@ const path = require('path');
 const { activeTasks, taskClients } = require('./sharedState');
 const { createDefaultAvatarConfig, normalizeSourceMeta, readTaskState, writeTaskState } = require('./taskState');
 const { addTaskLog } = require('./events');
-const { nowIso, readJsonSafe } = require('./utils');
+const { buildVersionedProjectFileUrl, nowIso, readJsonSafe } = require('./utils');
 
 function mergeSourceMeta(primary = {}, fallback = {}) {
   const normalizedPrimary = normalizeSourceMeta(primary || {});
@@ -42,7 +42,8 @@ function createMaterialDrivenTaskRegistry(paths) {
     if (!fs.existsSync(outputPath)) return null;
     const persistedState = readTaskState(outputPath);
 
-    const hasFinalVideo = fs.existsSync(path.join(outputPath, 'output_final.mp4'));
+    const finalVideoPath = path.join(outputPath, 'output_final.mp4');
+    const hasFinalVideo = fs.existsSync(finalVideoPath);
     const hasAimanVideo = fs.existsSync(path.join(outputPath, 'aiman.mp4'));
     const hasNarration = fs.existsSync(path.join(outputPath, 'narration.json'));
     const hasEditPlan = fs.existsSync(path.join(outputPath, 'edit_plan.json'));
@@ -101,7 +102,7 @@ function createMaterialDrivenTaskRegistry(paths) {
       updatedAt: nowIso(),
       completedAt: hasFinalVideo ? nowIso() : null,
       error: '',
-      videoUrl: hasFinalVideo ? `/projects/${safeOutputDir}/output_final.mp4` : '',
+      videoUrl: hasFinalVideo ? buildVersionedProjectFileUrl(safeOutputDir, finalVideoPath) : '',
       outputDir: safeOutputDir,
       lastStdout: '',
       lastStderr: '',
@@ -121,6 +122,11 @@ function createMaterialDrivenTaskRegistry(paths) {
     const executionPlan = readJsonSafe(path.join(task.outputPath, 'execution_plan.json'), null);
     const avatarSegments = readJsonSafe(path.join(task.outputPath, 'avatar_segments.json'), null);
     const sourceMeta = mergeSourceMeta(task.sourceMeta, sourcePost);
+    const outputDir = task.outputDir || path.basename(task.outputPath || '');
+    const finalVideoUrl = buildVersionedProjectFileUrl(
+      outputDir,
+      path.join(task.outputPath || '', 'output_final.mp4')
+    );
     return {
       success: true,
       task: {
@@ -134,7 +140,7 @@ function createMaterialDrivenTaskRegistry(paths) {
         updatedAt: task.updatedAt || null,
         completedAt: task.completedAt || null,
         error: task.error || '',
-        videoUrl: task.videoUrl || '',
+        videoUrl: finalVideoUrl || task.videoUrl || '',
         outputPath: task.outputDir || '',
         sourceMeta,
         avatarConfig: task.avatarConfig || createDefaultAvatarConfig(),

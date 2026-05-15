@@ -18,6 +18,9 @@ function createPublishConfigService(deps) {
     makeJobId
   } = deps;
 
+  const autoPilotPlatformKeys = ['wechatChannels', 'douyin', 'xiaohongshu'];
+  const defaultAutoPilotPlatforms = ['wechatChannels'];
+
   const platformFieldLabels = {
     wechatChannels: {
       finderUserName: '视频号 ID / Finder User Name',
@@ -117,6 +120,39 @@ function createPublishConfigService(deps) {
     });
   }
 
+  function trimTrailingEmptyValues(items = []) {
+    const values = Array.isArray(items) ? [...items] : [];
+    while (values.length > 0) {
+      const last = values[values.length - 1];
+      const empty = Array.isArray(last)
+        ? last.length === 0
+        : !String(last || '').trim();
+      if (!empty) break;
+      values.pop();
+    }
+    return values;
+  }
+
+  function sanitizeAutoPilotPlatformSelection(value, fallback = defaultAutoPilotPlatforms) {
+    const source = Array.isArray(value)
+      ? value
+      : String(value || '').split(',').map((item) => item.trim());
+    const selected = [];
+    for (const item of source) {
+      const platformKey = String(item || '').trim();
+      if (autoPilotPlatformKeys.includes(platformKey) && !selected.includes(platformKey)) {
+        selected.push(platformKey);
+      }
+    }
+    if (selected.length) return selected;
+    return Array.isArray(fallback) ? [...fallback] : [...defaultAutoPilotPlatforms];
+  }
+
+  function sanitizeAutoPilotPlatformRows(value) {
+    if (!Array.isArray(value)) return [];
+    return trimTrailingEmptyValues(value.map((item) => sanitizeAutoPilotPlatformSelection(item, [])));
+  }
+
   function sanitizeAutoPilotModeSchedules(value, fallback = {}) {
     const source = value && typeof value === 'object' ? value : {};
     const fallbackSource = fallback && typeof fallback === 'object' ? fallback : {};
@@ -124,23 +160,36 @@ function createPublishConfigService(deps) {
     for (const mode of ['vertical', 'avatar']) {
       const item = source[mode] && typeof source[mode] === 'object' ? source[mode] : {};
       const fallbackItem = fallbackSource[mode] && typeof fallbackSource[mode] === 'object' ? fallbackSource[mode] : {};
+      const accountIds = Array.isArray(item.accountIds)
+        ? trimTrailingEmptyValues(item.accountIds.map((accountId) => String(accountId || '').trim()))
+        : (Array.isArray(fallbackItem.accountIds) ? trimTrailingEmptyValues(fallbackItem.accountIds.map((accountId) => String(accountId || '').trim())) : []);
+      const times = Array.isArray(item.times)
+        ? trimTrailingEmptyValues(item.times.map((time) => String(time || '').trim()))
+        : (Array.isArray(fallbackItem.times) ? trimTrailingEmptyValues(fallbackItem.times.map((time) => String(time || '').trim())) : []);
+      const partitionIds = Array.isArray(item.partitionIds)
+        ? trimTrailingEmptyValues(item.partitionIds.map((partitionId) => String(partitionId || '').trim()))
+        : (Array.isArray(fallbackItem.partitionIds) ? trimTrailingEmptyValues(fallbackItem.partitionIds.map((partitionId) => String(partitionId || '').trim())) : []);
+      const sourceRanks = Array.isArray(item.sourceRanks)
+        ? trimTrailingEmptyValues(sanitizeAutoPilotSourceRanks(item.sourceRanks))
+        : (Array.isArray(fallbackItem.sourceRanks) ? trimTrailingEmptyValues(sanitizeAutoPilotSourceRanks(fallbackItem.sourceRanks)) : []);
+      let platforms = Array.isArray(item.platforms)
+        ? sanitizeAutoPilotPlatformRows(item.platforms)
+        : (Array.isArray(fallbackItem.platforms) ? sanitizeAutoPilotPlatformRows(fallbackItem.platforms) : []);
       const schedule = {
-        accountIds: Array.isArray(item.accountIds)
-          ? item.accountIds.map((accountId) => String(accountId || '').trim())
-          : (Array.isArray(fallbackItem.accountIds) ? fallbackItem.accountIds.map((accountId) => String(accountId || '').trim()) : []),
-        times: Array.isArray(item.times)
-          ? item.times.map((time) => String(time || '').trim())
-          : (Array.isArray(fallbackItem.times) ? fallbackItem.times.map((time) => String(time || '').trim()) : []),
-        partitionIds: Array.isArray(item.partitionIds)
-          ? item.partitionIds.map((partitionId) => String(partitionId || '').trim())
-          : (Array.isArray(fallbackItem.partitionIds) ? fallbackItem.partitionIds.map((partitionId) => String(partitionId || '').trim()) : []),
-        sourceRanks: Array.isArray(item.sourceRanks)
-          ? sanitizeAutoPilotSourceRanks(item.sourceRanks)
-          : (Array.isArray(fallbackItem.sourceRanks) ? sanitizeAutoPilotSourceRanks(fallbackItem.sourceRanks) : [])
+        accountIds,
+        times,
+        partitionIds,
+        sourceRanks,
+        platforms
       };
       if (!schedule.sourceRanks.length) {
-        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length);
+        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length, schedule.platforms.length);
         schedule.sourceRanks = Array.from({ length: plannedCount }, () => '1');
+      }
+      if (!schedule.platforms.length) {
+        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length, schedule.sourceRanks.length);
+        platforms = Array.from({ length: plannedCount }, () => [...defaultAutoPilotPlatforms]);
+        schedule.platforms = platforms;
       }
       schedules[mode] = schedule;
     }
@@ -160,8 +209,8 @@ function createPublishConfigService(deps) {
         autoPilotAccountIds: [],
         autoPilotTimes: [],
         autoPilotModeSchedules: {
-          vertical: { accountIds: [], times: [], partitionIds: [], sourceRanks: [] },
-          avatar: { accountIds: [], times: [], partitionIds: [], sourceRanks: [] }
+          vertical: { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [] },
+          avatar: { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [] }
         },
         autoPilotUseCurrentRanking: false,
         autoPilotPartitionId: 'crypto',

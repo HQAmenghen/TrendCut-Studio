@@ -261,9 +261,22 @@ function createPublishStore(deps) {
     if (allPublished) return 'published';
     const anyFailed = tasks.some((task) => task.status === 'failed');
     if (anyFailed) return 'failed';
-    const anyPublishing = tasks.some((task) => ['publishing', 'draft_preparing'].includes(task.status));
+    const anyPublishing = tasks.some((task) => [
+      'publishing',
+      'draft_preparing',
+      'starting',
+      'navigating',
+      'need_login',
+      'login_ready',
+      'uploading',
+      'uploaded',
+      'editing',
+      'edited'
+    ].includes(task.status));
     if (anyPublishing) return 'publishing';
     if (job?.scheduledAt && hasScheduledWaitingTask(job)) return 'scheduled_wait';
+    const anyManualReady = tasks.some((task) => task.status === 'ready_for_manual_publish');
+    if (anyManualReady) return 'ready_for_manual_publish';
     return 'pending';
   }
 

@@ -7,6 +7,8 @@ const { runCleanup, getCleanupConfig } = require('../../core/cleanup');
 const SCHEDULER_TIME_ZONE = 'Asia/Shanghai';
 const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.log');
 const DEFAULT_XAI_PARTITION_ID = 'crypto';
+const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu'];
+const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
 
 function normalizeXaiPartitionId(value, fallback = DEFAULT_XAI_PARTITION_ID) {
   const raw = String(value || '').trim().toLowerCase();
@@ -163,6 +165,31 @@ function trimTrailingEmptyStrings(items = []) {
   return values;
 }
 
+function normalizeAutoPilotPlatformSelection(value, fallback = DEFAULT_AUTO_PILOT_PLATFORMS) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '').split(',').map((item) => item.trim());
+  const selected = [];
+  for (const item of source) {
+    const platformKey = String(item || '').trim();
+    if (AUTO_PILOT_PLATFORM_KEYS.includes(platformKey) && !selected.includes(platformKey)) {
+      selected.push(platformKey);
+    }
+  }
+  if (selected.length) return selected;
+  return Array.isArray(fallback) ? [...fallback] : [...DEFAULT_AUTO_PILOT_PLATFORMS];
+}
+
+function trimTrailingEmptyPlatformRows(items = []) {
+  const values = Array.isArray(items)
+    ? items.map((item) => normalizeAutoPilotPlatformSelection(item, []))
+    : [];
+  while (values.length > 0 && values[values.length - 1].length === 0) {
+    values.pop();
+  }
+  return values;
+}
+
 function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
   const mode = String(pipelineMode || 'vertical').trim() || 'vertical';
   const schedule = config?.global?.autoPilotModeSchedules?.[mode] || {};
@@ -178,9 +205,12 @@ function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
   const sourceRanks = Array.isArray(schedule.sourceRanks)
     ? trimTrailingEmptyStrings(schedule.sourceRanks)
     : [];
+  const platforms = Array.isArray(schedule.platforms)
+    ? trimTrailingEmptyPlatformRows(schedule.platforms)
+    : [];
 
-  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length) {
-    return { accountIds, times, partitionIds, sourceRanks };
+  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length) {
+    return { accountIds, times, partitionIds, sourceRanks, platforms };
   }
 
   return {
@@ -191,7 +221,8 @@ function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
       ? trimTrailingEmptyStrings(config.global.autoPilotTimes)
       : [],
     partitionIds: [],
-    sourceRanks: []
+    sourceRanks: [],
+    platforms: []
   };
 }
 
@@ -224,7 +255,8 @@ function getAutoPilotRequiredPartitionIds(config = {}) {
       configCount,
       modeSchedule.accountIds?.length || 0,
       modeSchedule.partitionIds?.length || 0,
-      modeSchedule.sourceRanks?.length || 0
+      modeSchedule.sourceRanks?.length || 0,
+      modeSchedule.platforms?.length || 0
     );
     for (let index = 0; index < count; index += 1) {
       partitionIds.add(getAutoPilotSlotPartitionId(config, pipelineMode, index));
@@ -335,13 +367,15 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     const targetAccountIds = modeSchedule.accountIds || [];
     const targetPartitionIds = modeSchedule.partitionIds || [];
     const targetSourceRanks = modeSchedule.sourceRanks || [];
-    const mappingLength = Math.max(targetAccountIds.length, targetPartitionIds.length, targetSourceRanks.length);
+    const targetPlatforms = modeSchedule.platforms || [];
+    const mappingLength = Math.max(targetAccountIds.length, targetPartitionIds.length, targetSourceRanks.length, targetPlatforms.length);
     const count = Math.max(configCount, mappingLength);
     const sourceIndexByPartition = new Map();
     let rank = 0;
 
     while (rank < count) {
       const assignedAccountId = String(targetAccountIds[rank] || '').trim();
+      const selectedPlatforms = normalizeAutoPilotPlatformSelection(targetPlatforms[rank]);
       const partitionId = getAutoPilotSlotPartitionId(config, pipelineMode, rank);
       const explicitSourceRank = Boolean(String(targetSourceRanks[rank] || '').trim());
       const configuredSourceRank = getAutoPilotSlotSourceRank(config, pipelineMode, rank);
@@ -448,6 +482,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               itemRank,
               normalized,
               sourceRank: itemRank,
+              platforms: selectedPlatforms,
               sourcePartitionId: normalized.sourcePartitionId || partitionId,
               sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
               avatarConfig: {
@@ -508,6 +543,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
                 activeKey,
                 sourceMode,
                 pipelineMode,
+                platforms: selectedPlatforms,
                 sourcePartitionId: normalized.sourcePartitionId || partitionId,
                 sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
                 sourceRank: itemRank
@@ -540,6 +576,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             activeKey,
             sourceMode,
             pipelineMode,
+            platforms: selectedPlatforms,
             sourcePartitionId: normalized.sourcePartitionId || partitionId,
             sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
             sourceRank: itemRank
@@ -554,6 +591,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             videoUrl: normalized.videoUrl,
             sourceMode,
             pipelineMode,
+            platforms: selectedPlatforms,
             sourcePartitionId: normalized.sourcePartitionId || partitionId,
             sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || ''
           });
@@ -730,7 +768,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             postUrl: pendingTask.normalized.postUrl,
             sourcePartitionId: pendingTask.sourcePartitionId || pendingTask.normalized.sourcePartitionId || '',
             sourcePartitionLabel: pendingTask.sourcePartitionLabel || pendingTask.normalized.sourcePartitionLabel || '',
-            sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0
+            sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0,
+            platforms: pendingTask.platforms || DEFAULT_AUTO_PILOT_PLATFORMS
           });
           logInfo('[AutoPilot] 调度器从队列中启动了新的 AI剪辑+数字人 任务', {
             rank: pendingTask.rank + 1,
@@ -799,6 +838,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               title: meta.title || '',
               summary: meta.summary || '',
               videoUrl: outputVideoUrl,
+              sourceTaskDir: meta.outputPath ? path.basename(meta.outputPath) : '',
               author: meta.author || '',
               postId: meta.postId || '',
               postUrl: meta.postUrl || '',
@@ -812,6 +852,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               activeKey,
               sourceMode: meta.sourceMode || '',
               pipelineMode: meta.pipelineMode || 'avatar',
+              platforms: meta.platforms || DEFAULT_AUTO_PILOT_PLATFORMS,
               sourcePartitionId: meta.sourcePartitionId || '',
               sourcePartitionLabel: meta.sourcePartitionLabel || '',
               sourceRank: meta.sourceRank || 0
@@ -832,6 +873,9 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
         const rank = typeof meta === 'object' ? meta.rank : meta;
         const activeKey = typeof meta === 'object' ? meta.activeKey : '';
         const pipelineMode = typeof meta === 'object' ? String(meta.pipelineMode || 'vertical').trim() || 'vertical' : 'vertical';
+        const selectedPlatforms = typeof meta === 'object'
+          ? normalizeAutoPilotPlatformSelection(meta.platforms)
+          : [...DEFAULT_AUTO_PILOT_PLATFORMS];
         const sourcePartitionId = typeof meta === 'object' ? String(meta.sourcePartitionId || '').trim() : '';
         const sourcePartitionLabel = typeof meta === 'object' ? String(meta.sourcePartitionLabel || '').trim() : '';
         const sourceRank = typeof meta === 'object' ? normalizeAutoPilotSourceRank(meta.sourceRank, rank + 1) : rank + 1;
@@ -937,13 +981,14 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
           const targetAccountIds = modeSchedule.accountIds || [];
           const assignedAccountId = String(targetAccountIds[rank] || '').trim();
+          const shouldPublishWechat = selectedPlatforms.includes('wechatChannels');
 
           let account = null;
-          if (assignedAccountId && Array.isArray(pcfg?.accounts)) {
+          if (shouldPublishWechat && assignedAccountId && Array.isArray(pcfg?.accounts)) {
             account = pcfg.accounts.find((item) => item.id === assignedAccountId) || null;
           }
 
-          if (!account) {
+          if (shouldPublishWechat && !account) {
             if (targetAccountIds.length > 0) {
               logWarn('[AutoPilot] 映射表中未找到该排名对应的有效账号，已跳过创建发布任务', {
                 queueJobId: vjobId,
@@ -956,7 +1001,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             }
           }
 
-          if (!account) {
+          if (shouldPublishWechat && !account) {
             logWarn('[AutoPilot] 没有任何可用微信账号配置，发布任务将创建为空记录', {
               queueJobId: vjobId,
               rank: rank + 1
@@ -978,18 +1023,21 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             scheduledAt: isoScheduledTime,
             asset,
             publishData,
-            selectedPlatforms: ['wechatChannels'],
-            platformSelections: {
-              wechatChannels: account
-                ? { accountId: account.id, accountLabel: account.displayName || account.finderUserName || account.helperAccount || '' }
-                : {}
-            },
+            selectedPlatforms,
+            platformSelections: shouldPublishWechat
+              ? {
+                wechatChannels: account
+                  ? { accountId: account.id, accountLabel: account.displayName || account.finderUserName || account.helperAccount || '' }
+                  : {}
+              }
+              : {},
             platformErrors: [],
             autoPilot: {
               queueJobId: vjobId,
               rank: rank + 1,
               activeKey,
               pipelineMode,
+              platforms: selectedPlatforms,
               sourceVideoUrl: asset.metadata?.videoUrl || asset.metadata?.sourceVideoUrl || '',
               sourcePostId: asset.metadata?.postId || asset.metadata?.sourcePostId || '',
               sourceMode: typeof meta === 'object' ? meta.sourceMode || '' : '',
@@ -1021,11 +1069,12 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
           const reconciled = publishStore.reconcileAndPersistPublishJobs(config);
           const storedJob = (reconciled.jobs || []).find((item) => item.id === pJob.id) || pJob;
 
-          logInfo('[AutoPilot] 已创建微信定时发布任务', {
+          logInfo('[AutoPilot] 已创建多平台定时发布任务', {
             ...formatJobBrief(storedJob),
             queueJobId: vjobId,
             rank: rank + 1,
             pipelineMode,
+            selectedPlatforms,
             localTargetDate: nowParts.dateStr,
             localTargetTime: targetTime,
             publishTimingMode: scheduledAlreadyDue ? 'catch_up_after_render' : 'scheduled',
@@ -1090,18 +1139,30 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     }
 
     for (const job of dueJobs) {
-      logInfo('[Scheduler -> 微信发布] 定时任务到期，开始启动微信自动发布', formatJobBrief(job));
+      const scheduledPlatformTasks = (job.platformTasks || []).filter((task) => String(task?.status || '') === 'scheduled_wait');
+      logInfo('[Scheduler -> 多平台发布] 定时任务到期，开始启动平台自动发布', {
+        ...formatJobBrief(job),
+        platforms: scheduledPlatformTasks.map((task) => task.platform)
+      });
       try {
-        if (wechatRpaService && typeof wechatRpaService.startWechatRpa === 'function') {
-          wechatRpaService.startWechatRpa(job.id, 'publish').catch((err) => {
-            logError('[Scheduler -> 微信发布] 启动失败', err, formatJobBrief(job));
-          });
-          logInfo('[Scheduler -> 微信发布] 已触发微信自动发布', formatJobBrief(job));
-        } else {
-          logWarn('[Scheduler -> 微信发布] wechatRpaService.startWechatRpa 不可用，无法执行定时发布', formatJobBrief(job));
+        for (const task of scheduledPlatformTasks) {
+          const platformKey = String(task.platform || '').trim();
+          if (wechatRpaService && typeof wechatRpaService.startPlatformRpa === 'function') {
+            wechatRpaService.startPlatformRpa(job.id, platformKey, 'publish').catch((err) => {
+              logError('[Scheduler -> 多平台发布] 启动失败', err, { ...formatJobBrief(job), platform: platformKey });
+            });
+            logInfo('[Scheduler -> 多平台发布] 已触发平台自动发布', { ...formatJobBrief(job), platform: platformKey });
+          } else if (platformKey === 'wechatChannels' && wechatRpaService && typeof wechatRpaService.startWechatRpa === 'function') {
+            wechatRpaService.startWechatRpa(job.id, 'publish').catch((err) => {
+              logError('[Scheduler -> 微信发布] 启动失败', err, formatJobBrief(job));
+            });
+            logInfo('[Scheduler -> 微信发布] 已触发微信自动发布', formatJobBrief(job));
+          } else {
+            logWarn('[Scheduler -> 多平台发布] 平台 RPA 服务不可用，无法执行定时发布', { ...formatJobBrief(job), platform: platformKey });
+          }
         }
       } catch (err) {
-        logError('[Scheduler -> 微信发布] 触发任务失败', err, formatJobBrief(job));
+        logError('[Scheduler -> 多平台发布] 触发任务失败', err, formatJobBrief(job));
       }
     }
   });

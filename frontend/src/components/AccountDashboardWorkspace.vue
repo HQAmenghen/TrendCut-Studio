@@ -72,8 +72,16 @@
       <div v-if="error" class="error-box">
         <span class="error-icon">⚠️</span>
         <div>
-          <strong>同步数据失败</strong>
+          <strong>{{ errorTitle }}</strong>
           <p>{{ error }}</p>
+        </div>
+      </div>
+
+      <div v-if="actionMessage" class="info-box">
+        <span class="info-icon">✓</span>
+        <div>
+          <strong>操作已提交</strong>
+          <p>{{ actionMessage }}</p>
         </div>
       </div>
 
@@ -155,6 +163,13 @@
             >
               {{ checkingLoginAccounts.has(account.id) ? '检测中' : '检测登录态' }}
             </button>
+            <button
+              class="action-btn"
+              @click="handleOpenContentManager(account.id)"
+              :disabled="Boolean(contentManagerActionLabels[account.id])"
+            >
+              {{ contentManagerActionLabels[account.id] || '内容管理' }}
+            </button>
             <button class="action-btn secondary" @click="goToAccountSettings(account.id)">
               配置参数
             </button>
@@ -181,8 +196,11 @@ const {
 
 const loading = ref(false);
 const error = ref('');
+const errorTitle = ref('同步数据失败');
+const actionMessage = ref('');
 const accounts = ref([]);
 const activeFilter = ref('all');
+const contentManagerActionLabels = ref({});
 const summary = reactive({
   totalAccounts: 0,
   loggedInAccounts: 0,
@@ -210,6 +228,7 @@ const filteredAccounts = computed(() => {
 async function loadDashboard() {
   loading.value = true;
   error.value = '';
+  actionMessage.value = '';
   try {
     const response = await fetch('/api/publish/accounts/dashboard');
     const data = await response.json();
@@ -228,6 +247,7 @@ async function loadDashboard() {
       }
     });
   } catch (err) {
+    errorTitle.value = '同步数据失败';
     error.value = err.message || '加载失败';
     console.error('加载账号看板失败:', err);
   } finally {
@@ -266,6 +286,108 @@ async function handleSingleCheck(accountId) {
   const acc = accounts.value.find(a => a.id === accountId);
   if (acc) {
     acc.loginStatus = accountLoginStatus.value[accountId];
+  }
+}
+
+async function readJsonResponse(response, fallbackMessage, options = {}) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(fallbackMessage);
+  }
+  const data = await response.json();
+  if (!response.ok || (!data.success && !options.allowFailurePayload)) {
+    const err = new Error(data.error || data.details || fallbackMessage);
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+function setContentManagerActionLabel(accountId, label) {
+  contentManagerActionLabels.value = {
+    ...contentManagerActionLabels.value,
+    [accountId]: label
+  };
+}
+
+function clearContentManagerActionLabel(accountId) {
+  const next = { ...contentManagerActionLabels.value };
+  delete next[accountId];
+  contentManagerActionLabels.value = next;
+}
+
+function updateLocalAccountLoginStatus(accountId, result) {
+  const status = result?.status || 'unknown';
+  const nextStatus = {
+    ...(accountLoginStatus.value[accountId] || {}),
+    ...result,
+    status,
+    lastCheckedAt: new Date().toISOString()
+  };
+  accountLoginStatus.value = {
+    ...accountLoginStatus.value,
+    [accountId]: nextStatus
+  };
+  const acc = accounts.value.find(a => a.id === accountId);
+  if (acc) {
+    acc.loginStatus = nextStatus;
+  }
+}
+
+async function checkLoginBeforeOpening(accountId) {
+  const response = await fetch(`/api/login-status/check/${encodeURIComponent(accountId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  });
+  const data = await readJsonResponse(response, '登录检测失败，请稍后重试');
+  const result = data.result || {};
+  updateLocalAccountLoginStatus(accountId, result);
+  return result;
+}
+
+async function handleOpenContentManager(accountId) {
+  if (!accountId || contentManagerActionLabels.value[accountId]) return;
+  error.value = '';
+  actionMessage.value = '';
+  try {
+    setContentManagerActionLabel(accountId, '检测登录');
+    const loginResult = await checkLoginBeforeOpening(accountId);
+    if (loginResult.status !== 'logged_in') {
+      errorTitle.value = '需要登录';
+      error.value = loginResult.error || '该账号当前未登录，已打开登录检测窗口。请先扫码登录，完成后再点击内容管理。';
+      return;
+    }
+
+    setContentManagerActionLabel(accountId, '打开中');
+    const response = await fetch(`/api/publish/wechat/content-manager/${encodeURIComponent(accountId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await readJsonResponse(response, '打开内容管理页失败，请确认后端服务已重启并加载最新代码', {
+      allowFailurePayload: true
+    });
+    if (data.status === 'need_login') {
+      errorTitle.value = '需要登录';
+      error.value = data.message || '该账号登录态已失效，请先完成登录检测后再打开内容管理。';
+      return;
+    }
+    if (!data.success) {
+      throw new Error(data.error || data.details || '打开内容管理页失败');
+    }
+    actionMessage.value = data.status === 'already_open'
+      ? '内容管理页已经在独立浏览器窗口中打开。如果没有看到，请查看任务栏中的微信视频号浏览器窗口。'
+      : '内容管理页已在对应账号的独立浏览器窗口中打开。';
+  } catch (err) {
+    if (err.payload?.status === 'need_login') {
+      errorTitle.value = '需要登录';
+      error.value = err.payload.message || err.payload.error || '该账号登录态已失效，请先完成登录检测后再打开内容管理。';
+    } else {
+      errorTitle.value = '打开内容管理失败';
+      error.value = err.message || '打开内容管理页失败';
+    }
+    console.error('打开内容管理页失败:', err);
+  } finally {
+    clearContentManagerActionLabel(accountId);
   }
 }
 
@@ -680,9 +802,30 @@ onMounted(() => {
   opacity: 0.8;
 }
 
+.info-box {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  color: var(--text);
+}
+
+.info-icon {
+  color: #10b981;
+  font-weight: 900;
+}
+
+.info-box p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
 .card-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: auto;
 }
@@ -697,6 +840,8 @@ onMounted(() => {
   font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .action-btn:hover:not(:disabled) {
@@ -706,6 +851,11 @@ onMounted(() => {
 
 .action-btn.secondary {
   color: var(--brand-a);
+}
+
+.action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .loading-state, .empty-state {

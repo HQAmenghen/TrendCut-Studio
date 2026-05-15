@@ -159,7 +159,7 @@ describe('vertical material task import', () => {
     ]);
   });
 
-  test('prefers avatar segment subtitles over execution plan subtitles when both exist', () => {
+  test('prefers execution plan subtitles over avatar segment subtitles when both exist', () => {
     const taskDir = path.join(projectsDir, 'material_avatar_segments_priority');
     fs.mkdirSync(taskDir, { recursive: true });
     fs.writeFileSync(path.join(taskDir, 'output_final.mp4'), 'video');
@@ -181,10 +181,9 @@ describe('vertical material task import', () => {
       taskDir: 'material_avatar_segments_priority'
     });
 
-    expect(resolved.subtitleSource).toBe('avatar_segments.json');
+    expect(resolved.subtitleSource).toBe('execution_plan.json');
     expect(resolved.subtitles).toEqual([
-      { time: [0, 1.2], zh: '数字人句一' },
-      { time: [1.2, 2.6], zh: '数字人句二' }
+      { time: [0, 3], zh: '执行计划字幕' }
     ]);
   });
 

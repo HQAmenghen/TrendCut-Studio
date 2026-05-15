@@ -120,7 +120,7 @@ describe('standalone vertical task import', () => {
     ]));
   });
 
-  test('prefers avatar segment subtitles over execution plan subtitles for imported material tasks', async () => {
+  test('uses final video and execution plan subtitles for imported material task ASR refresh', async () => {
     const sourceDir = path.join(projectsDir, 'material_avatar_refresh_001');
     fs.mkdirSync(sourceDir, { recursive: true });
     fs.writeFileSync(path.join(sourceDir, 'output_final.mp4'), 'task video');
@@ -156,7 +156,8 @@ describe('standalone vertical task import', () => {
       ]
     });
     writeJson(path.join(sourceDir, 'execution_plan.json'), [
-      { start_time: 0, end_time: 3, subtitle_text: '旧执行计划字幕' }
+      { start_time: 0, end_time: 1.4, subtitle_text: '最终时间线句一' },
+      { start_time: 1.4, end_time: 3.1, subtitle_text: '最终时间线句二' }
     ]);
     const runPythonScript = jest.fn(async (scriptPath, args, options = {}) => {
       if (scriptPath.endsWith('run_asr.py')) {
@@ -206,6 +207,7 @@ describe('standalone vertical task import', () => {
       body: {
         clientId: 'client-1',
         sourceTaskDir: 'material_avatar_refresh_001',
+        useASR: 'true',
         renderOptions: '{}'
       },
       files: {}
@@ -219,17 +221,24 @@ describe('standalone vertical task import', () => {
     const asrCall = runPythonScript.mock.calls.find(([scriptPath]) => scriptPath.endsWith('run_asr.py'));
     expect(asrCall).toBeTruthy();
     expect(asrCall[1]).toEqual(expect.arrayContaining([
+      '--input',
+      path.join(sourceDir, 'output_final.mp4'),
       '--reference-subtitles-json',
       path.join(sourceDir, 'aiman_reference_subtitles.json'),
+      '--reference-text-authority',
       '--refine-subtitles'
     ]));
+    expect(JSON.parse(fs.readFileSync(path.join(sourceDir, 'aiman_reference_subtitles.json'), 'utf8'))).toEqual([
+      { time: [0, 1.4], zh: '最终时间线句一', text: '最终时间线句一' },
+      { time: [1.4, 3.1], zh: '最终时间线句二', text: '最终时间线句二' }
+    ]);
     expect(JSON.parse(fs.readFileSync(path.join(sourceDir, 'aiman_subtitles.json'), 'utf8'))).toEqual([
-      { time: [0, 1.15], zh: '数字人句一' },
-      { time: [1.15, 2.7], zh: '数字人句二' }
+      { time: [0, 1.4], zh: '最终时间线句一' },
+      { time: [1.4, 3.1], zh: '最终时间线句二' }
     ]);
     expect(JSON.parse(fs.readFileSync(path.join(runtimeDir, 'subtitles.json'), 'utf8'))).toEqual([
-      { time: [0, 1.15], zh: '数字人句一' },
-      { time: [1.15, 2.7], zh: '数字人句二' }
+      { time: [0, 1.4], zh: '最终时间线句一' },
+      { time: [1.4, 3.1], zh: '最终时间线句二' }
     ]);
   });
 
@@ -300,6 +309,7 @@ describe('standalone vertical task import', () => {
     expect(asrCall[1]).toEqual(expect.arrayContaining([
       '--reference-subtitles-json',
       path.join(runtimeDir, 'reference_subtitles.json'),
+      '--reference-text-authority',
       '--refine-subtitles'
     ]));
     expect(JSON.parse(fs.readFileSync(path.join(runtimeDir, 'subtitles.json'), 'utf8'))).toEqual([

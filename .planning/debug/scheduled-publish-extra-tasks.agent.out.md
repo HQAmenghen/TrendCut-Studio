@@ -1,9 +1,9 @@
 ## ROOT CAUSE FOUND
 
-**root_cause_summary:**
+**root_cause_summary:**  
 The scheduler did not duplicate tasks. The active config enabled both `vertical` and `avatar` in `autoPilotPipelineModes`, and the scheduler treats those modes as additive. With 3 mapped accounts per mode, it created 3 direct XAI batch vertical jobs plus 3 avatar-derived jobs: 6 total.
 
-**evidence_summary:**
+**evidence_summary:**  
 Created on 2026-05-09 morning Asia/Shanghai:
 
 - `1778281899256_8a653b4a` - vertical, sourceRank 8, Web3plus, scheduled 18:08
@@ -15,11 +15,11 @@ Created on 2026-05-09 morning Asia/Shanghai:
 
 The “extra” batch products were the enabled `vertical` mode outputs using configured source ranks 7/8/9.
 
-**specialist_hint:**
+**specialist_hint:**  
 Scheduler/config UI ownership: AutoPilot mode selection and planned task count summary.
 
-**fix_direction:**
+**fix_direction:**  
 For only 3 morning digital-human tasks, remove `vertical` from `global.autoPilotPipelineModes`, or make the UI/scheduler treat avatar as exclusive for this automation profile. Also surface planned total as sum of active mode slots.
 
-**files_changed:**
+**files_changed:**  
 `.planning/debug/scheduled-publish-extra-tasks.md` only.

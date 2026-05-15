@@ -43,6 +43,9 @@ const PUBLISH_DESCRIPTION_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'generate_publi
 const WECHAT_RPA_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_rpa.py');
 const WECHAT_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles', 'wechatChannels');
 const WECHAT_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_tasks');
+const PLATFORM_RPA_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'browser_platform_rpa.py');
+const PLATFORM_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles');
+const PLATFORM_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'platform_rpa_tasks');
 
 // Task Store
 const TASK_STORE_DB_PATH = path.join(DATA_DIR, 'tasks.db');
@@ -77,5 +80,8 @@ module.exports = {
   WECHAT_RPA_SCRIPT,
   WECHAT_RPA_PROFILE_ROOT,
   WECHAT_RPA_TASK_DIR,
+  PLATFORM_RPA_SCRIPT,
+  PLATFORM_RPA_PROFILE_ROOT,
+  PLATFORM_RPA_TASK_DIR,
   TASK_STORE_DB_PATH
 };

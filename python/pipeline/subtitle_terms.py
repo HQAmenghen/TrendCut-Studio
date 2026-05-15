@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+from itertools import product
 import re
 
 
@@ -78,7 +80,25 @@ SINGLE_CAPITALIZED_PATTERN = re.compile(
     rf"{ASCII_LEFT_BOUNDARY}[A-Z][a-z]{{3,}}{ASCII_RIGHT_BOUNDARY}"
 )
 
+ENGLISH_NUMERIC_UNIT_PATTERN = re.compile(
+    rf"{ASCII_LEFT_BOUNDARY}[$￥¥]?\d+(?:[.,]\d+)*"
+    r"(?:\s*(?:k|m|mn|bn|million|billion|trillion|thousand|hundred))"
+    r"(?:\s*(?:dollars?|usd|美元|美金|元))?"
+    r"(?:/(?:hour|day|week|month|year|小时|天|周|月|年))?"
+    rf"{ASCII_RIGHT_BOUNDARY}",
+    re.IGNORECASE,
+)
+
+MULTIWORD_PROPER_NOUN_PATTERN = re.compile(
+    rf"{ASCII_LEFT_BOUNDARY}(?!(?:Once|When|What|Where|Why|How|If|As|After|Before|While|Since|Because)\s+)"
+    r"[A-Z][A-Za-z0-9]*"
+    r"(?:[ \t]+(?:(?:and|or|of|for|with|to|in|on|at|by|from|the|&)[ \t]+)?[A-Z0-9][A-Za-z0-9]*)+"
+    rf"{ASCII_RIGHT_BOUNDARY}"
+)
+
 TERM_PATTERNS = [
+    ENGLISH_NUMERIC_UNIT_PATTERN,
+    MULTIWORD_PROPER_NOUN_PATTERN,
     re.compile(rf"{ASCII_LEFT_BOUNDARY}(?:[A-Z][A-Za-z0-9]*)(?:\s+[A-Z0-9][A-Za-z0-9]*)+{ASCII_RIGHT_BOUNDARY}"),
     re.compile(rf"\$[A-Z0-9][A-Z0-9._/-]*{ASCII_RIGHT_BOUNDARY}|{ASCII_LEFT_BOUNDARY}[A-Z]{{2,}}(?:\d+[A-Z0-9]*)?(?:[./-][A-Z0-9]+)*{ASCII_RIGHT_BOUNDARY}"),
     re.compile(rf"{ASCII_LEFT_BOUNDARY}[A-Za-z]*\d+[A-Za-z\d._/-]*{ASCII_RIGHT_BOUNDARY}"),
@@ -959,7 +979,22 @@ def has_traditional_chinese(text: str) -> bool:
 
 
 def _is_common_capitalized_word(term: str) -> bool:
-    return term.lower() in COMMON_CAPITALIZED_WORDS
+    lower = term.lower()
+    if lower in COMMON_CAPITALIZED_WORDS:
+        return True
+    return lower in {
+        "once",
+        "when",
+        "what",
+        "where",
+        "why",
+        "how",
+        "after",
+        "before",
+        "while",
+        "since",
+        "because",
+    }
 
 
 def _looks_like_joined_english_sentence(term: str) -> bool:
@@ -1002,10 +1037,24 @@ def extract_preserve_terms(text, max_terms=12):
             seen_spans.append(span)
 
     matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    longer_term_visibles = [
+        _visible_ascii_text(candidate_term)
+        for _start, _end, candidate_term in matches
+        if len(str(candidate_term or "")) > 3
+    ]
     preserve_terms = []
     seen_terms = set()
     for _start, _end, term in matches:
         if term in seen_terms:
+            continue
+        term_visible = _visible_ascii_text(term)
+        if any(term_visible and term_visible in _visible_ascii_text(existing) for existing in seen_terms):
+            continue
+        if (
+                len(term) <= 3
+                and term.isupper()
+                and any(term_visible and term_visible in existing for existing in longer_term_visibles)
+        ):
             continue
         seen_terms.add(term)
         preserve_terms.append(term)
@@ -1053,17 +1102,95 @@ def restore_preserved_terms(text, placeholders=None):
 
 
 NUMERIC_REFERENCE_TERM_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])[$￥¥]?\d+(?:[.,]\d+)*(?:(?:万|亿|千|百)?(?:美元|美分|元)|[万亿千百%年个次股])?"
+    r"(?<![A-Za-z0-9])"
+    r"[$￥¥]?\d+(?:[.,]\d+)*"
+    r"(?:\s*(?:million|billion|trillion|thousand|hundred|mn|bn|m|b|k))?"
+    r"(?:(?:万|亿|千|百)?(?:美元|美分|元)|[万亿千百%年个次股]|(?:\s*(?:dollars?|usd|美元|美金|元)))?"
+    r"(?:/(?:hour|day|week|month|year|小时|天|周|月|年))?",
+    re.IGNORECASE,
 )
 
 REFERENCE_NUMERIC_INSERTION_PUNCTUATION = "，,。.!?！？；;：:"
 MAX_REFERENCE_NUMERIC_BRIDGE_CHARS = 3
 MAX_REFERENCE_CONTEXT_ANCHOR_CHARS = 8
 MIN_REFERENCE_CONTEXT_ANCHOR_CHARS = 2
+MAX_REFERENCE_PROPER_NOUN_BRIDGE_CHARS = 6
+REFERENCE_PROPER_NOUN_TRANSLATION_HINTS = {
+    "ai": ("ai", "AI", "人工智能"),
+    "cloud": ("云", "云端"),
+    "claude": ("克劳德", "cloud", "云端"),
+    "code": ("代码",),
+    "fed": ("美联储",),
+    "federal": ("联邦",),
+    "reserve": ("储备",),
+    "united": ("联合",),
+    "nations": ("国", "国家"),
+}
 
 
 def _visible_reference_text(text: str) -> str:
     return re.sub(r"[\s，。！？；：、“”‘’,.!?;:()\[\]{}\"'…·-]", "", str(text or ""))
+
+
+def _visible_ascii_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+
+def _contains_cjk_text(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _term_tokens(term: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9]+", str(term or ""))
+
+
+def _is_reference_proper_noun_term(term: str) -> bool:
+    tokens = _term_tokens(term)
+    if not tokens:
+        return False
+
+    if tokens[0].lower() in {
+        "once",
+        "when",
+        "what",
+        "where",
+        "why",
+        "how",
+        "if",
+        "as",
+        "after",
+        "before",
+        "while",
+        "since",
+        "because",
+    }:
+        return False
+
+    if len(tokens) >= 2:
+        significant_tokens = [
+            token for token in tokens
+            if token.lower() not in COMMON_CAPITALIZED_WORDS
+        ]
+        return bool(significant_tokens)
+
+    token = tokens[0]
+    if token.lower() in COMMON_CAPITALIZED_WORDS:
+        return False
+    if re.fullmatch(r"\d+(?:[.,]\d+)*", token):
+        return False
+    return (
+        token.isupper()
+        or any(char.isdigit() for char in token)
+        or (any(char.isupper() for char in token[1:]) and any(char.islower() for char in token))
+    )
+
+
+def _has_term_literal(text: str, term: str) -> bool:
+    return bool(str(term or "").strip() and str(term or "").strip() in str(text or ""))
+
+
+def _ascii_similarity(left: str, right: str) -> float:
+    return difflib.SequenceMatcher(None, _visible_ascii_text(left), _visible_ascii_text(right)).ratio()
 
 
 def _visible_reference_text_with_indices(text: str) -> tuple[str, list[int]]:
@@ -1080,7 +1207,7 @@ def _numeric_reference_parts(term: str) -> tuple[str, str]:
     sample = str(term or "")
     digits = re.sub(r"\D", "", sample)
     suffix_match = re.search(r"(?:\d|[.,])([^\d.,]*)$", sample)
-    suffix = suffix_match.group(1) if suffix_match else ""
+    suffix = re.sub(r"\s+", " ", suffix_match.group(1).lower().strip()) if suffix_match else ""
     return digits, suffix
 
 
@@ -1206,9 +1333,14 @@ def repair_numeric_reference_terms(text, reference_text):
             term_digits, term_suffix = _numeric_reference_parts(term)
             if not term_digits or term == reference_term:
                 continue
-            if reference_suffix and term_suffix and reference_suffix != term_suffix:
+            if reference_suffix and term_suffix and not reference_suffix.endswith(term_suffix):
                 continue
-            if term_digits in reference_digits and len(term_digits) < len(reference_digits):
+            if term_digits == reference_digits and reference_suffix and term_suffix != reference_suffix:
+                candidates.append(term)
+            elif term_digits in reference_digits and (
+                    len(term_digits) < len(reference_digits)
+                    or (reference_suffix and reference_suffix != term_suffix)
+            ):
                 candidates.append(term)
 
         if len(candidates) != 1:
@@ -1255,6 +1387,476 @@ def repair_missing_numeric_reference_terms(text, reference_text):
     return repaired
 
 
+def _proper_noun_context_matches(repaired: str, reference: str, match) -> bool:
+    if not re.search(r"[A-Za-z0-9]", repaired or ""):
+        return False
+
+    repaired_visible = _visible_reference_text(repaired).lower()
+    if len(repaired_visible) < 2:
+        return False
+
+    before_visible = _visible_reference_text(reference[:match.start()]).lower()
+    after_visible = _visible_reference_text(reference[match.end():]).lower()
+
+    max_before_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(before_visible))
+    max_after_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(after_visible))
+    if max_before_len < MIN_REFERENCE_CONTEXT_ANCHOR_CHARS or max_after_len < MIN_REFERENCE_CONTEXT_ANCHOR_CHARS:
+        return False
+
+    before_lengths = range(max_before_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1)
+    after_lengths = range(max_after_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1)
+
+    for before_len in before_lengths:
+        before_anchor = before_visible[-before_len:] if before_len else ""
+        for after_len in after_lengths:
+            after_anchor = after_visible[:after_len] if after_len else ""
+            before_pos = repaired_visible.find(before_anchor) if before_anchor else 0
+            if before_pos < 0:
+                continue
+            before_end = before_pos + before_len
+            if after_anchor:
+                after_pos = repaired_visible.find(after_anchor, before_end)
+                if after_pos < 0:
+                    continue
+                if after_pos - before_end <= MAX_REFERENCE_PROPER_NOUN_BRIDGE_CHARS:
+                    return True
+
+    return False
+
+
+def _has_prefix_term_alias_before_context(text: str, reference: str, term: str, terms) -> bool:
+    term_index = reference.find(term)
+    if term_index < 0:
+        return False
+
+    for other_term in terms:
+        if other_term == term or reference.find(other_term) >= term_index:
+            continue
+        prefix_span = _find_proper_noun_variant_span(text, other_term)
+        if not prefix_span or prefix_span[0] != 0:
+            continue
+        for match in re.finditer(re.escape(term), reference):
+            context_span = _context_replacement_span(text, reference, match)
+            if (
+                    context_span
+                    and prefix_span[1] <= context_span[0]
+                    and re.search(r"[A-Za-z0-9]", str(text or "")[context_span[0]:context_span[1]])
+            ):
+                return True
+    return False
+
+
+def _context_replacement_span(text: str, reference: str, match):
+    if not re.search(r"[A-Za-z0-9]", text or ""):
+        return None
+
+    sample_visible, sample_indices = _visible_reference_text_with_indices(text)
+    sample_visible = sample_visible.lower()
+    if not sample_visible:
+        return None
+    leading_alnum_count = len(re.match(r"^[A-Za-z0-9]*", str(text or "")).group(0))
+    before_visible, _before_indices = _visible_reference_text_with_indices(reference[:match.start()])
+    after_visible, _after_indices = _visible_reference_text_with_indices(reference[match.end():])
+    if not sample_visible:
+        return None
+
+    max_before_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(before_visible))
+    max_after_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(after_visible))
+    if max_before_len < MIN_REFERENCE_CONTEXT_ANCHOR_CHARS or max_after_len < MIN_REFERENCE_CONTEXT_ANCHOR_CHARS:
+        return None
+
+    before_lengths = range(max_before_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1)
+    after_lengths = range(max_after_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1)
+    for before_len in before_lengths:
+        raw_before_anchor = reference[:match.start()][-before_len:]
+        before_anchors = _reference_context_variants(raw_before_anchor) or {before_visible[-before_len:]}
+        for after_len in after_lengths:
+            raw_after_anchor = reference[match.end():match.end() + after_len]
+            after_anchors = _reference_context_variants(raw_after_anchor) or {after_visible[:after_len]}
+            for before_anchor in before_anchors:
+                before_pos = sample_visible.find(before_anchor)
+                while before_pos >= 0:
+                    before_end = before_pos + len(before_anchor)
+                    for after_anchor in after_anchors:
+                        after_pos = sample_visible.find(after_anchor, before_end)
+                        if after_pos >= before_end and after_pos - before_end <= MAX_REFERENCE_PROPER_NOUN_BRIDGE_CHARS:
+                            start_index = sample_indices[before_end - 1] + 1
+                            end_index = sample_indices[after_pos] if after_pos < len(sample_indices) else len(text)
+                            if start_index > 0 and leading_alnum_count >= start_index:
+                                start_index = 0
+                            return start_index, end_index
+                    before_pos = sample_visible.find(before_anchor, before_pos + 1)
+    return None
+
+
+def _reference_context_variants(context: str) -> set[str]:
+    variants = {_visible_reference_text(context).lower()}
+    tokens = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", str(context or ""))
+    if not tokens:
+        return {variant for variant in variants if variant}
+
+    token_variants = []
+    for token in tokens:
+        lower = token.lower()
+        options = {lower}
+        options.update(str(item).lower() for item in REFERENCE_PROPER_NOUN_TRANSLATION_HINTS.get(lower, ()))
+        token_variants.append(options)
+
+    if len(token_variants) <= 6:
+        for combo in product(*token_variants):
+            candidate = _visible_reference_text("".join(combo)).lower()
+            if candidate:
+                variants.add(candidate)
+    return {variant for variant in variants if variant}
+
+
+def _mixed_context_score(text: str, reference: str, match) -> int:
+    sample_visible = _visible_reference_text(text).lower()
+    if not sample_visible:
+        return 0
+
+    score = 0
+    before_visible = _visible_reference_text(reference[:match.start()]).lower()
+    after_visible = _visible_reference_text(reference[match.end():]).lower()
+    max_before_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(before_visible))
+    max_after_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(after_visible))
+    before_lengths = range(max_before_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1) if max_before_len >= MIN_REFERENCE_CONTEXT_ANCHOR_CHARS else []
+    after_lengths = range(max_after_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1) if max_after_len >= MIN_REFERENCE_CONTEXT_ANCHOR_CHARS else []
+
+    for before_len in before_lengths:
+        if before_visible[-before_len:] in sample_visible:
+            score += 1
+            break
+    for after_len in after_lengths:
+        if after_visible[:after_len] in sample_visible:
+            score += 1
+            break
+    return score
+
+
+def _term_has_mixed_context(text: str, reference: str, term: str) -> bool:
+    for match in re.finditer(re.escape(term), reference):
+        if _mixed_context_score(text, reference, match) > 0:
+            return True
+    return False
+
+
+def _has_ambiguous_context_with_later_term(text: str, reference: str, term: str, terms) -> bool:
+    term_index = reference.find(term)
+    if term_index < 0:
+        return False
+    term_span = _find_proper_noun_variant_span(text, term)
+    if term_span:
+        return False
+
+    if _has_prefix_term_alias_before_context(text, reference, term, terms):
+        return True
+
+    context_span = _term_span(text, reference, term)
+    if context_span:
+        return False
+
+    return any(
+        other_term != term
+        and reference.find(other_term) > term_index
+        and _term_has_mixed_context(text, reference, other_term)
+        for other_term in terms
+    ) and not _term_has_mixed_context(text, reference, term)
+
+
+def _candidate_phrase_windows(text: str, expected_token_count: int) -> list[str]:
+    sample = str(text or "")
+    tokens = list(re.finditer(r"[A-Za-z0-9]+", sample))
+    if not tokens:
+        return []
+
+    windows = []
+    min_size = max(1, expected_token_count - 1)
+    max_size = max(min_size, expected_token_count + 1)
+    for start in range(len(tokens)):
+        for size in range(min_size, max_size + 1):
+            end = start + size
+            if end > len(tokens):
+                continue
+            windows.append(sample[tokens[start].start():tokens[end - 1].end()])
+    return windows
+
+
+def _proper_noun_misrecognition_candidates(term: str) -> set[str]:
+    candidates = set()
+    tokens = _term_tokens(term)
+    if not tokens:
+        return candidates
+
+    token_variants = []
+    for token in tokens:
+        variants = {token.lower()}
+        variants.update(REFERENCE_PROPER_NOUN_TRANSLATION_HINTS.get(token.lower(), ()))
+        if token.upper() == "AI":
+            variants.add("ai")
+        token_variants.append(variants)
+
+    for combo in product(*token_variants):
+        joined = "".join(combo)
+        if joined and joined != _visible_ascii_text(term):
+            candidates.add(joined)
+    return candidates
+
+
+def _proper_noun_short_aliases(term: str) -> set[str]:
+    aliases = set()
+    tokens = _term_tokens(term)
+    if len(tokens) < 2:
+        return aliases
+
+    first = tokens[0].lower()
+    has_connector = any(token.lower() in COMMON_CAPITALIZED_WORDS for token in tokens[1:-1])
+    if first not in COMMON_CAPITALIZED_WORDS and not has_connector:
+        aliases.add(first)
+        aliases.update(REFERENCE_PROPER_NOUN_TRANSLATION_HINTS.get(first, ()))
+    return {alias for alias in aliases if alias and alias != _visible_ascii_text(term)}
+
+
+def _find_proper_noun_variant_span(text: str, term: str):
+    variant_candidates = _proper_noun_misrecognition_candidates(term)
+    visible_text, visible_indices = _visible_reference_text_with_indices(text)
+    visible_lower = visible_text.lower()
+    for variant in sorted(variant_candidates | _proper_noun_short_aliases(term), key=len, reverse=True):
+        variant_visible = _visible_reference_text(variant).lower()
+        if not variant_visible:
+            continue
+        variant_pos = visible_lower.find(variant_visible)
+        if variant_pos >= 0:
+            start_index = visible_indices[variant_pos]
+            end_index = visible_indices[variant_pos + len(variant_visible) - 1] + 1
+            return start_index, end_index
+
+    expected_tokens = max(1, len(_term_tokens(term)))
+    best = None
+    for window in _candidate_phrase_windows(text, expected_tokens):
+        window_visible = _visible_ascii_text(window)
+        if not window_visible:
+            continue
+        score = _ascii_similarity(window, term)
+        window_token_count = len(_term_tokens(window))
+        if score < 0.68 and window_visible not in variant_candidates:
+            continue
+        if window_token_count < expected_tokens and window_visible not in variant_candidates:
+            continue
+        span_start = str(text).find(window)
+        if span_start < 0:
+            continue
+        candidate = (score, span_start, span_start + len(window))
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+
+    if best:
+        return best[1], best[2]
+    return None
+
+
+def _canonicalize_visible_proper_noun(text: str, term: str) -> str:
+    repaired = str(text or "")
+    if _has_term_literal(repaired, term):
+        return repaired
+
+    term_visible = _visible_ascii_text(term)
+    if not term_visible:
+        return repaired
+
+    visible_sample, visible_indices = _visible_reference_text_with_indices(repaired)
+    visible_lower = visible_sample.lower()
+    pos = visible_lower.find(term_visible)
+    if pos < 0:
+        return repaired
+
+    start_index = visible_indices[pos]
+    end_index = visible_indices[pos + len(term_visible) - 1] + 1
+    return f"{repaired[:start_index]}{term}{repaired[end_index:]}"
+
+
+def _span_overlaps_longer_reference_term(text: str, reference_text: str, term: str, span) -> bool:
+    if not span:
+        return False
+
+    sample = str(text or "")
+    for other_term in extract_preserve_terms(reference_text, max_terms=24):
+        if other_term == term or len(other_term) <= len(term) or other_term not in sample:
+            continue
+        start = sample.find(other_term)
+        while start >= 0:
+            end = start + len(other_term)
+            if span[0] < end and span[1] > start:
+                return True
+            start = sample.find(other_term, start + 1)
+    return False
+
+
+def _span_overlaps_selected_reference_term(text: str, reference_text: str, term: str, span, selected_terms) -> bool:
+    if not span:
+        return False
+
+    sample = str(text or "")
+    for other_term in selected_terms:
+        if other_term == term or len(other_term) <= len(term) or other_term not in reference_text:
+            continue
+        other_span = _term_span(sample, reference_text, other_term)
+        if other_span and span[0] < other_span[1] and span[1] > other_span[0]:
+            return True
+    return False
+
+
+def _term_span(text: str, reference_text: str, term: str):
+    span = _find_proper_noun_variant_span(text, term)
+    if span:
+        return span
+    for match in re.finditer(re.escape(term), reference_text):
+        span = _context_replacement_span(text, reference_text, match)
+        if span:
+            return span
+    return None
+
+
+def _replace_proper_noun_between_context(repaired: str, reference: str, match, term: str) -> str:
+    candidate_span = _find_proper_noun_variant_span(repaired, term)
+    if not candidate_span:
+        return repaired
+
+    repaired_visible, repaired_indices = _visible_reference_text_with_indices(repaired)
+    before_visible, before_indices = _visible_reference_text_with_indices(reference[:match.start()])
+    after_visible, after_indices = _visible_reference_text_with_indices(reference[match.end():])
+    if not repaired_visible:
+        return repaired
+
+    max_before_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(before_visible))
+    if max_before_len < MIN_REFERENCE_CONTEXT_ANCHOR_CHARS:
+        return repaired
+
+    before_lengths = range(max_before_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1)
+    max_after_offset = min(MAX_REFERENCE_PROPER_NOUN_BRIDGE_CHARS, len(after_visible))
+
+    for before_len in before_lengths:
+        before_offset = len(before_visible) - before_len
+        before_anchor = before_visible[before_offset:] if before_len else ""
+        literal_tail = reference[before_indices[before_offset]:match.start()] if before_len and before_indices else ""
+        for after_offset in range(max_after_offset + 1):
+            max_after_len = min(MAX_REFERENCE_CONTEXT_ANCHOR_CHARS, len(after_visible) - after_offset)
+            after_lengths = range(max_after_len, MIN_REFERENCE_CONTEXT_ANCHOR_CHARS - 1, -1) if max_after_len >= MIN_REFERENCE_CONTEXT_ANCHOR_CHARS else []
+            for after_len in after_lengths:
+                after_anchor = after_visible[after_offset:after_offset + after_len]
+                search_from = 0
+                while True:
+                    before_pos = repaired_visible.find(before_anchor, search_from)
+                    if before_pos < 0:
+                        break
+                    before_end = before_pos + before_len
+
+                    after_pos = repaired_visible.find(after_anchor, before_end)
+                    if after_pos >= before_end and after_pos - before_end <= MAX_REFERENCE_PROPER_NOUN_BRIDGE_CHARS:
+                        if before_end > 0:
+                            start_index = repaired_indices[before_end - 1] + 1
+                            literal_insert_index = _find_literal_tail_insert_index(
+                                repaired,
+                                repaired_indices,
+                                before_pos,
+                                literal_tail,
+                            )
+                            if literal_insert_index is not None:
+                                start_index = literal_insert_index
+                        else:
+                            start_index = 0
+                        end_index = repaired_indices[after_pos] if after_pos < len(repaired_indices) else len(repaired)
+                        if not (candidate_span[0] >= start_index and candidate_span[1] <= end_index):
+                            if candidate_span[0] >= start_index and candidate_span[0] < end_index:
+                                end_index = max(end_index, candidate_span[1])
+                            else:
+                                search_from = before_pos + 1
+                                continue
+                        replacement = term
+                        if repaired[start_index:start_index + 1].isspace():
+                            replacement = f" {replacement}"
+                            start_index += 1
+                        if start_index < end_index:
+                            return f"{repaired[:start_index]}{replacement}{repaired[end_index:]}"
+                        return f"{repaired[:start_index]}{replacement}{repaired[start_index:]}"
+
+                    search_from = before_pos + 1
+
+    return repaired
+
+
+def repair_reference_proper_nouns(text, reference_text):
+    repaired = str(text or "")
+    reference = str(reference_text or "")
+    if not repaired or not reference:
+        return repaired
+
+    reference_terms = extract_preserve_terms(reference, max_terms=24)
+    for term in reference_terms:
+        sample_has_ascii = bool(re.search(r"[A-Za-z0-9]", repaired))
+        if not _is_reference_proper_noun_term(term):
+            continue
+        if _has_ambiguous_context_with_later_term(repaired, reference, term, reference_terms):
+            continue
+        repaired = _canonicalize_visible_proper_noun(repaired, term)
+        if _has_term_literal(repaired, term):
+            continue
+
+        pattern = re.compile(re.escape(term))
+        for match in pattern.finditer(reference):
+            span = _find_proper_noun_variant_span(repaired, term)
+            if (
+                    _span_overlaps_longer_reference_term(repaired, reference, term, span)
+                    or _span_overlaps_selected_reference_term(repaired, reference, term, span, reference_terms)
+            ):
+                continue
+            if span:
+                repaired = f"{repaired[:span[0]]}{term}{repaired[span[1]:]}"
+                break
+            if sample_has_ascii and _proper_noun_context_matches(repaired, reference, match):
+                repaired = _replace_proper_noun_between_context(repaired, reference, match, term)
+                break
+
+    return repaired
+
+
+def select_present_reference_terms(text, reference_text, max_terms=8):
+    sample = str(text or "")
+    reference = str(reference_text or "")
+    if not sample or not reference:
+        return []
+
+    selected = []
+    candidates = extract_preserve_terms(reference, max_terms=max(max_terms * 3, 24))
+    for term in candidates:
+        if not _is_reference_proper_noun_term(term):
+            continue
+        sample_has_ascii = bool(re.search(r"[A-Za-z0-9]", sample))
+        span = _term_span(sample, reference, term)
+        should_select = _has_term_literal(sample, term) or bool(span)
+        if (
+                should_select
+                and (
+                    _span_overlaps_longer_reference_term(sample, reference, term, span)
+                    or _span_overlaps_selected_reference_term(sample, reference, term, span, candidates)
+                )
+        ):
+            should_select = False
+        if not should_select:
+            if sample_has_ascii:
+                for match in re.finditer(re.escape(term), reference):
+                    if _proper_noun_context_matches(sample, reference, match):
+                        should_select = True
+                        break
+        if should_select and _has_ambiguous_context_with_later_term(sample, reference, term, candidates):
+            should_select = False
+        if should_select and term not in selected:
+            selected.append(term)
+            if len(selected) >= max_terms:
+                break
+    return selected
+
+
 
 def repair_reference_subtitle_text(text, reference_text):
     """Restore high-confidence reference terms that ASR/LLM alignment truncated."""
@@ -1284,6 +1886,8 @@ def repair_reference_subtitle_text(text, reference_text):
             for variant in variants:
                 repaired = repaired.replace(variant, canonical)
 
-    repaired = repair_numeric_reference_terms(repaired, reference)
-    repaired = repair_missing_numeric_reference_terms(repaired, reference)
+    if _contains_cjk_text(reference):
+        repaired = repair_numeric_reference_terms(repaired, reference)
+        repaired = repair_missing_numeric_reference_terms(repaired, reference)
+    repaired = repair_reference_proper_nouns(repaired, reference)
     return repaired

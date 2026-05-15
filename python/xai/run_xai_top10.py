@@ -96,6 +96,32 @@ DEFAULT_PARTITION_META = {
     "tech": {"label": "科技", "description": "科技产品和创业账号池"},
     "ai": {"label": "AI", "description": "AI 模型、应用和研究账号池"},
 }
+PARTITION_PROMPT_PROFILES = {
+    "crypto": {
+        "assistant_role": "crypto and Web3 video selection assistant",
+        "topic_focus": "crypto, Bitcoin, Ethereum, Web3, exchanges, tokenization, regulation, and on-chain market narratives",
+        "remake_signal": "price-moving news, founder or policymaker clips, market explainer moments, and concise high-conviction crypto takes",
+        "exclude_guidance": "Exclude generic market chatter that is not tied to crypto/Web3 or does not contain a clear video payload.",
+    },
+    "finance": {
+        "assistant_role": "finance and macro markets video selection assistant",
+        "topic_focus": "macro economy, equities, bonds, central banks, commodities, rates, earnings, and investor commentary",
+        "remake_signal": "market-moving commentary, sharp chart explanations, fund-manager clips, policy reactions, and memorable investing lessons",
+        "exclude_guidance": "Exclude crypto-only posts unless they are framed as broader market, macro, ETF, or institutional-finance news.",
+    },
+    "tech": {
+        "assistant_role": "technology product and startup video selection assistant",
+        "topic_focus": "consumer tech, software, hardware, developer tools, startups, product launches, and founder/operator lessons",
+        "remake_signal": "clear product demos, founder insights, launch moments, technical explainers, and clips with practical operator value",
+        "exclude_guidance": "Exclude generic business motivation posts that are not anchored in technology, products, or startups.",
+    },
+    "ai": {
+        "assistant_role": "AI model, application, and research video selection assistant",
+        "topic_focus": "AI models, agents, research breakthroughs, AI products, infrastructure, robotics, coding tools, and applied AI workflows",
+        "remake_signal": "model demos, agent/product launches, research explanations, benchmark moments, founder or researcher clips, and practical AI workflow examples",
+        "exclude_guidance": "Exclude posts that mention AI only incidentally or are generic tech/business posts without an AI-specific video angle.",
+    },
+}
 CURRENT_PARTITION = {
     "id": DEFAULT_PARTITION_ID,
     "label": DEFAULT_PARTITION_META[DEFAULT_PARTITION_ID]["label"],
@@ -357,6 +383,32 @@ def write_partial(stage: str, done: int, total: int, collected: int) -> None:
     )
 
 
+def resolve_partition_prompt_profile(partition: dict | None = None) -> dict:
+    source = partition if isinstance(partition, dict) else CURRENT_PARTITION
+    partition_id = normalize_partition_id(source.get("id") if isinstance(source, dict) else None)
+    label = str(source.get("label") or DEFAULT_PARTITION_META.get(partition_id, {}).get("label") or partition_id).strip()
+    description = str(source.get("description") or DEFAULT_PARTITION_META.get(partition_id, {}).get("description") or "").strip()
+    profile = PARTITION_PROMPT_PROFILES.get(partition_id)
+    if profile:
+        return {
+            "partition_id": partition_id,
+            "label": label,
+            "description": description,
+            **profile,
+        }
+
+    topic_focus = description or f"videos relevant to the {label} account partition"
+    return {
+        "partition_id": partition_id,
+        "label": label,
+        "description": description,
+        "assistant_role": f"{label} video selection assistant",
+        "topic_focus": topic_focus,
+        "remake_signal": f"videos that are highly relevant to {label}, easy to explain, and likely to work as short-form remakes",
+        "exclude_guidance": f"Exclude posts that do not clearly match the {label} partition or do not contain a clear video payload.",
+    }
+
+
 def call_json(prompt: str, timeout: int) -> dict:
     client = build_client()
     max_attempts = 3
@@ -402,14 +454,17 @@ def call_json(prompt: str, timeout: int) -> dict:
     raise RuntimeError("Unexpected empty retry loop.")
 
 
-def candidate_prompt(account: str, since_iso: str, until_iso: str) -> str:
+def candidate_prompt(account: str, since_iso: str, until_iso: str, partition: dict | None = None) -> str:
+    profile = resolve_partition_prompt_profile(partition)
     return f"""
-You are a crypto video selection assistant.
+You are a {profile["assistant_role"]}.
 
 Core objective:
 - We are not looking for generic engagement bait.
-- We want videos with true remake potential for short-form replication.
+- We are scanning the 「{profile["label"]}」 partition: {profile["topic_focus"]}.
+- We want videos with true remake potential for short-form replication in this partition.
 - Absolute views matter most. Only keep videos that are already getting clearly high playback volume.
+- Strong candidates look like: {profile["remake_signal"]}.
 
 Rules:
 1. You must actually use the X search tool.
@@ -420,7 +475,8 @@ Rules:
 6. Prefer posts with higher absolute views, even before engagement-based tie-breaks.
 7. Return at most {MAX_CANDIDATES_PER_ACCOUNT} candidate posts.
 8. If nothing matches, return an empty items array.
-9. Output valid JSON only.
+9. {profile["exclude_guidance"]}
+10. Output valid JSON only.
 
 Time range:
 - since: {since_iso}
@@ -1047,7 +1103,7 @@ def scan_account(account: str, since_iso: str, until_iso: str, cache: dict) -> l
     if cached is not None:
         return cached
 
-    result = call_json(candidate_prompt(account, since_iso, until_iso), timeout=60)
+    result = call_json(candidate_prompt(account, since_iso, until_iso, CURRENT_PARTITION), timeout=60)
     items = []
     for raw_item in result.get("items", []):
         normalized = normalize_candidate(account, raw_item)

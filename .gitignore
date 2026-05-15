@@ -22,9 +22,16 @@ output*.txt
 /test_*.db
 /test_*.db-shm
 /test_*.db-wal
+**/test_*.db*
 /test_*.json
 /test_*.json.bak
 /test*.wav
+/--input
+/aiman_audio.json
+/aiman_subtitles.json
+/background_generated.png
+/subtitle_cards/
+/temp_audio_analysis.wav
 SPLIT_PLAN.md
 python/pipeline/background_generated.png
 python/pipeline/standalone_input.mp4
@@ -42,6 +49,7 @@ python/diagnose_*.py
 public/standalone_output_vertical.mp4
 public/standalone_output_vertical*.mp4
 public/output*.mp4
+public/presets/
 public/generated_avatar/
 public/**/*.meta.json
 public/xai_vertical_queue/
@@ -59,8 +67,11 @@ python/pipeline/content.json
 public/*.meta.json
 python/xai/result.json
 python/xai/result.partial.json
+python/xai/result*.json
 python/xai/run_log.txt
+python/xai/run_log*.txt
 python/xai/run_error.log
+python/xai/run_error*.log
 python/xai/xai_top10_cache.json
 python/xai/xai_accounts.json
 frontend-dist/

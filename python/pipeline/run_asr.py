@@ -35,6 +35,7 @@ try:
         extract_preserve_terms,
         mask_preserved_terms,
         repair_reference_subtitle_text,
+        select_present_reference_terms,
         restore_preserved_terms,
         to_simplified_chinese,
     )
@@ -43,6 +44,7 @@ except ImportError:
         extract_preserve_terms,
         mask_preserved_terms,
         repair_reference_subtitle_text,
+        select_present_reference_terms,
         restore_preserved_terms,
         to_simplified_chinese,
     )
@@ -92,7 +94,20 @@ def get_qwen_asr_api_base_url():
 
 def is_public_http_url(value):
     parsed = urlparse(str(value or "").strip())
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    hostname = (parsed.hostname or "").strip().lower()
+    if (
+        hostname in {"localhost", "0.0.0.0", "::1"}
+        or hostname.startswith("127.")
+        or hostname.startswith("10.")
+        or hostname.startswith("192.168.")
+    ):
+        return False
+    private_172 = re.match(r"^172\.(\d+)\.", hostname)
+    if private_172 and 16 <= int(private_172.group(1)) <= 31:
+        return False
+    return True
 
 
 def is_truthy_env(name, default=False):
@@ -1231,6 +1246,15 @@ def find_missing_protected_terms(text, protected_terms):
     return missing
 
 
+def repair_subtitle_text_with_sources(text, *source_texts):
+    repaired = str(text or "")
+    for source_text in source_texts:
+        reference = str(source_text or "").strip()
+        if reference:
+            repaired = repair_reference_subtitle_text(repaired, reference)
+    return apply_domain_corrections(repaired)
+
+
 def apply_aligned_subtitle_result(subtitles, index, item, target):
     placeholders = target.get("placeholders") or {}
     reference_text = restore_preserved_terms(
@@ -1242,8 +1266,10 @@ def apply_aligned_subtitle_result(subtitles, index, item, target):
     changed = False
     if zh_text:
         restored_text = restore_preserved_terms(zh_text, placeholders)
-        subtitles[index]["zh"] = apply_domain_corrections(
-            repair_reference_subtitle_text(restored_text, reference_text)
+        subtitles[index]["zh"] = repair_subtitle_text_with_sources(
+            restored_text,
+            reference_text,
+            en_text,
         )
         changed = True
     if en_text:
@@ -1348,8 +1374,13 @@ def align_subtitles_with_reference(subtitles, reference_subtitles, source_langua
         if not asr_text and not reference_text:
             continue
 
-        preserve_terms = build_protected_terms(asr_text, reference_text, max_terms=12)
-        protected_terms = build_protected_terms(asr_text, max_terms=8)
+        reference_protected_terms = select_present_reference_terms(asr_text, reference_text, max_terms=8)
+        preserve_terms = reference_protected_terms + [
+            term for term in build_protected_terms(asr_text, max_terms=12)
+            if term not in reference_protected_terms
+        ]
+        preserve_terms = preserve_terms[:12]
+        protected_terms = preserve_terms[:8]
         masked_asr_text, placeholders = mask_preserved_terms(asr_text or reference_text, preserve_terms)
         masked_reference_text, _ = mask_preserved_terms(reference_text, preserve_terms)
         targets.append({
@@ -1442,6 +1473,1599 @@ def align_subtitles_with_reference(subtitles, reference_subtitles, source_langua
     return subtitles
 
 
+def split_reference_text_for_authority(text, split_config=None):
+    split_config = resolve_split_config(split_config)
+    sample = apply_domain_corrections(str(text or "").strip())
+    if not sample:
+        return []
+
+    chunks = []
+    for piece in split_text_by_clause_boundaries(sample):
+        chunks.extend(split_long_text_piece(piece, split_config["max_visible_chars"]))
+    return [apply_domain_corrections(chunk) for chunk in chunks if visible_text(chunk)]
+
+
+def visible_text_with_indices(text):
+    visible_chars = []
+    indices = []
+    for index, char in enumerate(str(text or "")):
+        if visible_text(char):
+            visible_chars.append(char.lower())
+            indices.append(index)
+    return "".join(visible_chars), indices
+
+
+def common_prefix_length(left, right):
+    count = 0
+    max_len = min(len(left or ""), len(right or ""))
+    while count < max_len and left[count] == right[count]:
+        count += 1
+    return count
+
+
+def find_asr_anchor_visible_position(reference_visible, asr_text):
+    sample = visible_text(asr_text).lower()
+    reference = str(reference_visible or "")
+    if len(sample) < 3 or not reference:
+        return -1
+
+    max_len = min(len(sample), 14)
+    for size in range(max_len, 2, -1):
+        anchor = sample[:size]
+        if not re.search(r"[\u4e00-\u9fff0-9A-Za-z]", anchor):
+            continue
+        position = reference.find(anchor)
+        if position >= 0:
+            return position
+    return -1
+
+
+def visible_position_to_char_index(indices, visible_position):
+    if not indices:
+        return 0
+    if visible_position <= 0:
+        return 0
+    if visible_position >= len(indices):
+        return indices[-1] + 1
+    return indices[visible_position - 1] + 1
+
+
+def extend_boundary_over_numeric_and_punctuation(text, end_index, asr_text):
+    sample = str(text or "")
+    end = max(0, min(len(sample), int(end_index or 0)))
+
+    if re.search(r"\d", str(asr_text or "")):
+        numeric_match = re.search(
+            r"[$￥¥]?\d+(?:[.,]\d+)*(?:\s*(?:million|billion|trillion|thousand|hundred|mn|bn|m|b|k))?"
+            r"(?:(?:万|亿|千|百)?(?:美元|美分|元)|[万亿千百%年个次股]|(?:\s*(?:dollars?|usd|美元|美金|元)))?",
+            sample[end:],
+            flags=re.IGNORECASE
+        )
+        if numeric_match and numeric_match.start() <= 2:
+            end += numeric_match.end()
+
+    while end < len(sample) and sample[end] in "，,。.!?！？；;：:、":
+        end += 1
+    return end
+
+
+REFERENCE_AUTHORITY_NUMERIC_PATTERN = re.compile(
+    r"[$￥¥]?\d+(?:[.,]\d+)*"
+    r"(?:\s*(?:million|billion|trillion|thousand|hundred|mn|bn|m|b|k))?"
+    r"(?:(?:万|亿|千|百)?(?:美元|美分|元)|[万亿千百%年个次股]|(?:\s*(?:dollars?|usd|美元|美金|元)))?",
+    re.IGNORECASE,
+)
+
+
+def numeric_term_value(term):
+    sample = str(term or "").lower().replace(",", "")
+    match = re.search(r"\d+(?:\.\d+)?", sample)
+    if not match:
+        return None
+    value = float(match.group(0))
+    suffix = sample[match.end():]
+    multiplier = 1.0
+    if re.search(r"billion|bn|\bb\b", suffix):
+        multiplier = 1_000_000_000.0
+    elif re.search(r"million|mn|\bm\b", suffix):
+        multiplier = 1_000_000.0
+    elif re.search(r"thousand|\bk\b", suffix):
+        multiplier = 1_000.0
+    elif "亿" in suffix:
+        multiplier = 100_000_000.0
+    elif "万" in suffix:
+        multiplier = 10_000.0
+    elif "千" in suffix:
+        multiplier = 1_000.0
+    elif "百" in suffix or "hundred" in suffix:
+        multiplier = 100.0
+    return value * multiplier
+
+
+def numeric_values_equivalent(left, right):
+    left_value = numeric_term_value(left)
+    right_value = numeric_term_value(right)
+    if left_value is None or right_value is None:
+        return False
+    tolerance = max(1.0, abs(left_value) * 0.001, abs(right_value) * 0.001)
+    return abs(left_value - right_value) <= tolerance
+
+
+def find_equivalent_reference_numeric_match(reference_text, asr_text):
+    asr_matches = list(REFERENCE_AUTHORITY_NUMERIC_PATTERN.finditer(str(asr_text or "")))
+    if not asr_matches:
+        return None
+    ref_matches = list(REFERENCE_AUTHORITY_NUMERIC_PATTERN.finditer(str(reference_text or "")))
+    for asr_match in reversed(asr_matches):
+        asr_term = asr_match.group(0)
+        for ref_match in ref_matches:
+            ref_term = ref_match.group(0)
+            if numeric_values_equivalent(ref_term, asr_term):
+                return ref_match
+    return None
+
+
+def find_natural_boundary_near_visible_length(text, target_visible_len, remaining_segments):
+    sample = str(text or "")
+    ref_visible, indices = visible_text_with_indices(sample)
+    if not ref_visible:
+        return len(sample)
+
+    remaining_visible = len(ref_visible)
+    leave_visible = max(0, int(remaining_segments or 0))
+    target = max(1, min(int(target_visible_len or 1), remaining_visible - leave_visible))
+    if target <= 0:
+        return 0
+
+    candidates = []
+    for index, char in enumerate(sample):
+        if char not in "，,。.!?！？；;：:、":
+            continue
+        visible_before = len(visible_text(sample[:index + 1]))
+        if 0 < visible_before <= remaining_visible - leave_visible:
+            candidates.append((abs(visible_before - target), index + 1))
+    if candidates:
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+
+    return visible_position_to_char_index(indices, target)
+
+
+def find_reference_boundary_for_asr_segment(text, asr_text, next_asr_text, remaining_segments):
+    sample = str(text or "")
+    ref_visible, indices = visible_text_with_indices(sample)
+    if not ref_visible:
+        return len(sample)
+
+    numeric_match = find_equivalent_reference_numeric_match(sample, asr_text)
+    if numeric_match:
+        return extend_boundary_over_numeric_and_punctuation(sample, numeric_match.end(), asr_text)
+
+    if next_asr_text:
+        next_position = find_asr_anchor_visible_position(ref_visible, next_asr_text)
+        if next_position > 0:
+            return visible_position_to_char_index(indices, next_position)
+
+    asr_visible = visible_text(asr_text).lower()
+    prefix_len = common_prefix_length(asr_visible, ref_visible)
+    if prefix_len >= 2:
+        end = visible_position_to_char_index(indices, prefix_len)
+        return extend_boundary_over_numeric_and_punctuation(sample, end, asr_text)
+
+    return find_natural_boundary_near_visible_length(
+        sample,
+        max(4, len(asr_visible)),
+        remaining_segments
+    )
+
+
+def split_reference_text_by_asr_segments(reference_text, asr_entries):
+    sample = apply_domain_corrections(str(reference_text or "").strip())
+    if not sample:
+        return []
+    if not asr_entries or len(asr_entries) <= 1:
+        return [sample]
+
+    pieces = []
+    remaining = sample
+    for index, entry in enumerate(asr_entries):
+        remaining = remaining.lstrip()
+        if not remaining:
+            break
+        if index == len(asr_entries) - 1:
+            pieces.append(apply_domain_corrections(remaining.strip()))
+            remaining = ""
+            break
+
+        asr_text = get_subtitle_primary_text(entry)
+        next_asr_text = get_subtitle_primary_text(asr_entries[index + 1])
+        boundary = find_reference_boundary_for_asr_segment(
+            remaining,
+            asr_text,
+            next_asr_text,
+            len(asr_entries) - index - 1
+        )
+        if boundary <= 0:
+            continue
+        current = apply_domain_corrections(remaining[:boundary].strip())
+        if current:
+            pieces.append(current)
+        remaining = remaining[boundary:]
+
+    if remaining.strip():
+        tail = apply_domain_corrections(remaining.strip())
+        if pieces:
+            pieces[-1] = apply_domain_corrections(f"{pieces[-1]}{tail}")
+        else:
+            pieces.append(tail)
+
+    return [piece for piece in pieces if visible_text(piece)]
+
+
+def subtitle_time_range(entry):
+    if not isinstance(entry, dict):
+        return None
+    time_range = entry.get("time")
+    if not isinstance(time_range, list) or len(time_range) < 2:
+        time_range = [entry.get("start"), entry.get("end")]
+    start = parse_seconds(time_range[0], milliseconds=False)
+    end = parse_seconds(time_range[1], milliseconds=False)
+    if start is None or end is None or end <= start:
+        return None
+    return start, end
+
+
+def build_reference_authority_entries(asr_entries, reference_chunks, reference_entry=None, split_config=None):
+    if not asr_entries or not reference_chunks:
+        return []
+
+    output = []
+    reference_text = "".join(reference_chunks)
+    pieces = split_reference_text_by_asr_segments(reference_text, asr_entries)
+    for asr_entry, chunk in zip(asr_entries, pieces):
+        time_range = subtitle_time_range(asr_entry)
+        if not time_range:
+            continue
+        if not chunk:
+            continue
+        output.append({
+            "time": [time_range[0], time_range[1]],
+            "zh": chunk,
+            "text": chunk,
+        })
+    return output
+
+
+def clamp_reference_authority_timing(entries, reference_entry, previous_end=None, tolerance_seconds=0.35):
+    if not entries:
+        return entries
+
+    ref_time = subtitle_time_range(reference_entry)
+    if not ref_time:
+        return entries
+
+    ref_start, ref_end = ref_time
+    clamped = [dict(entry) for entry in entries]
+    first_time = subtitle_time_range(clamped[0])
+    if first_time:
+        first_start, first_end = first_time
+        min_start = ref_start
+        if previous_end is not None:
+            min_start = max(min_start, float(previous_end))
+        should_clamp_start = (
+            previous_end is not None
+            or first_start < min_start
+            or first_start - min_start > tolerance_seconds
+        )
+        if should_clamp_start and first_start != min_start and first_end > min_start:
+            clamped[0]["time"] = [round(min_start, 2), first_end]
+
+    last_time = subtitle_time_range(clamped[-1])
+    if last_time:
+        last_start, last_end = last_time
+        if ref_end - last_end > tolerance_seconds and ref_end > last_start:
+            clamped[-1]["time"] = [last_start, round(ref_end, 2)]
+        elif last_end > ref_end and ref_end > last_start:
+            clamped[-1]["time"] = [last_start, round(ref_end, 2)]
+
+    return clamped
+
+
+READABLE_LEADING_PUNCTUATION = "，,。.!?！？；;：:、"
+READABLE_SENTENCE_PUNCTUATION = "。.!?！？；;"
+READABLE_MIN_VISIBLE_CHARS = 6
+READABLE_TARGET_VISIBLE_CHARS = 18
+READABLE_HARD_VISIBLE_CHARS = 30
+READABLE_ATOM_TARGET_VISIBLE_CHARS = 24
+READABLE_LATIN_HARD_VISIBLE_CHARS = 36
+
+
+def set_subtitle_primary_text(entry, text):
+    updated = dict(entry)
+    cleaned = apply_domain_corrections(str(text or "").strip())
+    if str(updated.get("zh") or "").strip() or not str(updated.get("en") or "").strip():
+        updated["zh"] = cleaned
+    updated["text"] = cleaned
+    return updated
+
+
+def append_display_punctuation(text, punctuation):
+    left = str(text or "").rstrip()
+    right = str(punctuation or "")
+    if not right:
+        return left
+    if left and left[-1] in READABLE_LEADING_PUNCTUATION and right[-1:] == left[-1]:
+        return left
+    return f"{left}{right}"
+
+
+def move_leading_punctuation_to_previous(entries):
+    normalized = []
+    for entry in normalize_final_subtitles(entries):
+        text = get_subtitle_primary_text(entry)
+        match = re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]+", text)
+        if not match or not normalized:
+            normalized.append(entry)
+            continue
+
+        punctuation = match.group(0)
+        rest = text[match.end():].strip()
+        previous_text = get_subtitle_primary_text(normalized[-1])
+        normalized[-1] = set_subtitle_primary_text(
+            normalized[-1],
+            append_display_punctuation(previous_text, punctuation)
+        )
+        if rest:
+            normalized.append(set_subtitle_primary_text(entry, rest))
+        else:
+            normalized[-1] = merge_subtitle_entries(normalized[-1], entry)
+    return normalized
+
+
+def subtitle_duration(entry):
+    time_range = subtitle_time_range(entry)
+    if not time_range:
+        return 0.0
+    return max(0.0, time_range[1] - time_range[0])
+
+
+def readable_visible_len(text):
+    return len(visible_text(text))
+
+
+def has_latin_text(text):
+    return bool(re.search(r"[A-Za-z]", str(text or "")))
+
+
+def is_latin_only_fragment(text):
+    sample = str(text or "").strip().strip(READABLE_LEADING_PUNCTUATION)
+    return bool(sample and has_latin_text(sample) and not has_cjk(sample))
+
+
+def ends_with_latin_token(text):
+    return bool(re.search(r"[A-Za-z0-9][A-Za-z0-9.'’$%+-]*\s*$", str(text or "")))
+
+
+def starts_with_cjk_text(text):
+    return bool(re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}\s]*[\u4e00-\u9fff]", str(text or "")))
+
+
+def ends_with_sentence_punctuation(text):
+    return str(text or "").rstrip().endswith(tuple(READABLE_SENTENCE_PUNCTUATION))
+
+
+def combined_readable_limit(left_text, right_text):
+    if has_latin_text(left_text) or has_latin_text(right_text):
+        return READABLE_LATIN_HARD_VISIBLE_CHARS
+    return READABLE_HARD_VISIBLE_CHARS
+
+
+def can_merge_readable_entries(left, right):
+    left_text = get_subtitle_primary_text(left)
+    right_text = get_subtitle_primary_text(right)
+    combined_len = readable_visible_len(join_subtitle_text(left_text, right_text))
+    return combined_len <= combined_readable_limit(left_text, right_text)
+
+
+def is_low_information_subtitle(entry):
+    text = get_subtitle_primary_text(entry)
+    length = readable_visible_len(text)
+    if length <= 0:
+        return False
+    if length <= READABLE_MIN_VISIBLE_CHARS and not ends_with_sentence_punctuation(text):
+        return True
+    if subtitle_duration(entry) < 0.95 and length <= READABLE_TARGET_VISIBLE_CHARS:
+        return True
+    if is_latin_only_fragment(text) and length <= READABLE_LATIN_HARD_VISIBLE_CHARS:
+        return True
+    return False
+
+
+def should_merge_readable_forward(current, next_entry):
+    if not next_entry or not can_merge_readable_entries(current, next_entry):
+        return False
+
+    current_text = get_subtitle_primary_text(current)
+    next_text = get_subtitle_primary_text(next_entry)
+    current_len = readable_visible_len(current_text)
+    next_len = readable_visible_len(next_text)
+
+    if is_low_information_subtitle(current):
+        return True
+    if is_latin_only_fragment(current_text) and starts_with_cjk_text(next_text):
+        return True
+    if ends_with_latin_token(current_text) and starts_with_cjk_text(next_text) and next_len <= 10:
+        return True
+    if current_len <= READABLE_MIN_VISIBLE_CHARS and not ends_with_sentence_punctuation(current_text):
+        return True
+    return False
+
+
+def should_merge_readable_backward(previous, current):
+    if not previous or not can_merge_readable_entries(previous, current):
+        return False
+
+    current_text = get_subtitle_primary_text(current)
+    previous_text = get_subtitle_primary_text(previous)
+    current_len = readable_visible_len(current_text)
+
+    if current_len <= READABLE_MIN_VISIBLE_CHARS and not ends_with_sentence_punctuation(previous_text):
+        return True
+    if subtitle_duration(current) < 0.95 and current_len <= READABLE_TARGET_VISIBLE_CHARS:
+        return True
+    if starts_with_cjk_text(current_text) and ends_with_latin_token(previous_text) and current_len <= 14:
+        return True
+    return False
+
+
+def ends_with_dangling_subtitle_phrase(text):
+    sample = str(text or "").rstrip()
+    if not sample:
+        return False
+    if sample.endswith(tuple(READABLE_SENTENCE_PUNCTUATION)):
+        return False
+    return bool(re.search(
+        r"(会|将|要|能|能够|可以|正在|开始|继续|创造|承认|意味着|等于|来自|成为|进入|推动|推高|"
+        r"和|与|及|以及|或|或者|并|但|而|因为|所以|如果|就是|只是|不是|"
+        r"的|了|把|被|对|在|从|向|给|由|比)$",
+        sample,
+    ))
+
+
+def split_next_subtitle_prefix_for_completion(text):
+    sample = str(text or "").strip()
+    if not sample:
+        return "", ""
+    pieces = split_text_by_clause_boundaries(sample)
+    if len(pieces) <= 1:
+        return sample, ""
+    prefix = pieces[0]
+    rest = sample[len(prefix):].strip()
+    return prefix, rest
+
+
+def repair_dangling_subtitle_endings(entries):
+    output = [dict(entry) for entry in normalize_final_subtitles(entries)]
+    changed = False
+    index = 0
+    while index + 1 < len(output):
+        current = output[index]
+        next_entry = output[index + 1]
+        current_text = get_subtitle_primary_text(current)
+        if not ends_with_dangling_subtitle_phrase(current_text):
+            index += 1
+            continue
+
+        next_text = get_subtitle_primary_text(next_entry)
+        prefix, rest = split_next_subtitle_prefix_for_completion(next_text)
+        if not prefix:
+            index += 1
+            continue
+
+        combined_text = join_subtitle_text(current_text, prefix)
+        if readable_visible_len(combined_text) > combined_readable_limit(current_text, prefix):
+            index += 1
+            continue
+
+        current_start, current_end = subtitle_time_range(current)
+        next_start, next_end = subtitle_time_range(next_entry)
+        if rest:
+            next_visible = max(1, readable_visible_len(next_text))
+            prefix_visible = max(1, readable_visible_len(prefix))
+            split_time = next_start + ((next_end - next_start) * prefix_visible / next_visible)
+            split_time = round(min(next_end, max(next_start, split_time)), 2)
+            if split_time <= next_start or split_time >= next_end:
+                index += 1
+                continue
+            output[index] = set_subtitle_primary_text(
+                {**current, "time": [current_start, split_time]},
+                combined_text,
+            )
+            output[index + 1] = set_subtitle_primary_text(
+                {**next_entry, "time": [split_time, next_end]},
+                rest,
+            )
+        else:
+            output[index] = set_subtitle_primary_text(
+                {**current, "time": [current_start, next_end]},
+                combined_text,
+            )
+            output.pop(index + 1)
+        changed = True
+
+    if changed:
+        print("   ✅ 已修复字幕动宾/连词断行")
+    return normalize_final_subtitles(output)
+
+
+def merge_readable_neighbors(entries):
+    output = []
+    index = 0
+    normalized = normalize_final_subtitles(entries)
+    while index < len(normalized):
+        current = normalized[index]
+        index += 1
+
+        while index < len(normalized) and should_merge_readable_forward(current, normalized[index]):
+            current = merge_subtitle_entries(current, normalized[index])
+            index += 1
+
+        if output and should_merge_readable_backward(output[-1], current):
+            output[-1] = merge_subtitle_entries(output[-1], current)
+        else:
+            output.append(current)
+    return output
+
+
+def split_readable_text_piece(text, max_visible_chars=READABLE_HARD_VISIBLE_CHARS):
+    sample = str(text or "").strip()
+    if readable_visible_len(sample) <= max_visible_chars:
+        return [sample] if sample else []
+
+    pieces = split_text_by_clause_boundaries(sample)
+    if len(pieces) <= 1:
+        return [sample]
+
+    output = []
+    pending = ""
+    for piece in pieces:
+        candidate = join_subtitle_text(pending, piece) if pending else piece
+        if pending and readable_visible_len(candidate) > max_visible_chars:
+            output.append(pending)
+            pending = piece
+        else:
+            pending = candidate
+    if pending:
+        output.append(pending)
+
+    balanced = []
+    for piece in output:
+        if readable_visible_len(piece) < READABLE_MIN_VISIBLE_CHARS and balanced:
+            balanced[-1] = join_subtitle_text(balanced[-1], piece)
+        else:
+            balanced.append(piece)
+    if len(balanced) > 1 and readable_visible_len(balanced[0]) < READABLE_MIN_VISIBLE_CHARS:
+        balanced[1] = join_subtitle_text(balanced[0], balanced[1])
+        balanced = balanced[1:]
+    return [piece for piece in balanced if visible_text(piece)]
+
+
+def split_long_readable_entries(entries):
+    output = []
+    for entry in normalize_final_subtitles(entries):
+        text = get_subtitle_primary_text(entry)
+        max_visible_chars = combined_readable_limit(text, "")
+        if readable_visible_len(text) <= max_visible_chars or subtitle_duration(entry) <= 2.2:
+            output.append(entry)
+            continue
+
+        pieces = split_readable_text_piece(text, max_visible_chars=max_visible_chars)
+        if len(pieces) <= 1:
+            output.append(entry)
+            continue
+
+        start, end = subtitle_time_range(entry)
+        weights = [max(1, readable_visible_len(piece)) for piece in pieces]
+        total_weight = max(1, sum(weights))
+        cursor = start
+        for index, piece in enumerate(pieces):
+            piece_end = end if index == len(pieces) - 1 else cursor + ((end - start) * weights[index] / total_weight)
+            output.append(set_subtitle_primary_text(
+                {**entry, "time": [round(cursor, 2), round(piece_end, 2)]},
+                piece
+            ))
+            cursor = piece_end
+    return output
+
+
+def subtitle_readability_issues(entries):
+    issues = []
+    for index, entry in enumerate(entries):
+        text = get_subtitle_primary_text(entry)
+        if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", text):
+            issues.append((index, "leading_punctuation", text))
+        if ends_with_dangling_subtitle_phrase(text):
+            issues.append((index, "dangling_phrase", text))
+        if is_low_information_subtitle(entry):
+            issues.append((index, "low_information", text))
+    return issues
+
+
+def polish_readable_subtitle_segments(entries, split_config=None, use_llm=True):
+    """Improve display grouping while keeping each subtitle inside its original timed span."""
+
+    if not entries:
+        return []
+
+    polished = move_leading_punctuation_to_previous(entries)
+    polished = merge_readable_neighbors(polished)
+    polished = repair_dangling_subtitle_endings(polished)
+    polished = move_leading_punctuation_to_previous(polished)
+    polished = merge_readable_neighbors(polished)
+    if use_llm:
+        polished = split_long_readable_entries(polished)
+        polished = move_leading_punctuation_to_previous(polished)
+        polished = merge_readable_neighbors(polished)
+        polished = repair_dangling_subtitle_endings(polished)
+        polished = move_leading_punctuation_to_previous(polished)
+        polished = merge_readable_neighbors(polished)
+    polished = normalize_final_subtitles(polished)
+
+    issues = subtitle_readability_issues(polished)
+    if len(polished) != len(entries) or issues:
+        print(f"   ✅ 已优化字幕阅读分组: {len(entries)} -> {len(polished)} 条")
+    return polished
+
+
+REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS = 8.0
+REFERENCE_AUTHORITY_MAX_INTERNAL_GAP_SECONDS = 0.65
+
+
+def visible_len_between(text, start_index, end_index):
+    return len(visible_text(str(text or "")[max(0, start_index):max(0, end_index)]))
+
+
+def parse_reference_authority_index(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_reference_authority_group_span(item):
+    if not isinstance(item, dict):
+        return None
+
+    indices = item.get("indices") or item.get("asr_indices")
+    if isinstance(indices, list) and indices:
+        parsed = [parse_reference_authority_index(value) for value in indices]
+        if any(value is None for value in parsed):
+            return None
+        parsed = sorted(parsed)
+        if parsed != list(range(parsed[0], parsed[-1] + 1)):
+            return None
+        return parsed[0], parsed[-1]
+
+    start = None
+    for key in ("start_index", "start", "from_index", "from", "first_index"):
+        if key in item:
+            start = parse_reference_authority_index(item.get(key))
+            break
+
+    end = None
+    for key in ("end_index", "end", "to_index", "to", "last_index"):
+        if key in item:
+            end = parse_reference_authority_index(item.get(key))
+            break
+
+    if start is None and end is None:
+        return None
+    if start is None:
+        start = end
+    if end is None:
+        end = start
+    return start, end
+
+
+def build_reference_piece_spans(reference, pieces):
+    spans = []
+    cursor = 0
+    for index, piece in enumerate(pieces):
+        text = str(piece or "")
+        if not text:
+            continue
+        position = reference.find(text, cursor)
+        if position < 0:
+            return []
+        spans.append({
+            "index": index,
+            "start": position,
+            "end": position + len(text),
+            "text": text,
+        })
+        cursor = position + len(text)
+    return spans
+
+
+def reference_piece_for_position(piece_spans, position, *, prefer_next=False):
+    if not piece_spans:
+        return None
+    for piece in piece_spans:
+        start = piece["start"]
+        end = piece["end"]
+        if position == end and not prefer_next:
+            return piece
+        if start <= position < end:
+            return piece
+        if prefer_next and position == start:
+            return piece
+    if position == piece_spans[-1]["end"]:
+        return piece_spans[-1]
+    return None
+
+
+def time_at_reference_piece_offset(asr_entry, piece_text, offset):
+    time_range = subtitle_time_range(asr_entry)
+    if not time_range:
+        return None
+    start, end = time_range
+    sample = str(piece_text or "")
+    offset = max(0, min(len(sample), int(offset or 0)))
+    total_visible = max(1, len(visible_text(sample)))
+    current_visible = visible_len_between(sample, 0, offset)
+    ratio = max(0.0, min(1.0, current_visible / total_visible))
+    return start + ((end - start) * ratio)
+
+
+def time_range_for_reference_span(asr_entries, piece_spans, start_position, end_position):
+    start_piece = reference_piece_for_position(piece_spans, start_position, prefer_next=True)
+    end_piece = reference_piece_for_position(piece_spans, max(start_position, end_position - 1))
+    if not start_piece or not end_piece:
+        return None
+    start_index = start_piece["index"]
+    end_index = end_piece["index"]
+    if not (0 <= start_index <= end_index < len(asr_entries)):
+        return None
+
+    start_time = time_at_reference_piece_offset(
+        asr_entries[start_index],
+        start_piece["text"],
+        start_position - start_piece["start"],
+    )
+    end_time = time_at_reference_piece_offset(
+        asr_entries[end_index],
+        end_piece["text"],
+        end_position - end_piece["start"],
+    )
+    if start_time is None or end_time is None or end_time <= start_time:
+        return None
+    return start_index, end_index, round(start_time, 2), round(end_time, 2)
+
+
+def update_reference_atom_time(atom, asr_entries, piece_spans):
+    span_time = time_range_for_reference_span(
+        asr_entries,
+        piece_spans,
+        atom["start_pos"],
+        atom["end_pos"],
+    )
+    if span_time is None:
+        return None
+    start_index, end_index, start_time, end_time = span_time
+    atom["start_asr_index"] = start_index
+    atom["end_asr_index"] = end_index
+    atom["time"] = [start_time, end_time]
+    return atom
+
+
+def split_reference_text_for_readable_atoms(text, max_visible_chars=READABLE_ATOM_TARGET_VISIBLE_CHARS):
+    sample = str(text or "").strip()
+    if not sample:
+        return []
+
+    sentence_pieces = []
+    start = 0
+    for index, char in enumerate(sample):
+        if char not in READABLE_SENTENCE_PUNCTUATION:
+            continue
+        piece = sample[start:index + 1].strip()
+        if piece:
+            sentence_pieces.append(piece)
+        start = index + 1
+    tail = sample[start:].strip()
+    if tail:
+        sentence_pieces.append(tail)
+
+    atoms = []
+    for piece in sentence_pieces or [sample]:
+        if readable_visible_len(piece) <= max_visible_chars:
+            atoms.append(piece)
+            continue
+        current = ""
+        for chunk in split_text_by_clause_boundaries(piece):
+            candidate = join_subtitle_text(current, chunk) if current else chunk
+            if current and readable_visible_len(candidate) > max_visible_chars:
+                atoms.append(current)
+                current = chunk
+            else:
+                current = candidate
+        if current:
+            atoms.append(current)
+
+    balanced = []
+    for atom in atoms:
+        if balanced and readable_visible_len(atom) <= READABLE_MIN_VISIBLE_CHARS:
+            balanced[-1] = join_subtitle_text(balanced[-1], atom)
+        else:
+            balanced.append(atom)
+    if len(balanced) > 1 and readable_visible_len(balanced[0]) <= READABLE_MIN_VISIBLE_CHARS:
+        balanced[1] = join_subtitle_text(balanced[0], balanced[1])
+        balanced = balanced[1:]
+    return [atom for atom in balanced if visible_text(atom)]
+
+
+def build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config=None):
+    split_config = resolve_split_config(split_config)
+    atom_limit = min(READABLE_ATOM_TARGET_VISIBLE_CHARS, split_config["max_visible_chars"])
+    atoms = []
+    cursor = 0
+    for atom_text in split_reference_text_for_readable_atoms(reference, atom_limit):
+        start_pos = reference.find(atom_text, cursor)
+        if start_pos < 0:
+            return []
+        end_pos = start_pos + len(atom_text)
+        cursor = end_pos
+        atom = {
+            "index": len(atoms),
+            "start_pos": start_pos,
+            "end_pos": end_pos,
+            "text": atom_text.strip(),
+        }
+        if update_reference_atom_time(atom, asr_entries, piece_spans) is None:
+            return []
+        atoms.append(atom)
+
+    for index, atom in enumerate(atoms):
+        atom["index"] = index
+    return atoms
+
+
+def subtitle_reading_seconds_per_visible_char(text):
+    if has_latin_text(text):
+        return 0.055
+    return 0.13
+
+
+def minimum_display_duration_for_text(text):
+    visible_len = readable_visible_len(text)
+    if visible_len <= 0:
+        return 0.0
+    base = 0.95 if visible_len <= READABLE_TARGET_VISIBLE_CHARS else 1.15
+    return min(4.8, max(base, visible_len * subtitle_reading_seconds_per_visible_char(text)))
+
+
+def has_unreadable_subtitle_duration(entry):
+    text = get_subtitle_primary_text(entry)
+    duration = subtitle_duration(entry)
+    return duration > 0 and duration + 0.03 < minimum_display_duration_for_text(text)
+
+
+def has_severe_unreadable_subtitle_duration(entry):
+    text = get_subtitle_primary_text(entry)
+    duration = subtitle_duration(entry)
+    minimum = minimum_display_duration_for_text(text)
+    if duration <= 0 or minimum <= 0:
+        return False
+    return duration + 0.03 < max(0.75, minimum * 0.45)
+
+
+def has_overextended_subtitle_duration(entry):
+    text = get_subtitle_primary_text(entry)
+    visible_len = readable_visible_len(text)
+    if visible_len <= 0:
+        return False
+    duration = subtitle_duration(entry)
+    if duration <= 0:
+        return False
+    minimum = minimum_display_duration_for_text(text)
+    if visible_len <= READABLE_TARGET_VISIBLE_CHARS:
+        return duration > max(4.8, minimum * 3.0)
+    return duration > max(6.5, minimum * 2.4)
+
+
+def subtitle_timing_quality_issues(entries, include_overextended=False):
+    normalized = normalize_final_subtitles(entries)
+    issues = []
+    for index, entry in enumerate(normalized):
+        if has_unreadable_subtitle_duration(entry):
+            issues.append((index, "unreadable_duration", get_subtitle_primary_text(entry)))
+        elif include_overextended and len(normalized) > 1 and has_overextended_subtitle_duration(entry):
+            issues.append((index, "overextended_duration", get_subtitle_primary_text(entry)))
+
+        if index > 0:
+            previous_end = subtitle_time_range(normalized[index - 1])[1]
+            current_start = subtitle_time_range(entry)[0]
+            if current_start < previous_end - 0.03:
+                issues.append((index, "overlap", get_subtitle_primary_text(entry)))
+    return issues
+
+
+def severe_subtitle_timing_quality_issues(entries):
+    normalized = normalize_final_subtitles(entries)
+    issues = []
+    for index, entry in enumerate(normalized):
+        if has_severe_unreadable_subtitle_duration(entry):
+            issues.append((index, "severe_unreadable_duration", get_subtitle_primary_text(entry)))
+
+        if index > 0:
+            previous_end = subtitle_time_range(normalized[index - 1])[1]
+            current_start = subtitle_time_range(entry)[0]
+            if current_start < previous_end - 0.03:
+                issues.append((index, "overlap", get_subtitle_primary_text(entry)))
+    return issues
+
+
+def parse_reference_atom_group_span(item):
+    if not isinstance(item, dict):
+        return None
+    indices = item.get("atom_indices") or item.get("atoms")
+    if isinstance(indices, list) and indices:
+        parsed = [parse_reference_authority_index(value) for value in indices]
+        if any(value is None for value in parsed):
+            return None
+        parsed = sorted(parsed)
+        if parsed != list(range(parsed[0], parsed[-1] + 1)):
+            return None
+        return parsed[0], parsed[-1]
+
+    start = None
+    for key in ("start_atom_index", "start_atom", "from_atom_index", "from_atom"):
+        if key in item:
+            start = parse_reference_authority_index(item.get(key))
+            break
+
+    end = None
+    for key in ("end_atom_index", "end_atom", "to_atom_index", "to_atom"):
+        if key in item:
+            end = parse_reference_authority_index(item.get(key))
+            break
+
+    if start is None and end is None:
+        return None
+    if start is None:
+        start = end
+    if end is None:
+        end = start
+    return start, end
+
+
+def validate_reference_authority_llm_atom_groups(reference, atoms, results, split_config=None):
+    split_config = resolve_split_config(split_config)
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if not reference or not atoms or not ordered_items:
+        return []
+    if not any(parse_reference_atom_group_span(item) is not None for item in ordered_items):
+        return []
+
+    output = []
+    next_atom_index = 0
+    for item in ordered_items:
+        span = parse_reference_atom_group_span(item)
+        if span is None:
+            return []
+        start_atom_index, end_atom_index = span
+        if not (0 <= start_atom_index <= end_atom_index < len(atoms)):
+            return []
+        if start_atom_index != next_atom_index:
+            return []
+        next_atom_index = end_atom_index + 1
+
+        start_atom = atoms[start_atom_index]
+        end_atom = atoms[end_atom_index]
+        text = apply_domain_corrections(reference[start_atom["start_pos"]:end_atom["end_pos"]].strip())
+        if not visible_text(text):
+            return []
+        candidate_text = str(item.get("text") or item.get("zh") or "").strip()
+        if candidate_text and visible_text(candidate_text) != visible_text(text):
+            return []
+        if readable_visible_len(text) > combined_readable_limit(text, ""):
+            return []
+        start_time = start_atom["time"][0]
+        end_time = end_atom["time"][1]
+        if end_time <= start_time:
+            return []
+        duration = end_time - start_time
+        max_duration = max(split_config["max_chunk_duration"] + 1.2, REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS)
+        if start_atom_index != end_atom_index and duration > max_duration:
+            return []
+        if duration + 0.03 < minimum_display_duration_for_text(text):
+            return []
+        if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", text):
+            return []
+        output.append({
+            "time": [start_time, end_time],
+            "zh": text,
+            "text": text,
+        })
+
+    if next_atom_index != len(atoms):
+        return []
+    joined = "".join(item["zh"] for item in output)
+    if visible_text(joined) != visible_text(reference):
+        return []
+    return output
+
+
+def validate_reference_authority_llm_groups(asr_entries, reference_text, results, split_config=None):
+    split_config = resolve_split_config(split_config)
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if not asr_entries or not reference or not ordered_items:
+        return []
+    has_group_span = any(parse_reference_authority_group_span(item) is not None for item in ordered_items)
+    has_atom_group_span = any(parse_reference_atom_group_span(item) is not None for item in ordered_items)
+    if not has_group_span and not has_atom_group_span:
+        return []
+
+    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    if len(reference_pieces) != len(asr_entries):
+        return []
+    piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    if len(piece_spans) != len(reference_pieces):
+        return []
+
+    atoms = build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config)
+    atom_grouped = validate_reference_authority_llm_atom_groups(reference, atoms, results, split_config)
+    if atom_grouped:
+        return atom_grouped
+
+    cursor = 0
+    previous_actual_end_index = -1
+    previous_end_time = None
+    output = []
+    for item in ordered_items:
+        span = parse_reference_authority_group_span(item)
+        if span is None:
+            return []
+        start_index, end_index = span
+        if start_index is None or end_index is None:
+            return []
+        if not (0 <= start_index <= end_index < len(asr_entries)):
+            return []
+
+        raw_text = str(item.get("text") or item.get("zh") or "").strip()
+        if not raw_text:
+            continue
+
+        position = reference.find(raw_text, cursor)
+        if position != cursor:
+            return []
+        end_position = position + len(raw_text)
+
+        span_time = time_range_for_reference_span(asr_entries, piece_spans, position, end_position)
+        if span_time is None:
+            return []
+        actual_start_index, actual_end_index, start_time, end_time = span_time
+        if actual_start_index < previous_actual_end_index:
+            return []
+        if previous_end_time is not None and start_time < previous_end_time - 0.03:
+            return []
+        previous_actual_end_index = actual_end_index
+
+        assigned_text = apply_domain_corrections(raw_text)
+        cursor = end_position
+        if not assigned_text:
+            continue
+
+        entry = {
+            "time": [start_time, end_time],
+            "zh": assigned_text,
+            "text": assigned_text,
+        }
+        if readable_visible_len(assigned_text) > combined_readable_limit(assigned_text, ""):
+            return []
+        if (
+            start_index != end_index
+            and subtitle_duration(entry) > REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS
+        ):
+            return []
+        if has_unreadable_subtitle_duration(entry):
+            return []
+        if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", assigned_text):
+            return []
+        output.append(entry)
+        previous_end_time = end_time
+
+    if reference[cursor:].strip():
+        return []
+
+    if not output:
+        return []
+
+    joined = "".join(item["zh"] for item in output)
+    if visible_text(joined) != visible_text(reference):
+        return []
+    return output
+
+
+def validate_reference_authority_llm_results(asr_entries, reference_text, results, split_config=None):
+    grouped = validate_reference_authority_llm_groups(asr_entries, reference_text, results, split_config)
+    if grouped:
+        return grouped
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if any(parse_reference_authority_group_span(item) is not None for item in ordered_items):
+        return []
+
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    if not asr_entries or not reference or not isinstance(results, list):
+        return []
+
+    by_index = {}
+    for fallback_index, item in enumerate(ordered_items):
+        try:
+            index = int(item.get("index", fallback_index))
+        except (TypeError, ValueError):
+            continue
+        by_index[index] = item
+
+    cursor = 0
+    assignments = []
+    for index, asr_entry in enumerate(asr_entries):
+        item = by_index.get(index)
+        if item is None:
+            assignments.append((asr_entry, ""))
+            continue
+
+        raw_text = str(item.get("text") or item.get("zh") or "").strip()
+        if not raw_text:
+            assignments.append((asr_entry, ""))
+            continue
+
+        position = reference.find(raw_text, cursor)
+        if position < 0:
+            return []
+
+        assigned_text = reference[cursor:position] + reference[position:position + len(raw_text)]
+        cursor = position + len(raw_text)
+        assignments.append((asr_entry, apply_domain_corrections(assigned_text.strip())))
+
+    tail = reference[cursor:].strip()
+    if tail:
+        for index in range(len(assignments) - 1, -1, -1):
+            if assignments[index][1]:
+                entry, text = assignments[index]
+                assignments[index] = (entry, apply_domain_corrections(f"{text}{tail}"))
+                break
+        else:
+            assignments.append((asr_entries[-1], apply_domain_corrections(tail)))
+
+    output = []
+    for asr_entry, text in assignments:
+        if not text:
+            continue
+        time_range = subtitle_time_range(asr_entry)
+        if not time_range:
+            continue
+        output.append({
+            "time": [time_range[0], time_range[1]],
+            "zh": text,
+            "text": text,
+        })
+        if has_unreadable_subtitle_duration(output[-1]):
+            return []
+
+    if not output:
+        return []
+
+    joined = "".join(item["zh"] for item in output)
+    if visible_text(joined) != visible_text(reference):
+        return []
+
+    natural_piece_count = max(1, len(split_text_by_clause_boundaries(reference)))
+    min_expected = min(len(asr_entries), natural_piece_count, 2)
+    if len(asr_entries) > 1 and len(output) < min_expected:
+        return []
+    return output
+
+
+def subtitle_boundary_candidates(entries, reference_entry=None):
+    candidates = set()
+    for entry in entries or []:
+        time_range = subtitle_time_range(entry)
+        if time_range:
+            candidates.add(round(time_range[0], 2))
+            candidates.add(round(time_range[1], 2))
+    ref_time = subtitle_time_range(reference_entry) if reference_entry else None
+    if ref_time:
+        candidates.add(round(ref_time[0], 2))
+        candidates.add(round(ref_time[1], 2))
+    return sorted(candidates)
+
+
+def nearest_boundary_index(candidates, value):
+    if not candidates:
+        return -1
+    target = float(value)
+    return min(range(len(candidates)), key=lambda index: abs(candidates[index] - target))
+
+
+def normalized_subtitle_reading_load(entry):
+    text = get_subtitle_primary_text(entry)
+    minimum = minimum_display_duration_for_text(text)
+    duration = subtitle_duration(entry)
+    if minimum <= 0 or duration <= 0:
+        return 1.0
+    return minimum / duration
+
+
+def balance_reference_authority_group_timing(entries, source_entries, reference_entry=None):
+    normalized = normalize_final_subtitles(entries)
+    if len(normalized) <= 1:
+        return normalized
+
+    candidates = subtitle_boundary_candidates(source_entries, reference_entry)
+    if len(candidates) < 2:
+        return normalized
+
+    changed = False
+    output = [dict(entry) for entry in normalized]
+    for index, entry in enumerate(output):
+        time_range = subtitle_time_range(entry)
+        if not time_range:
+            continue
+        start, end = time_range
+        if end - start >= minimum_display_duration_for_text(get_subtitle_primary_text(entry)):
+            continue
+
+        start_boundary_index = nearest_boundary_index(candidates, start)
+        end_boundary_index = nearest_boundary_index(candidates, end)
+        if start_boundary_index < 0 or end_boundary_index <= start_boundary_index:
+            continue
+
+        required_duration = minimum_display_duration_for_text(get_subtitle_primary_text(entry))
+        adjusted_current = False
+
+        if index > 0 and start_boundary_index > 0:
+            previous = output[index - 1]
+            previous_start, previous_end = subtitle_time_range(previous)
+            previous_required = minimum_display_duration_for_text(get_subtitle_primary_text(previous))
+            best_partial_start = None
+            for candidate_index in range(start_boundary_index - 1, -1, -1):
+                candidate_start = candidates[candidate_index]
+                if candidate_start <= previous_start:
+                    break
+                if candidate_start > previous_end + 0.03:
+                    continue
+                if best_partial_start is None:
+                    best_partial_start = candidate_start
+                if end - candidate_start + 0.03 < required_duration:
+                    continue
+                if candidate_start - previous_start + 0.03 < previous_required:
+                    continue
+                previous["time"] = [previous_start, round(candidate_start, 2)]
+                entry["time"] = [round(candidate_start, 2), end]
+                adjusted_current = True
+                changed = True
+                break
+            if (
+                not adjusted_current
+                and best_partial_start is not None
+                and end - best_partial_start > end - start + 0.25
+            ):
+                previous["time"] = [previous_start, round(best_partial_start, 2)]
+                entry["time"] = [round(best_partial_start, 2), end]
+                adjusted_current = True
+                changed = True
+
+        start, end = subtitle_time_range(entry)
+        if end - start + 0.03 >= required_duration:
+            continue
+
+        if index + 1 < len(output) and end_boundary_index + 1 < len(candidates):
+            next_entry = output[index + 1]
+            next_start, next_end = subtitle_time_range(next_entry)
+            next_required = minimum_display_duration_for_text(get_subtitle_primary_text(next_entry))
+            for candidate_index in range(end_boundary_index + 1, len(candidates)):
+                candidate_end = candidates[candidate_index]
+                if candidate_end >= next_end:
+                    break
+                if candidate_end < next_start - 0.03:
+                    continue
+                if candidate_end - start + 0.03 < required_duration:
+                    continue
+                if next_end - candidate_end + 0.03 < next_required:
+                    continue
+                entry["time"] = [start, round(candidate_end, 2)]
+                next_entry["time"] = [round(candidate_end, 2), next_end]
+                changed = True
+                break
+
+    balanced = normalize_final_subtitles(output)
+    if changed:
+        print("   ✅ 已按阅读时长与 ASR 边界平衡字幕时间轴")
+    return balanced
+
+
+def close_short_reference_authority_gaps(entries, max_gap=REFERENCE_AUTHORITY_MAX_INTERNAL_GAP_SECONDS):
+    normalized = normalize_final_subtitles(entries)
+    if len(normalized) <= 1:
+        return normalized
+
+    output = [dict(entry) for entry in normalized]
+    changed = False
+    for index in range(len(output) - 1):
+        current_time = subtitle_time_range(output[index])
+        next_time = subtitle_time_range(output[index + 1])
+        if not current_time or not next_time:
+            continue
+        current_start, current_end = current_time
+        next_start, next_end = next_time
+        gap = next_start - current_end
+        if gap <= 0.03 or gap > max_gap:
+            continue
+
+        current_load = normalized_subtitle_reading_load(output[index])
+        next_load = normalized_subtitle_reading_load(output[index + 1])
+        if current_load >= next_load:
+            output[index]["time"] = [current_start, round(next_start, 2)]
+        else:
+            output[index + 1]["time"] = [round(current_end, 2), next_end]
+        changed = True
+
+    if changed:
+        print("   ✅ 已闭合参考字幕段内短空隙")
+    return normalize_final_subtitles(output)
+
+
+def finalize_reference_authority_block(entries, source_entries, reference_entry=None, split_config=None, use_polish=True):
+    block_entries = normalize_final_subtitles(entries)
+    if use_polish:
+        block_entries = polish_readable_subtitle_segments(block_entries, split_config, use_llm=False)
+    block_entries = balance_reference_authority_group_timing(block_entries, source_entries, reference_entry)
+    return close_short_reference_authority_gaps(block_entries)
+
+
+def align_reference_authority_with_llm(asr_entries, reference_text, source_language="", split_config=None):
+    split_config = resolve_split_config(split_config)
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    if len(asr_entries or []) <= 1 or not reference:
+        return []
+
+    payload = {
+        "source_language": source_language or "auto",
+        "reference_text": reference,
+        "asr_segments": [
+            {
+                "index": index,
+                "time": list(subtitle_time_range(entry) or []),
+                "asr_text": get_subtitle_primary_text(entry),
+            }
+            for index, entry in enumerate(asr_entries)
+        ],
+    }
+    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    atoms = build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config) if piece_spans else []
+    if atoms:
+        payload["reference_atoms"] = [
+            {
+                "atom_index": atom["index"],
+                "time": atom["time"],
+                "text": atom["text"],
+                "start_asr_index": atom.get("start_asr_index"),
+                "end_asr_index": atom.get("end_asr_index"),
+            }
+            for atom in atoms
+        ]
+    prompt = (
+        "你是字幕时间轴与阅读分组助手。任务是根据新的 ASR 句段，把 reference_text 切分成自然可读的显示字幕组。"
+        "ASR 只用于判断句段边界、停顿和语义位置，最终字幕文本必须逐字复制 reference_text 中的连续原文。"
+        "不要翻译、不要改写、不要补词、不要把 ASR 文本写进结果。"
+        "不要按时长比例机械分配；要参考每条 asr_text 的语义、停顿和相邻句段。"
+        "优先使用 reference_atoms 分组：可以把相邻 atom 合并成一个显示字幕组，也可以让一个 atom 独立成组。"
+        "每个显示字幕组应尽量在 30 个可见字符以内，避免以标点开头，避免把固定短语拆开。"
+        "输出 JSON 数组；如果输入有 reference_atoms，每项包含 start_atom_index、end_atom_index，可选 text。"
+        "start_atom_index/end_atom_index 必须覆盖连续 atom，所有组依次覆盖全部 atom，不能跳过、重复或乱序。"
+        "如果没有 reference_atoms，才使用 start_index、end_index 和 text；text 必须是 reference_text 中按顺序出现的连续子串。"
+        "所有组拼接后应覆盖完整 reference_text。只输出 JSON，不要 markdown。\n\n"
+        f"输入：{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+    try:
+        emit_stage("subtitle_reference_authority", "正在根据新 ASR 句段分配参考口播稿字幕")
+        provider = get_text_llm_provider()
+        client = create_llm_client(provider=provider)
+        model = get_text_model_for_provider(provider)
+        response = generate_content(
+            client,
+            model=model,
+            contents=prompt,
+            response_mime_type="application/json",
+            provider=provider
+        )
+        results = parse_json_array_from_text(getattr(response, "text", response))
+    except Exception as err:
+        print(f"   ⚠️ 参考文本权威分配失败，使用保守规则兜底: {err}")
+        return []
+
+    validated = validate_reference_authority_llm_results(asr_entries, reference, results, split_config)
+    if not validated:
+        print("   ⚠️ 参考文本权威分配结果未通过原文校验，使用保守规则兜底。")
+    return validated
+
+
+def asr_entry_text_matches_reference(entry, reference_text):
+    asr_visible = visible_text(get_subtitle_primary_text(entry)).lower()
+    reference_visible = visible_text(reference_text).lower()
+    if len(asr_visible) < 2 or not reference_visible:
+        return False
+    if asr_visible in reference_visible:
+        return True
+    if len(asr_visible) < 4:
+        return False
+
+    max_anchor_len = min(len(asr_visible), 14)
+    for size in range(max_anchor_len, 3, -1):
+        if asr_visible[:size] in reference_visible or asr_visible[-size:] in reference_visible:
+            return True
+    return False
+
+
+def collect_asr_entries_for_reference(asr_entries, reference_entry, used_indices, next_reference_entry=None):
+    ref_time = subtitle_time_range(reference_entry)
+    if not ref_time:
+        return []
+    ref_start, ref_end = ref_time
+    reference_text = get_subtitle_primary_text(reference_entry)
+    next_reference_text = get_subtitle_primary_text(next_reference_entry) if next_reference_entry else ""
+
+    selected = []
+    for index, entry in enumerate(asr_entries):
+        if index in used_indices:
+            continue
+        entry_time = subtitle_time_range(entry)
+        if not entry_time:
+            continue
+        start, end = entry_time
+        center = (start + end) / 2.0
+        if time_overlap_ratio(start, end, ref_start, ref_end) > 0 or ref_start <= center <= ref_end:
+            selected.append((index, entry))
+
+    if selected:
+        cursor = selected[-1][0] + 1
+        while cursor < len(asr_entries):
+            if cursor in used_indices:
+                break
+            entry = asr_entries[cursor]
+            if next_reference_text and asr_entry_text_matches_reference(entry, next_reference_text):
+                break
+            if not asr_entry_text_matches_reference(entry, reference_text):
+                break
+            selected.append((cursor, entry))
+            cursor += 1
+
+    return selected
+
+
+def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, split_config=None, source_language="", use_llm=True):
+    """Use ASR sentence timing while keeping reference subtitles as the only text authority."""
+
+    if not reference_subtitles:
+        return asr_subtitles
+
+    asr_entries = normalize_final_subtitles(asr_subtitles)
+    if not asr_entries:
+        return normalize_final_subtitles(reference_subtitles)
+
+    output = []
+    used_indices = set()
+    reference_entries = sorted(
+        [entry for entry in reference_subtitles if subtitle_time_range(entry)],
+        key=lambda item: subtitle_time_range(item)[0]
+    )
+
+    for reference_index, reference_entry in enumerate(reference_entries):
+        next_reference_entry = (
+            reference_entries[reference_index + 1]
+            if reference_index + 1 < len(reference_entries)
+            else None
+        )
+        reference_text = get_subtitle_primary_text(reference_entry)
+        reference_chunks = split_reference_text_for_authority(reference_text, split_config)
+        if not reference_chunks:
+            continue
+
+        selected = collect_asr_entries_for_reference(
+            asr_entries,
+            reference_entry,
+            used_indices,
+            next_reference_entry
+        )
+        if not selected and not output:
+            selected = [(index, entry) for index, entry in enumerate(asr_entries) if index not in used_indices]
+        if selected:
+            selected_indices = [index for index, _entry in selected]
+            selected_entries = [_entry for _index, _entry in selected]
+            if use_llm:
+                llm_entries = align_reference_authority_with_llm(
+                    selected_entries,
+                    reference_text,
+                    source_language=source_language,
+                    split_config=split_config,
+                )
+                if llm_entries:
+                    block_entries = clamp_reference_authority_timing(
+                        llm_entries,
+                        reference_entry,
+                        previous_end=subtitle_time_range(output[-1])[1] if output else None,
+                    )
+                    output.extend(finalize_reference_authority_block(
+                        block_entries,
+                        selected_entries,
+                        reference_entry,
+                        split_config,
+                        use_polish=False,
+                    ))
+                    used_indices.update(selected_indices)
+                    continue
+            fallback_entries = build_reference_authority_entries(
+                selected_entries,
+                reference_chunks,
+                reference_entry=reference_entry,
+                split_config=split_config,
+            )
+            block_entries = clamp_reference_authority_timing(
+                fallback_entries,
+                reference_entry,
+                previous_end=subtitle_time_range(output[-1])[1] if output else None,
+            )
+            output.extend(finalize_reference_authority_block(
+                block_entries,
+                selected_entries,
+                reference_entry,
+                split_config,
+                use_polish=True,
+            ))
+            used_indices.update(selected_indices)
+            continue
+
+        ref_time = subtitle_time_range(reference_entry)
+        if ref_time:
+            block_entries = build_reference_authority_entries(
+                [{"time": [ref_time[0], ref_time[1]], "zh": reference_text, "text": reference_text}],
+                reference_chunks
+            )
+            output.extend(finalize_reference_authority_block(
+                block_entries,
+                [{"time": [ref_time[0], ref_time[1]], "zh": reference_text, "text": reference_text}],
+                reference_entry,
+                split_config,
+                use_polish=True,
+            ))
+
+    if not output:
+        return normalize_final_subtitles(reference_subtitles)
+
+    output = merge_reference_continuations(output, reference_subtitles)
+    timing_issues = severe_subtitle_timing_quality_issues(output)
+    if timing_issues:
+        issue_summary = ", ".join(f"{index}:{reason}" for index, reason, _text in timing_issues[:3])
+        if use_llm:
+            print(f"   ⚠️ 参考文本权威字幕时间轴质量异常，改用确定性分配: {issue_summary}")
+            return build_reference_authority_subtitles(
+                asr_subtitles,
+                reference_subtitles,
+                split_config=split_config,
+                source_language=source_language,
+                use_llm=False,
+            )
+        print(f"   ⚠️ 确定性参考字幕时间轴仍异常，回退参考段时间轴: {issue_summary}")
+        return normalize_final_subtitles(reference_subtitles)
+
+    print(f"   ✅ 已按 ASR 句段时间轴套用参考文本权威字幕: {len(output)} 条")
+    return output
+
+
 def repair_subtitles_with_reference_terms(subtitles, reference_subtitles):
     if not subtitles or not reference_subtitles:
         return subtitles
@@ -1459,37 +3083,51 @@ def repair_subtitles_with_reference_terms(subtitles, reference_subtitles):
             continue
 
         current_text = str(entry.get("zh") or entry.get("text") or entry.get("en") or "").strip()
-        reference_text = select_reference_context_for_asr(
-            summarize_reference_context(reference_subtitles, start, end),
-            current_text
-        )
-        if not reference_text:
+        reference_context = summarize_reference_context(reference_subtitles, start, end)
+        if not reference_context:
             continue
+        reference_text = select_reference_context_for_asr(reference_context, current_text)
 
         original_zh = str(entry.get("zh") or "").strip()
         if original_zh:
             repaired_zh = apply_domain_corrections(
                 repair_reference_subtitle_text(original_zh, reference_text)
             )
+            if repaired_zh == original_zh and reference_context != reference_text:
+                repaired_zh = apply_domain_corrections(
+                    repair_reference_subtitle_text(original_zh, reference_context)
+                )
             if repaired_zh != original_zh:
                 entry["zh"] = repaired_zh
                 entry["text"] = repaired_zh
                 repaired_count += 1
-                continue
 
         original_text = str(entry.get("text") or "").strip()
         if original_text:
             repaired_text = apply_domain_corrections(
                 repair_reference_subtitle_text(original_text, reference_text)
             )
+            if repaired_text == original_text and reference_context != reference_text:
+                repaired_text = apply_domain_corrections(
+                    repair_reference_subtitle_text(original_text, reference_context)
+                )
             if repaired_text != original_text:
                 entry["text"] = repaired_text
                 if not entry.get("zh"):
                     entry["zh"] = repaired_text
                 repaired_count += 1
 
+        original_en = str(entry.get("en") or "").strip()
+        if original_en:
+            repaired_en = repair_reference_subtitle_text(original_en, reference_text)
+            if repaired_en == original_en and reference_context != reference_text:
+                repaired_en = repair_reference_subtitle_text(original_en, reference_context)
+            if repaired_en != original_en:
+                entry["en"] = repaired_en
+                repaired_count += 1
+
     if repaired_count:
-        print(f"   ✅ 已按参考文本补齐关键数字字幕: {repaired_count} 条")
+        print(f"   ✅ 已按参考文本补齐关键字幕项: {repaired_count} 条")
     return subtitles
 
 
@@ -1577,8 +3215,15 @@ def refine_subtitles_with_llm(subtitles, source_language="", batch_size=24):
             zh_text = str(item.get("zh") or "").strip()
             en_text = str(item.get("en") or "").strip()
             if zh_text:
-                subtitles[index]["zh"] = apply_domain_corrections(
-                    restore_preserved_terms(zh_text, placeholders)
+                restored_zh = restore_preserved_terms(zh_text, placeholders)
+                restored_en = restore_preserved_terms(en_text, placeholders)
+                original_en = str(subtitles[index].get("en") or "").strip()
+                original_text = str(subtitles[index].get("text") or "").strip()
+                subtitles[index]["zh"] = repair_subtitle_text_with_sources(
+                    restored_zh,
+                    original_text,
+                    restored_en,
+                    original_en,
                 )
             if en_text:
                 subtitles[index]["en"] = to_simplified_chinese(
@@ -1867,6 +3512,41 @@ def merge_reference_continuations(subtitles, reference_subtitles):
     return merged
 
 
+def normalize_final_subtitles(subtitles):
+    normalized = []
+    dropped_count = 0
+    for entry in subtitles or []:
+        if not isinstance(entry, dict):
+            dropped_count += 1
+            continue
+
+        time_range = entry.get("time")
+        if not isinstance(time_range, list) or len(time_range) < 2:
+            time_range = [entry.get("start"), entry.get("end")]
+        start = parse_seconds(time_range[0], milliseconds=False)
+        end = parse_seconds(time_range[1], milliseconds=False)
+        text = get_subtitle_primary_text(entry)
+        if start is None or end is None or end <= start or not text:
+            dropped_count += 1
+            continue
+
+        item = dict(entry)
+        item["time"] = [start, end]
+        if str(item.get("zh") or "").strip():
+            item["zh"] = str(item.get("zh")).strip()
+        if str(item.get("text") or "").strip():
+            item["text"] = str(item.get("text")).strip()
+        else:
+            item["text"] = text
+        if str(item.get("en") or "").strip():
+            item["en"] = str(item.get("en")).strip()
+        normalized.append(item)
+
+    if dropped_count:
+        print(f"   ✅ 已丢弃无效字幕片段: {dropped_count} 条")
+    return normalized
+
+
 def backfill_chinese_subtitles(subtitles, source_language="", batch_size=40):
     subtitles = normalize_subtitles_to_simplified(subtitles)
     targets = []
@@ -1928,7 +3608,8 @@ def backfill_chinese_subtitles(subtitles, source_language="", batch_size=40):
             if 0 <= index < len(subtitles) and zh_text:
                 placeholders = target_lookup.get(index, {}).get("placeholders") or {}
                 restored_text = restore_preserved_terms(zh_text, placeholders)
-                subtitles[index]["zh"] = apply_domain_corrections(restored_text)
+                source_text = str(target_lookup.get(index, {}).get("source_text") or "").strip()
+                subtitles[index]["zh"] = repair_subtitle_text_with_sources(restored_text, source_text)
                 translated_count += 1
 
     print(f"   ✅ 已补全中文字幕: {translated_count}/{len(targets)}")
@@ -2055,6 +3736,7 @@ def main():
     parser.add_argument("--force-english-rescue", action="store_true", help="Always run an extra English rescue transcription pass.")
     parser.add_argument("--translate-subtitles", action="store_true", help="Backfill Chinese subtitles with the configured text LLM.")
     parser.add_argument("--refine-subtitles", action="store_true", help="Run an LLM subtitle refinement pass without changing timing.")
+    parser.add_argument("--reference-text-authority", action="store_true", help="Use ASR only for timing and keep reference subtitles as the final subtitle text authority.")
     args = parser.parse_args()
     input_video = args.input
     audio_json_path = args.audio_json
@@ -2144,10 +3826,22 @@ def main():
 
     if not raw_segments:
         print("Whisper 未能识别出任何有效文本。")
-        final_subtitles = []
+        if args.reference_text_authority and reference_subtitles:
+            print("   -> 未获得 ASR 句段，已回退使用参考字幕时间轴与文本。")
+            final_subtitles = normalize_final_subtitles(reference_subtitles)
+        else:
+            final_subtitles = []
     else:
         final_subtitles = build_raw_subtitles(raw_segments, detected_language)
-        if reference_subtitles:
+        if args.reference_text_authority and reference_subtitles:
+            print("   -> 正在按新 ASR 句段时间轴套用参考口播稿文本。")
+            final_subtitles = build_reference_authority_subtitles(
+                final_subtitles,
+                reference_subtitles,
+                split_config,
+                source_language=detected_language,
+            )
+        elif reference_subtitles:
             try:
                 print("   -> 正在结合参考字幕与 ASR 时间轴进行对齐。")
                 final_subtitles = align_subtitles_with_reference(final_subtitles, reference_subtitles, detected_language)
@@ -2168,21 +3862,21 @@ def main():
         else:
             print("   -> 跳过 LLM 字幕精修与翻译，直接使用 ASR 原始文本。")
 
-    if reference_subtitles and final_subtitles:
+    if reference_subtitles and final_subtitles and not args.reference_text_authority:
         final_subtitles = merge_reference_continuations(final_subtitles, reference_subtitles)
 
-    if args.refine_subtitles and final_subtitles:
+    if args.refine_subtitles and final_subtitles and not args.reference_text_authority:
         try:
             print("   -> 正在调用 LLM 精修字幕文本，保留 ASR 时间轴。")
             final_subtitles = refine_subtitles_with_llm(final_subtitles, detected_language)
         except Exception as err:
             print(f"   ⚠️ 大模型字幕精修失败，继续使用当前字幕: {err}")
 
-    if reference_subtitles and final_subtitles:
+    if reference_subtitles and final_subtitles and not args.reference_text_authority:
         final_subtitles = repair_subtitles_with_reference_terms(final_subtitles, reference_subtitles)
         final_subtitles = merge_reference_continuations(final_subtitles, reference_subtitles)
 
-    final_subtitles = normalize_subtitles_to_simplified(final_subtitles)
+    final_subtitles = normalize_final_subtitles(normalize_subtitles_to_simplified(final_subtitles))
     director_data = [{"start": seg["time"][0], "end": seg["time"][1], "text": seg["text"]} for seg in final_subtitles]
     with open(audio_json_path, "w", encoding="utf-8") as f:
         json.dump(director_data, f, ensure_ascii=False, indent=2)

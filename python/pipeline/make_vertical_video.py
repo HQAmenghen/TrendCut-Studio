@@ -12,8 +12,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from script_protocol import emit_error, emit_result, emit_stage
+from load_env import load_project_env
 from llm_client import create_llm_client, generate_content, get_text_llm_provider
-from skills.prompt_skill_loader import load_prompt_text
+try:
+    from skills.prompt_skill_loader import load_prompt_text
+except ImportError:
+    from pipeline.skills.prompt_skill_loader import load_prompt_text
 try:
     from subtitle_terms import mask_preserved_terms, restore_preserved_terms, to_simplified_chinese
 except ImportError:
@@ -21,6 +25,7 @@ except ImportError:
 
 # 终极防崩溃补丁
 sys.stdout.reconfigure(encoding='utf-8')
+load_project_env(__file__)
 
 # ================== Hardcoded Configs ==================
 WIDTH = 1080
@@ -120,6 +125,37 @@ def tokenize_text_units(text: str) -> list[str]:
     tokens = re.findall(r"[A-Za-z0-9%$#@&+\-_/.:]+|\s+|.", text)
     return tokens or [text]
 
+
+def join_text_units(tokens: list[str]) -> str:
+    output = ""
+    for token in tokens:
+        if not token:
+            continue
+        if not output:
+            output = token
+            continue
+        if re.search(r"[A-Za-z0-9%$)]$", output) and re.match(r"^[A-Za-z0-9$#@]", token):
+            output += " "
+        elif re.search(r"[A-Za-z0-9%$)]\s+$", output) and re.match(r"^[，。！？；：、,.!?;:]", token):
+            output = output.rstrip()
+        output += token
+    return output
+
+
+def repair_english_spacing(text: str) -> str:
+    sample = str(text or "").strip()
+    if not sample:
+        return ""
+    sample = re.sub(r"\s+", " ", sample)
+    sample = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", sample)
+    sample = re.sub(r"\b(Once|When|If|As|Because|After|Before|While|Since|Until|Though|Although)(?=[a-z]{2,})", r"\1 ", sample)
+    sample = re.sub(r"\b(it|that|there|here|what|who|which|let|don)(?=s\b)", r"\1'", sample, flags=re.IGNORECASE)
+    sample = re.sub(r"\b(current|future|present|recent|major|minor|market|capital|institutional|regulatory)(?=[a-z]{4,}\b)", r"\1 ", sample, flags=re.IGNORECASE)
+    sample = re.sub(r"\b(effect|inflow|gain|gains|fund|funds|price|prices|market|markets|capital|capitals)(?=[a-z]{2,}\b)", r"\1 ", sample, flags=re.IGNORECASE)
+    sample = re.sub(r"\s+([,.!?;:])", r"\1", sample)
+    sample = re.sub(r"([,.!?;:])(?=[A-Za-z0-9])", r"\1 ", sample)
+    return re.sub(r"\s+", " ", sample).strip()
+
 def fit_single_line(text: str, font: ImageFont.FreeTypeFont, max_width: int, **kwargs) -> str:
     stripped = text.strip()
     if not stripped:
@@ -211,7 +247,11 @@ def score_line_split(first: str, second: str, font: ImageFont.FreeTypeFont, max_
     return hierarchy_penalty + short_tail_penalty + english_break_penalty
 
 def rebalance_two_lines(lines: list[str], font: ImageFont.FreeTypeFont, max_width: int, **kwargs) -> list[str]:
-    compact = "".join(line.strip() for line in lines if line.strip())
+    raw_lines = [line.strip() for line in lines if line.strip()]
+    if any(re.search(r"[A-Za-z0-9]", line) for line in raw_lines):
+        compact = join_text_units(tokenize_text_units(" ".join(raw_lines)))
+    else:
+        compact = "".join(raw_lines)
     if not compact:
         return lines
 
@@ -467,7 +507,7 @@ def translate_subtitles_batch(subtitles: list[dict]):
                 en = res.get("en")
                 if 0 <= idx < len(subtitles) and en:
                     placeholders = target_lookup.get(idx, {}).get("placeholders") or {}
-                    restored_en = restore_preserved_terms(str(en).strip(), placeholders)
+                    restored_en = repair_english_spacing(restore_preserved_terms(str(en).strip(), placeholders))
                     subtitles[idx]["en"] = restored_en
             print(f"   ✅ Successfully translated {len(results)} items.")
     except Exception as e:
@@ -510,6 +550,9 @@ def split_subtitle_text_chunks(text: str, min_visible_chars: int = 4) -> list[st
             compacted[-1] = f"{compacted[-1]}{chunk}"
         else:
             compacted.append(chunk)
+    if len(compacted) > 1 and visible_text_len(compacted[0]) < min_visible_chars:
+        compacted[1] = f"{compacted[0]}{compacted[1]}"
+        compacted = compacted[1:]
     return compacted
 
 
@@ -582,6 +625,49 @@ def deduplicate_subtitles(subtitles: list[dict]):
             current = next_sub
     unique.append(current)
     return unique
+
+
+def clamp_subtitle_timeline_for_render(subtitles: list[dict], min_duration: float = 0.12) -> list[dict]:
+    valid = []
+    for entry in subtitles or []:
+        if not isinstance(entry, dict):
+            continue
+        time_data = entry.get("time")
+        if not isinstance(time_data, list) or len(time_data) < 2:
+            time_data = [entry.get("start"), entry.get("end")]
+        try:
+            start = float(time_data[0])
+            end = float(time_data[1])
+        except (TypeError, ValueError):
+            continue
+        text = str(entry.get("zh") or entry.get("text") or entry.get("en") or "").strip()
+        if not text or end <= start:
+            continue
+        item = dict(entry)
+        item["time"] = [round(start, 3), round(end, 3)]
+        valid.append(item)
+
+    valid.sort(key=lambda item: (item["time"][0], item["time"][1]))
+    clamped = []
+    for entry in valid:
+        if clamped:
+            previous = clamped[-1]
+            previous_start, previous_end = previous["time"]
+            current_start = entry["time"][0]
+            if previous_end > current_start:
+                previous["time"] = [previous_start, round(max(previous_start, current_start), 3)]
+                if previous["time"][1] - previous["time"][0] < min_duration:
+                    clamped.pop()
+        clamped.append(entry)
+    return clamped
+
+
+def prepare_subtitles_for_render(subtitles: list[dict], split_long: bool = False):
+    subtitles = translate_subtitles_batch(subtitles)
+    if split_long:
+        subtitles = split_long_subtitles(subtitles, max_chars=24)
+    return clamp_subtitle_timeline_for_render(deduplicate_subtitles(subtitles))
+
 
 
 def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min_size: int, zh_max_lines: int, en_font_size: int, en_min_size: int, en_max_lines: int):
@@ -731,6 +817,11 @@ def main():
     parser.add_argument("--english-font-size", type=int, default=DEFAULT_EN_FONT_SIZE)
     parser.add_argument("--english-min-size", type=int, default=DEFAULT_EN_MIN_SIZE)
     parser.add_argument("--english-max-lines", type=int, default=DEFAULT_EN_MAX_LINES)
+    parser.add_argument(
+        "--split-long-subtitles",
+        action="store_true",
+        help="Compatibility option: split long subtitles during render. Off by default so ASR owns timing.",
+    )
     args = parser.parse_args()
 
     base = Path.cwd()
@@ -767,10 +858,7 @@ def main():
             subtitles = []
 
     if subtitles:
-        # [NEW] 自动补全翻译、长句子自动拆分与强力去重逻辑
-        subtitles = translate_subtitles_batch(subtitles)
-        subtitles = split_long_subtitles(subtitles, max_chars=24)
-        subtitles = deduplicate_subtitles(subtitles)
+        subtitles = prepare_subtitles_for_render(subtitles, split_long=args.split_long_subtitles)
 
     print("\n--- [STEP 2] Generating assets ---")
     emit_stage("vertical_assets", "正在生成竖屏背景与字幕卡")

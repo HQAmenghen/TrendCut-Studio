@@ -71,4 +71,17 @@ describe('material-driven task registry source metadata', () => {
       postUrl: 'https://x.com/BMNRBullz/status/2052826049046536201'
     });
   });
+
+  test('versions recovered final video URL by file mtime', () => {
+    const outputDir = 'material_done';
+    const outputPath = path.join(projectsDir, outputDir);
+    fs.mkdirSync(outputPath, { recursive: true });
+    fs.writeFileSync(path.join(outputPath, 'output_final.mp4'), 'video', 'utf8');
+
+    const registry = createMaterialDrivenTaskRegistry({ PROJECTS_DIR: projectsDir });
+    const task = registry.resolveTask('job-done', outputDir);
+    const payload = registry.buildStatusPayload(task);
+
+    expect(payload.task.videoUrl).toMatch(new RegExp(`^/projects/${outputDir}/output_final\\.mp4\\?v=\\d+$`));
+  });
 });

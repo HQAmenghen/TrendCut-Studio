@@ -38,9 +38,24 @@ function readJsonSafe(filePath, fallback = null) {
   }
 }
 
+function buildVersionedProjectFileUrl(projectDir, filePath, fileName = 'output_final.mp4') {
+  const safeProjectDir = String(projectDir || '').trim();
+  if (!safeProjectDir || !filePath || !fs.existsSync(filePath)) {
+    return '';
+  }
+
+  try {
+    const version = Math.max(0, Math.floor(fs.statSync(filePath).mtimeMs));
+    return `/projects/${encodeURIComponent(safeProjectDir)}/${encodeURIComponent(fileName)}?v=${version}`;
+  } catch (_err) {
+    return `/projects/${encodeURIComponent(safeProjectDir)}/${encodeURIComponent(fileName)}`;
+  }
+}
+
 module.exports = {
   nowIso,
   formatBytes,
   firstExistingFile,
-  readJsonSafe
+  readJsonSafe,
+  buildVersionedProjectFileUrl
 };

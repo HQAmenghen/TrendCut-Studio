@@ -212,7 +212,21 @@
                           <strong>{{ m.partitionLabel }} Top {{ m.sourceRank }}</strong>
                         </div>
 
-                        <label class="plan-field plan-field-account">
+                        <label class="plan-field plan-field-platforms">
+                          <span>目标平台</span>
+                          <div class="plan-platform-picks">
+                            <label v-for="platform in center.autoPilotPlatformDefs" :key="`${mode.key}_${m.slot}_${platform.key}`">
+                              <input
+                                type="checkbox"
+                                :checked="m.platforms.includes(platform.key)"
+                                @change="center.toggleAutoPilotModePlatform(mode.key, m.slot, platform.key, $event.target.checked)"
+                              />
+                              {{ platform.label }}
+                            </label>
+                          </div>
+                        </label>
+
+                        <label v-if="m.platforms.includes('wechatChannels')" class="plan-field plan-field-account">
                           <span>发布账号</span>
                           <select
                             class="input-dark"
@@ -224,6 +238,10 @@
                             </option>
                           </select>
                         </label>
+                        <div v-else class="plan-field plan-field-account">
+                          <span>发布账号</span>
+                          <div class="plan-static-field">无需视频号账号</div>
+                        </div>
 
                         <label class="plan-field">
                           <span>榜单分区</span>
@@ -310,6 +328,7 @@
                     </div>
                     <div class="autopilot-task-meta">
                       <span>{{ task.pipelineLabel }}</span>
+                      <span v-if="task.platformLabels?.length">{{ task.platformLabels.join(' / ') }}</span>
                       <span v-if="task.slot">计划 {{ task.slot }}</span>
                       <span v-if="task.partitionLabel">{{ task.partitionLabel }} Top {{ task.sourceRank || task.rank }}</span>
                       <span v-else-if="task.rank">Top {{ task.rank }}</span>
@@ -822,7 +841,7 @@
                   <div class="summary-card job-detail-card">
                     <div class="summary-kicker">当前标签</div>
                     <div class="summary-title">{{ (job.publishData?.tags || []).length ? job.publishData.tags.join(' / ') : '未设置系统标签' }}</div>
-                    <div class="job-sub">账号：{{ wechatTask(job)?.accountLabel || wechatTask(job)?.accountId || '未指定账号' }}</div>
+                    <div class="job-sub">平台：{{ selectedPlatformLabels(job) }}</div>
                   </div>
                 </div>
 
@@ -830,23 +849,30 @@
                   {{ job.publishData.description }}
                 </div>
 
-                <div v-if="wechatTask(job)" class="wechat-box">
+                <div
+                  v-for="task in platformTasks(job)"
+                  :key="`${job.id}_${task.platform}`"
+                  class="wechat-box platform-task-box"
+                >
                   <div class="wechat-head">
-                    <strong>微信视频号</strong>
-                    <span>{{ wechatTask(job)?.status || wechatTask(job)?.runtime?.state || 'unknown' }}</span>
+                    <strong>{{ platformLabel(task.platform) }}</strong>
+                    <span>{{ task.status || task.runtime?.state || 'unknown' }}</span>
                   </div>
-                  <div class="job-sub">发布账号：{{ wechatTask(job)?.accountLabel || wechatTask(job)?.accountId || '未指定账号' }}</div>
-                  <div class="bar mt"><span :style="{ width: `${center.getWechatProgress(job)}%` }"></span></div>
-                  <div class="job-sub">{{ wechatTask(job)?.runtime?.lastMessage || wechatTask(job)?.description || '等待执行...' }}</div>
-                  <div class="job-actions">
-                    <button type="button" class="ghost-btn compact-btn" @click="center.runWechat(job, 'draft')" :disabled="!center.canRunWechat(job)">自动填充到待发布页</button>
-                    <button type="button" class="ghost-btn compact-btn" @click="center.runWechat(job, 'publish')" :disabled="!center.canRunWechat(job)">自动上传并发表</button>
-                    <button type="button" class="ghost-btn compact-btn" @click="center.retryWechat(job)">失败后重试</button>
-                    <button type="button" class="ghost-btn compact-btn" @click="center.cancelWechat(job)">取消任务</button>
+                  <div v-if="task.accountLabel || task.accountId" class="job-sub">发布账号：{{ task.accountLabel || task.accountId }}</div>
+                  <div class="bar mt"><span :style="{ width: `${center.getTaskProgress(job, task.platform)}%` }"></span></div>
+                  <div class="job-sub">{{ task.runtime?.lastMessage || task.description || task.guide || '等待执行...' }}</div>
+                  <div v-if="task.validation?.missingFieldLabels?.length" class="summary-note compact-note">
+                    缺少配置：{{ task.validation.missingFieldLabels.join('，') }}
                   </div>
-                  <details v-if="wechatTask(job)?.runtime?.logs?.length" class="log-box">
+                  <div v-if="task.automationModes?.length" class="job-actions">
+                    <button type="button" class="ghost-btn compact-btn" @click="center.runPlatform(job, task.platform, 'draft')" :disabled="!center.canRunPlatform(job, task.platform)">打开并填充到待发布页</button>
+                    <button type="button" class="ghost-btn compact-btn" @click="center.runPlatform(job, task.platform, 'publish')" :disabled="!center.canRunPlatform(job, task.platform)">自动上传并发表</button>
+                    <button type="button" class="ghost-btn compact-btn" @click="center.retryPlatform(job, task.platform)">失败后重试</button>
+                    <button type="button" class="ghost-btn compact-btn" @click="center.cancelPlatform(job, task.platform)">取消任务</button>
+                  </div>
+                  <details v-if="task.runtime?.logs?.length" class="log-box">
                     <summary>查看运行日志</summary>
-                    <pre>{{ wechatTask(job)?.runtime?.logs?.slice(-18).join('\n') }}</pre>
+                    <pre>{{ task.runtime?.logs?.slice(-18).join('\n') }}</pre>
                   </details>
                 </div>
 
@@ -1109,6 +1135,13 @@ const hasIssue = (platformKey) => !!props.center.config.value?.[platformKey]?.en
 const platformTip = (platformKey) => platformTips[platformKey] || '平台接入说明';
 const platformLabel = (key) => props.center.platformDefs.find((platform) => platform.key === key)?.label || key;
 const wechatTask = (job) => props.center.getTask(job, 'wechatChannels');
+const platformTasks = (job) => Array.isArray(job?.platformTasks) ? job.platformTasks : [];
+const selectedPlatformLabels = (job) => {
+  const selected = Array.isArray(job?.selectedPlatforms) && job.selectedPlatforms.length
+    ? job.selectedPlatforms
+    : platformTasks(job).map((task) => task.platform);
+  return selected.length ? selected.map(platformLabel).join(' / ') : '未选择平台';
+};
 
 function formatDateTime(value) {
   if (!value) return '-';
@@ -1390,7 +1423,7 @@ function selfCheckStatusLabel(status) {
   border-radius: 16px;
   display: grid;
   gap: 10px;
-  grid-template-columns: 118px minmax(150px, 1.25fr) minmax(118px, 0.9fr) 108px 112px 34px;
+  grid-template-columns: 118px minmax(160px, 1.1fr) minmax(150px, 1.15fr) minmax(118px, 0.9fr) 108px 112px 34px;
   padding: 12px;
 }
 
@@ -1431,6 +1464,39 @@ function selfCheckStatusLabel(status) {
 .plan-field .input-dark {
   border-radius: 12px;
   font-size: 14px;
+  min-height: 46px;
+  padding: 10px 12px;
+}
+
+.plan-platform-picks {
+  align-items: center;
+  background: var(--input-bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 46px;
+  padding: 8px 10px;
+}
+
+.plan-platform-picks label {
+  align-items: center;
+  color: var(--text);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.plan-static-field {
+  align-items: center;
+  background: var(--input-bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
   min-height: 46px;
   padding: 10px 12px;
 }
@@ -2018,6 +2084,10 @@ function selfCheckStatusLabel(status) {
   background: var(--card-subtle-bg);
 }
 
+.platform-task-box + .platform-task-box {
+  margin-top: 12px;
+}
+
 .sticky-summary {
   position: sticky;
   top: 20px;
@@ -2294,6 +2364,7 @@ function selfCheckStatusLabel(status) {
   }
 
   .plan-slot,
+  .plan-field-platforms,
   .plan-field-account {
     grid-column: 1 / -1;
   }

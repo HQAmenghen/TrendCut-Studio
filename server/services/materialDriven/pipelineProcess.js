@@ -11,7 +11,7 @@ const {
   parseAndEmitProgress,
   summarizeFailureMessage
 } = require('./events');
-const { nowIso } = require('./utils');
+const { buildVersionedProjectFileUrl, nowIso } = require('./utils');
 
 const SCRIPT_PATH = path.join(__dirname, '../../../python/pipeline/run_material_driven.py');
 
@@ -50,8 +50,9 @@ function markTaskWaitingForAvatar(jobId, task) {
 function markTaskCompleted(jobId, task, options = {}) {
   const outputDir = path.basename(task.outputPath);
   const shouldCheckVideo = options.checkVideoExists !== false;
-  const videoUrl = !shouldCheckVideo || fs.existsSync(path.join(task.outputPath, 'output_final.mp4'))
-    ? `/projects/${outputDir}/output_final.mp4`
+  const finalVideoPath = path.join(task.outputPath, 'output_final.mp4');
+  const videoUrl = !shouldCheckVideo || fs.existsSync(finalVideoPath)
+    ? buildVersionedProjectFileUrl(outputDir, finalVideoPath)
     : '';
   task.status = 'completed';
   task.progress = 100;
@@ -239,6 +240,23 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
   function startRetryPipeline(jobId, task, step) {
     if (task.process) {
       task.process.kill();
+    }
+
+    const requestedStep = Number(step);
+    const aimanPath = path.join(task.outputPath, 'aiman.mp4');
+    if (task.autoGenerate && requestedStep === 6 && !fs.existsSync(aimanPath)) {
+      task.lastStdout = '';
+      task.lastStderr = '';
+      task.process = null;
+      task.status = 'generating_avatar';
+      task.currentStep = 6;
+      task.statusText = '重试步骤6：生成数字人';
+      task.error = '';
+      task.updatedAt = nowIso();
+      addTaskLog(task, '步骤6缺少 aiman.mp4，直接进入数字人生成/恢复链路', 'info');
+      emitTaskEvent(jobId, 'status', { message: '重试步骤6：生成数字人...' });
+      runAutoAvatarThenContinue(jobId, task, '重试自动生成数字人失败');
+      return null;
     }
 
     const materialPath = path.join(task.outputPath, 'material.mp4');

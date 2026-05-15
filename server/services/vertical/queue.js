@@ -12,11 +12,18 @@ const {
   createFailureSummaryFromPythonError,
   createFailureSummaryFromError
 } = require('../../core/failureSummary');
+const {
+  normalizeAvatarSegmentSubtitles,
+  normalizeExecutionPlanSubtitles
+} = require('./taskImport');
+
+const MATERIAL_TASK_DIR_PATTERN = /^material_[A-Za-z0-9_.-]+$/;
 
 function createVerticalQueueService(deps) {
   const {
     baseDir,
     pipelineDir,
+    projectsDir,
     verticalQueueRoot,
     verticalPublicDir,
     taskStore,
@@ -47,7 +54,28 @@ function createVerticalQueueService(deps) {
   function isPublicHttpUrl(value) {
     try {
       const parsed = new URL(String(value || '').trim());
-      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return false;
+      }
+      const hostname = String(parsed.hostname || '').toLowerCase();
+      if (
+        hostname === 'localhost' ||
+        hostname === '0.0.0.0' ||
+        hostname === '::1' ||
+        hostname === '[::1]' ||
+        hostname.startsWith('127.')
+      ) {
+        return false;
+      }
+      if (/^10\./.test(hostname) || /^192\.168\./.test(hostname)) {
+        return false;
+      }
+      const private172 = hostname.match(/^172\.(\d+)\./);
+      if (private172) {
+        const secondOctet = Number(private172[1]);
+        if (secondOctet >= 16 && secondOctet <= 31) return false;
+      }
+      return true;
     } catch (_err) {
       return false;
     }
@@ -83,6 +111,171 @@ function createVerticalQueueService(deps) {
 
   function hasUsableSubtitleContent(subtitles) {
     return Array.isArray(subtitles) && subtitles.some((item) => getSubtitleText(item));
+  }
+
+  function pickString(...values) {
+    for (const value of values) {
+      const text = String(value || '').trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
+  function normalizeExistingSubtitles(payload) {
+    if (!Array.isArray(payload) || payload.length === 0) return [];
+    return payload
+      .map((item) => {
+        const time = Array.isArray(item?.time) ? item.time : [item?.start, item?.end];
+        const start = Number(time?.[0]);
+        const end = Number(time?.[1]);
+        const zh = pickString(item?.zh, item?.text, item?.subtitle_text, item?.subtitle);
+        const en = pickString(item?.en, item?.english, item?.subtitle_en);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || (!zh && !en)) {
+          return null;
+        }
+        const normalized = { time: [start, end] };
+        if (zh) {
+          normalized.zh = zh;
+          normalized.text = zh;
+        } else if (en) {
+          normalized.text = en;
+        }
+        if (en) normalized.en = en;
+        return normalized;
+      })
+      .filter(Boolean);
+  }
+
+  function extractMaterialProjectDir(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    let sample = raw;
+    try {
+      sample = new URL(raw).pathname || raw;
+    } catch (_err) {}
+    try {
+      sample = decodeURIComponent(sample);
+    } catch (_err) {}
+    sample = sample.split('?')[0].split('#')[0];
+
+    for (const part of sample.split(/[\\/]+/)) {
+      if (MATERIAL_TASK_DIR_PATTERN.test(part)) return part;
+    }
+    const baseName = path.basename(sample);
+    return MATERIAL_TASK_DIR_PATTERN.test(baseName) ? baseName : '';
+  }
+
+  function resolveMaterialProjectPath(job) {
+    const configuredProjectsDir = projectsDir || path.join(baseDir, 'projects');
+    const candidates = [
+      job.sourceTaskDir,
+      job.materialTaskDir,
+      job.sourceMaterialTaskDir,
+      job.renderOptions?.sourceTaskDir,
+      job.renderOptions?.materialTaskDir,
+      job.renderOptions?.sourceMaterialTaskDir,
+      job.renderOptions?.originalVideoPath,
+      job.videoUrl
+    ];
+    const taskDir = candidates.map(extractMaterialProjectDir).find(Boolean) || '';
+    if (!taskDir) {
+      return '';
+    }
+
+    const root = path.resolve(configuredProjectsDir);
+    const resolved = path.resolve(root, taskDir);
+    const rootKey = root.toLowerCase();
+    const resolvedKey = resolved.toLowerCase();
+    if (resolvedKey !== rootKey && !resolvedKey.startsWith(`${rootKey}${path.sep}`)) return '';
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return '';
+    job.materialTaskDir = taskDir;
+    job.sourceTaskDir = job.sourceTaskDir || taskDir;
+    return resolved;
+  }
+
+  function readMaterialReferenceSubtitles(job) {
+    const explicit = normalizeExistingSubtitles(job.referenceSubtitles);
+    if (explicit.length > 0) {
+      return {
+        subtitles: explicit,
+        source: 'job.referenceSubtitles'
+      };
+    }
+
+    const materialProjectPath = resolveMaterialProjectPath(job);
+    if (!materialProjectPath) return null;
+
+    const candidates = [
+      {
+        fileName: 'aiman_subtitles.json',
+        normalize: normalizeExistingSubtitles
+      },
+      {
+        fileName: 'execution_plan.json',
+        normalize: (payload) => normalizeExecutionPlanSubtitles(payload)
+          .map((item) => ({ ...item, text: item.zh || item.text || '' }))
+      },
+      {
+        fileName: 'avatar_segments.json',
+        normalize: (payload) => normalizeAvatarSegmentSubtitles(payload)
+          .map((item) => ({ ...item, text: item.zh || item.text || '' }))
+      },
+      {
+        fileName: 'narration.json',
+        normalize: (payload) => {
+          const sections = Array.isArray(payload?.script_sections)
+            ? payload.script_sections.map((section) => pickString(section?.text)).filter(Boolean)
+            : [];
+          const script = pickString(payload?.full_text, payload?.fullText);
+          const lines = sections.length ? sections : (script ? [script] : []);
+          if (!lines.length) return [];
+
+          const totalChars = Math.max(1, lines.reduce((sum, text) => sum + text.length, 0));
+          const configuredDuration = Number(payload?.target_duration_sec);
+          const totalDuration = Number.isFinite(configuredDuration) && configuredDuration > 0
+            ? configuredDuration
+            : Math.max(lines.length * 6, Math.ceil(totalChars / 4));
+          let cursor = 0;
+          return lines.map((text, index) => {
+            const isLast = index === lines.length - 1;
+            const duration = isLast
+              ? Math.max(0.4, totalDuration - cursor)
+              : Math.max(0.4, totalDuration * (text.length / totalChars));
+            const start = Number(cursor.toFixed(2));
+            const end = Number((cursor + duration).toFixed(2));
+            cursor += duration;
+            return { time: [start, end], zh: text, text };
+          });
+        }
+      }
+    ];
+
+    for (const candidate of candidates) {
+      const payload = readJsonSafe(path.join(materialProjectPath, candidate.fileName), null);
+      const subtitles = candidate.normalize(payload);
+      if (subtitles.length > 0) {
+        return {
+          subtitles,
+          source: candidate.fileName
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function writeReferenceSubtitlesForJob(job, jobDir) {
+    const reference = readMaterialReferenceSubtitles(job);
+    if (!reference?.subtitles?.length) return '';
+
+    const referencePath = path.join(jobDir, 'reference_subtitles.json');
+    writeJsonFile(referencePath, reference.subtitles);
+    job.referenceSubtitleSource = job.materialTaskDir
+      ? `${job.materialTaskDir}/${reference.source}`
+      : reference.source;
+    appendLog(job, `已加载参考口播字幕用于 ASR 校准: ${job.referenceSubtitleSource}`);
+    return referencePath;
   }
 
   function ensureAsciiSafeReplacer(_key, value) {
@@ -305,12 +498,14 @@ function createVerticalQueueService(deps) {
     }
 
     updateStage('transcribe', { status: 'transcribing', progress: 35, message: '正在执行 ASR 自动打轴...' }, '进入 ASR 自动打轴阶段');
+    const referenceSubtitlesPath = writeReferenceSubtitlesForJob(job, jobDir);
 
     // 写入任务协议输入（可选，脚本可以选择使用或忽略）
     try {
       const asrTaskInput = createTaskInput(job.id, 'asr', {
         inputFile: sourceVideoPath,
-        allowNoAudio: true
+        allowNoAudio: true,
+        referenceSubtitlesFile: referenceSubtitlesPath || undefined
       }, jobDir);
       writeTaskInput(jobDir, asrTaskInput);
     } catch (_err) {
@@ -318,6 +513,9 @@ function createVerticalQueueService(deps) {
     }
 
     const asrArgs = ['--input', sourceVideoPath, '--allow-no-audio'];
+    if (referenceSubtitlesPath) {
+      asrArgs.push('--reference-subtitles-json', referenceSubtitlesPath, '--reference-text-authority');
+    }
     if (isPublicHttpUrl(job.videoUrl)) {
       asrArgs.push('--file-url', String(job.videoUrl).trim());
     }
@@ -496,6 +694,8 @@ function createVerticalQueueService(deps) {
       sourceUrl: job.postUrl || '',
       videoUrl: job.videoUrl || '',
       title: finalTitle,
+      sourceMaterialTaskDir: job.materialTaskDir || job.sourceTaskDir || '',
+      referenceSubtitleSource: job.referenceSubtitleSource || '',
       subtitles: Array.isArray(subtitlesData) ? subtitlesData : [],
       sourceSummary: String(job.summary || '').trim(),
       regeneration: renderOptions.isRegeneration ? {
@@ -692,6 +892,9 @@ function createVerticalQueueService(deps) {
         videoUrl: item.videoUrl,
         videoLabel: slugifyText(item.author || item.postId || item.title || 'video'),
         renderOptions: item.renderOptions || {},
+        sourceTaskDir: item.sourceTaskDir || item.materialTaskDir || '',
+        materialTaskDir: item.materialTaskDir || item.sourceTaskDir || '',
+        referenceSubtitles: Array.isArray(item.referenceSubtitles) ? item.referenceSubtitles : [],
         // 保存原始参数用于恢复
         originalItem: {
           sourceType: item.sourceType,
@@ -704,6 +907,9 @@ function createVerticalQueueService(deps) {
           title: item.title,
           summary: item.summary,
           videoUrl: item.videoUrl,
+          sourceTaskDir: item.sourceTaskDir,
+          materialTaskDir: item.materialTaskDir,
+          referenceSubtitles: Array.isArray(item.referenceSubtitles) ? item.referenceSubtitles : [],
           renderOptions: item.renderOptions
         }
       });
@@ -734,6 +940,9 @@ function createVerticalQueueService(deps) {
       title: String(item.title || '').trim(),
       summary: String(item.summary || '').trim(),
       videoUrl: item.videoUrl,
+      sourceTaskDir: item.sourceTaskDir || item.materialTaskDir || '',
+      materialTaskDir: item.materialTaskDir || item.sourceTaskDir || '',
+      referenceSubtitles: Array.isArray(item.referenceSubtitles) ? item.referenceSubtitles : [],
       videoLabel: slugifyText(item.author || item.postId || item.title || 'video'),
       renderOptions: item.renderOptions || {}
     };

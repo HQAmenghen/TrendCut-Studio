@@ -228,14 +228,28 @@ function buildPublishTask(platformKey, publishData, assetUrl, platformConfig, pl
         case 'douyin':
             return {
                 ...common,
-                guide: '需要抖音开放平台 clientKey / clientSecret / openId / accessToken，并按视频发布接口上传素材。',
-                requiredFields: ['clientKey', 'clientSecret', 'openId', 'accessToken']
+                status: 'rpa_available',
+                guide: '当前通过抖音创作者服务平台的浏览器 RPA 路径打开上传页并尝试填充视频、标题和文案；如页面结构变化，任务会停在浏览器中供人工确认。',
+                requiredFields: [],
+                automationModes: ['draft', 'publish'],
+                runtime: {
+                    state: 'idle',
+                    lastMessage: '',
+                    updatedAt: null
+                }
             };
         case 'xiaohongshu':
             return {
                 ...common,
-                guide: '需要小红书企业或合作接口的应用配置与发布凭证，当前先保留配置和发布文案。',
-                requiredFields: ['appId', 'appSecret', 'accessToken']
+                status: 'rpa_available',
+                guide: '当前通过小红书创作服务平台的浏览器 RPA 路径打开发布页并尝试填充视频、标题和文案；如页面结构变化，任务会停在浏览器中供人工确认。',
+                requiredFields: [],
+                automationModes: ['draft', 'publish'],
+                runtime: {
+                    state: 'idle',
+                    lastMessage: '',
+                    updatedAt: null
+                }
             };
         case 'x':
             return {
@@ -312,12 +326,16 @@ const wechatRpaService = createWechatRpaService({
     fs,
     path,
     spawn,
+    stopProcessTree,
     runPythonScriptCancellable,
     slugifyText,
     publishCenterDir: paths.PUBLISH_CENTER_DIR,
     wechatRpaScript: paths.WECHAT_RPA_SCRIPT,
     wechatRpaTaskDir: paths.WECHAT_RPA_TASK_DIR,
     wechatRpaProfileRoot: paths.WECHAT_RPA_PROFILE_ROOT,
+    platformRpaScript: paths.PLATFORM_RPA_SCRIPT,
+    platformRpaTaskDir: paths.PLATFORM_RPA_TASK_DIR,
+    platformRpaProfileRoot: paths.PLATFORM_RPA_PROFILE_ROOT,
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
@@ -329,7 +347,11 @@ const {
     startWechatRpa,
     retryWechatRpa,
     cancelWechatRpa,
-    checkWechatLogin
+    startPlatformRpa,
+    retryPlatformRpa,
+    cancelPlatformRpa,
+    checkWechatLogin,
+    openWechatContentManager
 } = wechatRpaService;
 
     const systemHandlers = createSystemHandlers({
@@ -550,6 +572,7 @@ const {
     verticalQueueService = createVerticalQueueService({
         baseDir: paths.PROJECT_ROOT,
         pipelineDir: paths.PIPELINE_DIR,
+        projectsDir: paths.PROJECTS_DIR,
         verticalQueueRoot: paths.VERTICAL_QUEUE_ROOT,
         verticalPublicDir: paths.VERTICAL_PUBLIC_DIR,
         taskStore,
@@ -717,7 +740,11 @@ const {
         startWechatRpa,
         retryWechatRpa,
         cancelWechatRpa,
+        startPlatformRpa,
+        retryPlatformRpa,
+        cancelPlatformRpa,
         checkWechatLogin,
+        openWechatContentManager,
         triggerAutoPilotNow: (...args) => schedulerService?.triggerAutoPilotNow?.(...args),
         accountDashboardService
     });

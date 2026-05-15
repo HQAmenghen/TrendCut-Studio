@@ -9,16 +9,13 @@ const https = require('https');
 const axios = require('axios');
 const { spawn } = require('child_process');
 const { makeJobId, ensureDir } = require('../../core/runtime');
-const { createAvatarRenderer, resolveAvatarRenderProvider } = require('../pipeline/avatarRenderer');
-const { buildRunningHubRunUrl, DEFAULT_RUNNINGHUB_BASE_URL } = require('../pipeline/runningHub');
-const { QWEN_TTS_REFERENCE_AUDIO_LIMIT_SECONDS, prepareReferenceAudio } = require('./avatarAudio');
-const { prepareNarrationTextForAvatarWorkflow } = require('./avatarWorkflow');
+const { DEFAULT_RUNNINGHUB_BASE_URL } = require('../pipeline/runningHub');
+const { createAvatarGenerationService } = require('./avatarGeneration');
 const { resolvePresetFile } = require('./presetResolver');
-const { synthesizeQwenTtsSpeech } = require('./qwenTts');
 const { buildMaterialDrivenPipelineArgs } = require('./retryPlan');
 const { normalizeSourceMeta, writeTaskState } = require('./taskState');
-const { readWorkflow } = require('../pipeline/workflow');
 const { activeTasks } = require('./sharedState');
+const { buildVersionedProjectFileUrl } = require('./utils');
 
 const PYTHON_PROTOCOL_PREFIX = '__CODEX_PYTHON__';
 const STAGE_PROGRESS_MAP = {
@@ -57,16 +54,6 @@ function addTaskLog(task, message, type = 'info') {
   task.updatedAt = nowIso();
 }
 
-function firstExistingFile(candidates = []) {
-  for (const file of candidates) {
-    if (!file) continue;
-    try {
-      if (fs.existsSync(file) && fs.statSync(file).isFile()) return file;
-    } catch (_err) {}
-  }
-  return '';
-}
-
 function resolvePresetFileWithFallback(dirPath, requestedName = '', fallbackRequests = []) {
   const resolved = resolvePresetFile(dirPath, requestedName);
   if (resolved.path || !requestedName) return resolved;
@@ -93,22 +80,6 @@ function summarizeFailureMessage(stderrTail, code) {
   const exitMsg = `进程退出，代码: ${code}`;
   if (!stderrTail) return exitMsg;
   return `${exitMsg}\n${stderrTail.slice(-3000)}`;
-}
-
-async function downloadToFile(url, outputPath) {
-  const writer = fs.createWriteStream(outputPath);
-  const response = await axios({
-    method: 'GET',
-    url,
-    responseType: 'stream',
-    timeout: 180000,
-    httpsAgent: insecureHttpsAgent
-  });
-  response.data.pipe(writer);
-  await new Promise((resolve, reject) => {
-    writer.on('finish', resolve);
-    writer.on('error', reject);
-  });
 }
 
 /**
@@ -415,38 +386,14 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   return { jobId, outputPath: outputDir };
 }
 
-/**
- * 自动生成数字人 (ComfyUI + Qwen3TTS)
- */
 async function generateAvatar(paths, jobId, task) {
-  let cfg = task.avatarConfig || {};
-  const narrationPath = path.join(task.outputPath, 'narration.json');
-  let narrationText = String(cfg.genText || '').trim();
-
-  try {
-    if (fs.existsSync(narrationPath)) {
-      const payload = JSON.parse(fs.readFileSync(narrationPath, 'utf8'));
-      const fromFile = String(payload?.full_text || '').trim();
-      if (fromFile) narrationText = fromFile;
-    }
-  } catch (_err) {}
-
-  const preparedNarrationText = prepareNarrationTextForAvatarWorkflow(narrationText);
-  if (!preparedNarrationText.isUsable) {
-    throw new Error('缺少可用口播文案（narration.json / genText）');
-  }
-
   const audioPresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'audio');
   const imagePresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'image');
+  const cfg = task.avatarConfig || {};
   const resolvedAudioPreset = resolvePresetFileWithFallback(audioPresetDir, cfg.audioPreset, [cfg.imagePreset]);
   const resolvedImagePreset = resolvePresetFileWithFallback(imagePresetDir, cfg.imagePreset, [cfg.audioPreset]);
-
-  const audioPath = firstExistingFile([resolvedAudioPreset.path]);
-  const imagePath = firstExistingFile([resolvedImagePreset.path]);
-
-  if (!audioPath) throw new Error('未找到可用音频素材（audio preset）');
-  if (!imagePath) throw new Error('未找到可用人物图片（image preset）');
   let presetFallbackApplied = false;
+
   if (String(resolvedAudioPreset.matchType || '').startsWith('fallback_')) {
     addTaskLog(task, `音频预设 ${resolvedAudioPreset.missingName} 不存在，已自动改用 ${resolvedAudioPreset.resolvedName}`, 'warning');
     task.avatarConfig = {
@@ -471,68 +418,21 @@ async function generateAvatar(paths, jobId, task) {
       sourceMeta: task.sourceMeta || {},
       avatarConfig: task.avatarConfig
     });
-    cfg = task.avatarConfig || cfg;
   }
 
-  const referenceAudio = prepareReferenceAudio({
-    inputPath: audioPath,
-    outputDir: task.outputPath,
-    limitSeconds: QWEN_TTS_REFERENCE_AUDIO_LIMIT_SECONDS
+  const avatarGeneration = createAvatarGenerationService({
+    paths,
+    persistTaskStateSnapshot: (latestTask) => {
+      writeTaskState(latestTask.outputPath, {
+        useSmartClip: latestTask.useSmartClip,
+        useCache: latestTask.useCache,
+        autoGenerate: latestTask.autoGenerate,
+        sourceMeta: latestTask.sourceMeta || {},
+        avatarConfig: latestTask.avatarConfig
+      });
+    }
   });
-
-  task.status = 'generating_avatar';
-  task.currentStep = 6;
-  task.progress = Math.max(task.progress || 0, 84);
-  task.statusText = '正在使用 Qwen3TTS 复刻音色并合成口播音频...';
-  task.updatedAt = nowIso();
-  addTaskLog(task, '开始调用 Qwen3TTS API 复刻音色并合成口播音频', 'info');
-
-  const ttsResult = await synthesizeQwenTtsSpeech({
-    text: preparedNarrationText.validationText,
-    referenceAudioPath: referenceAudio.audioPath,
-    outputDir: task.outputPath
-  });
-  addTaskLog(task, `Qwen3TTS 口播音频生成完成: ${path.basename(ttsResult.outputPath)}`, 'success');
-
-  const provider = resolveAvatarRenderProvider(cfg);
-  const providerLabel = provider === 'runninghub' ? 'RunningHub Workflow API' : 'ComfyUI';
-  const targetLabel = provider === 'runninghub'
-    ? buildRunningHubRunUrl({
-      baseUrl: cfg.runningHubBaseUrl || DEFAULT_RUNNINGHUB_BASE_URL,
-      workflowId: cfg.runningHubWorkflowId || process.env.RUNNINGHUB_WORKFLOW_ID || '2051840324212936706',
-      runPath: cfg.runningHubRunPath
-    })
-    : String(cfg.serverUrl || '').trim().replace(/\/+$/, '');
-  addTaskLog(task, `准备调用 ${providerLabel}: ${targetLabel}`, 'info');
-  task.progress = Math.max(task.progress || 0, 86);
-  task.statusText = '正在自动生成数字人...';
-  task.updatedAt = nowIso();
-
-  const workflow = readWorkflow(paths.WORKFLOW_PATH);
-  const renderResult = await createAvatarRenderer().render({
-    avatarConfig: cfg,
-    workflow,
-    speechAudioPath: ttsResult.outputPath,
-    referenceAudioPath: referenceAudio.audioPath,
-    imagePath,
-    defaultComfyBaseUrl: ''
-  });
-  addTaskLog(task, `素材上传到 ${providerLabel} 成功: audio=${renderResult.remoteAudioName}, image=${renderResult.remoteImageName}`, 'success');
-  if (renderResult.provider === 'runninghub') {
-    addTaskLog(task, `RunningHub 工作流已提交: taskId=${renderResult.taskId}`, 'info');
-  } else {
-    addTaskLog(task, `ComfyUI 工作流已提交: prompt_id=${renderResult.promptId}`, 'info');
-  }
-
-  const aimanVideoUrl = renderResult.videoUrl;
-  addTaskLog(task, `${providerLabel} 渲染完成，开始下载数字人视频`, 'info');
-  const aimanPath = path.join(task.outputPath, 'aiman.mp4');
-  await downloadToFile(aimanVideoUrl, aimanPath);
-
-  task.statusText = '数字人生成完成，继续执行混剪...';
-  task.progress = Math.max(task.progress || 0, 90);
-  task.updatedAt = nowIso();
-  addTaskLog(task, '数字人已生成：aiman.mp4', 'success');
+  await avatarGeneration.autoGenerateAvatar(jobId, task);
 }
 
 /**
@@ -584,7 +484,7 @@ function launchFromStep6(paths, jobId, task) {
       const outputDir = path.basename(task.outputPath);
       const finalVideoPath = path.join(task.outputPath, 'output_final.mp4');
       const videoUrl = fs.existsSync(finalVideoPath)
-        ? `/projects/${outputDir}/output_final.mp4`
+        ? buildVersionedProjectFileUrl(outputDir, finalVideoPath)
         : '';
       task.status = 'completed';
       task.progress = 100;

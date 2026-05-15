@@ -160,7 +160,14 @@ function createDefaultRunningHubClient() {
         imageFieldName: cfg.runningHubImageFieldName || 'image',
         outputNodeId: cfg.runningHubOutputNodeId || '',
         audioPath: options.audioPath,
-        imagePath: options.imagePath
+        imagePath: options.imagePath,
+        resumeTaskId: options.runningHubTaskId || options.resumeTaskId,
+        remoteAudioName: options.runningHubRemoteAudioName || options.remoteAudioName,
+        remoteImageName: options.runningHubRemoteImageName || options.remoteImageName,
+        nodeInfoList: options.runningHubNodeInfoList || options.nodeInfoList,
+        onSubmitted: options.onRunningHubSubmitted,
+        maxAttempts: options.runningHubMaxAttempts,
+        pollIntervalMs: options.runningHubPollIntervalMs
       });
     }
   };

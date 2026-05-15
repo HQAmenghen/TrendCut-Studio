@@ -19,6 +19,8 @@ function createWechatLoginService(deps) {
   } = deps;
 
   const loginCheckSessions = new Map();
+  const contentManagerSessions = new Map();
+  const CONTENT_MANAGER_URL = 'https://channels.weixin.qq.com/platform/post/list';
 
   /**
    * 构建登录检查响应
@@ -61,17 +63,171 @@ function createWechatLoginService(deps) {
         clearTimeout(session.cleanupTimer);
         session.cleanupTimer = null;
       }
-      if (session.proc?.pid) {
-        stopProcessTree(session.proc.pid);
-      } else if (session.proc && typeof session.proc.kill === 'function') {
-        session.proc.kill();
-      }
+      stopSessionProcess(session);
     } catch (err) {
       console.warn(`[WechatLogin] 终止登录检查会话失败: accountId=${accountId}, reason=${reason}, error=${err.message}`);
     }
 
     loginCheckSessions.delete(accountId);
     return true;
+  }
+
+  function stopSessionProcess(session) {
+    if (!session?.proc) return;
+    try {
+      if (typeof stopProcessTree === 'function') {
+        stopProcessTree(session.proc);
+      } else if (typeof session.proc.kill === 'function') {
+        session.proc.kill();
+      }
+    } catch (_err) {}
+  }
+
+  function openWechatContentManager(accountId) {
+    return new Promise((resolve, reject) => {
+      const activeAccountRuntime = getActiveWechatRuntimeForAccount(accountId);
+      if (activeAccountRuntime) {
+        return reject(new Error('当前账号正在执行发布任务，无法打开内容管理页'));
+      }
+
+      const existingSession = contentManagerSessions.get(accountId);
+      if (existingSession?.proc && existingSession.proc.exitCode === null && existingSession.proc.signalCode === null) {
+        return resolve({
+          success: true,
+          status: 'already_open',
+          url: CONTENT_MANAGER_URL,
+          accountId
+        });
+      }
+
+      const openScript = path.join(publishCenterDir, 'wechat_open_content_manager.py');
+      const userDataDir = buildWechatProfileDir(accountId);
+      if (!fs.existsSync(openScript)) {
+        return reject(new Error('打开内容管理页的脚本不存在'));
+      }
+
+      const proc = spawn('python', [openScript, '--user-data-dir', userDataDir, '--account-id', accountId], {
+        cwd: publishCenterDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+      const session = {
+        proc,
+        accountId,
+        userDataDir,
+        startedAt: new Date().toISOString()
+      };
+      contentManagerSessions.set(accountId, session);
+
+      let settled = false;
+      let output = '';
+      let launchStarted = false;
+      let timeout = null;
+      const resolveOnce = (payload) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        resolve(payload);
+      };
+
+      const rejectOnce = (err) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        contentManagerSessions.delete(accountId);
+        reject(err);
+      };
+
+      const handleJsonLine = (line) => {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(line.trim());
+        } catch (_err) {
+          return false;
+        }
+        if (parsed.success === undefined) return false;
+        if (parsed.success) {
+          resolveOnce({
+            success: true,
+            status: parsed.status || 'opened',
+            url: CONTENT_MANAGER_URL,
+            accountId,
+            message: parsed.message || ''
+          });
+          return true;
+        }
+        const status = parsed.status || 'failed';
+        if (status === 'unknown' || status === 'unconfirmed_ui') {
+          resolveOnce({
+            success: true,
+            status: 'opened_unconfirmed',
+            url: CONTENT_MANAGER_URL,
+            accountId,
+            message: parsed.message || parsed.error || '内容管理页已打开，但页面状态未确认'
+          });
+          return true;
+        }
+        resolveOnce({
+          success: false,
+          status,
+          url: CONTENT_MANAGER_URL,
+          accountId,
+          error: parsed.error || '打开内容管理页失败',
+          message: parsed.message || ''
+        });
+        stopSessionProcess(session);
+        contentManagerSessions.delete(accountId);
+        return true;
+      };
+      timeout = setTimeout(() => {
+        if (settled) return;
+        if (launchStarted || output.includes('CONTENT_MANAGER|STARTING|')) {
+          resolveOnce({
+            success: true,
+            status: 'opened_unconfirmed',
+            url: CONTENT_MANAGER_URL,
+            accountId,
+            message: '内容管理窗口已打开，页面仍在加载或状态未确认'
+          });
+          return;
+        }
+        stopSessionProcess(session);
+        rejectOnce(new Error('打开内容管理页超时'));
+      }, 20000);
+
+      proc.stdout.on('data', (chunk) => {
+        const text = chunk.toString();
+        output += text;
+        for (const line of text.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          console.log(trimmed);
+          if (handleJsonLine(trimmed)) continue;
+          if (trimmed.startsWith('CONTENT_MANAGER|STARTING|')) {
+            launchStarted = true;
+          }
+          if (trimmed.startsWith('CONTENT_MANAGER|READY|')) {
+            resolveOnce({
+              success: true,
+              status: 'opened',
+              url: CONTENT_MANAGER_URL,
+              accountId
+            });
+          }
+        }
+      });
+
+      proc.stderr.on('data', (chunk) => {
+        output += chunk.toString();
+      });
+
+      proc.on('error', rejectOnce);
+      proc.on('close', (code) => {
+        contentManagerSessions.delete(accountId);
+        if (!settled && code !== 0) {
+          rejectOnce(new Error(output.trim() || `内容管理页脚本异常退出 (code ${code})`));
+        }
+      });
+    });
   }
 
   /**
@@ -272,6 +428,7 @@ function createWechatLoginService(deps) {
 
   return {
     checkWechatLogin,
+    openWechatContentManager,
     buildLoginCheckResponse,
     finalizeLoginCheckSession,
     scheduleLoginCheckCleanup,

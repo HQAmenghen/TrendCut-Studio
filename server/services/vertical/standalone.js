@@ -7,12 +7,13 @@ const {
   normalizeExecutionPlanSubtitles
 } = require('./taskImport');
 
-function resolveImportedAvatarAsrInput(taskImport) {
+function resolveImportedTaskAsrInput(taskImport) {
   if (!taskImport?.taskPath) return '';
   const candidates = [
+    taskImport.videoPath,
     path.join(taskImport.taskPath, 'aiman.mp4'),
     path.join(taskImport.taskPath, 'avatar_qwen3tts.wav')
-  ];
+  ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || '';
 }
 
@@ -36,23 +37,6 @@ async function refreshImportedAvatarSubtitles(options = {}) {
   const referenceSubtitlesPath = path.join(taskImport.taskPath, 'aiman_reference_subtitles.json');
 
   const buildReferenceSubtitleArtifacts = () => {
-    if (fs.existsSync(avatarSegmentsPath)) {
-      try {
-        const payload = JSON.parse(fs.readFileSync(avatarSegmentsPath, 'utf8'));
-        const subtitles = normalizeAvatarSegmentSubtitles(payload)
-          .map((item) => ({
-            ...item,
-            text: item.zh
-          }));
-        if (subtitles.length > 0) {
-          return {
-            subtitles,
-            source: 'avatar_segments.json'
-          };
-        }
-      } catch (_err) {}
-    }
-
     if (fs.existsSync(executionPlanPath)) {
       try {
         const payload = JSON.parse(fs.readFileSync(executionPlanPath, 'utf8'));
@@ -65,6 +49,23 @@ async function refreshImportedAvatarSubtitles(options = {}) {
           return {
             subtitles,
             source: 'execution_plan.json'
+          };
+        }
+      } catch (_err) {}
+    }
+
+    if (fs.existsSync(avatarSegmentsPath)) {
+      try {
+        const payload = JSON.parse(fs.readFileSync(avatarSegmentsPath, 'utf8'));
+        const subtitles = normalizeAvatarSegmentSubtitles(payload)
+          .map((item) => ({
+            ...item,
+            text: item.zh
+          }));
+        if (subtitles.length > 0) {
+          return {
+            subtitles,
+            source: 'avatar_segments.json'
           };
         }
       } catch (_err) {}
@@ -98,9 +99,9 @@ async function refreshImportedAvatarSubtitles(options = {}) {
     } catch (_err) {}
   };
 
-  const avatarInputPath = resolveImportedAvatarAsrInput(taskImport);
+  const asrInputPath = resolveImportedTaskAsrInput(taskImport);
   const subtitleArtifacts = buildReferenceSubtitleArtifacts();
-  if (!avatarInputPath) {
+  if (!asrInputPath) {
     if (subtitleArtifacts?.subtitles?.length) {
       persistAvatarSubtitles(subtitleArtifacts.subtitles);
       if (sse) {
@@ -122,20 +123,20 @@ async function refreshImportedAvatarSubtitles(options = {}) {
     sendProgressEvent(sse, {
       type: 'status',
       msg: referencePath
-        ? `正在为任务 ${taskImport.outputDir} 重新 ASR 打轴，并结合 ${subtitleArtifacts.source} 校准字幕...`
-        : `正在为任务 ${taskImport.outputDir} 的数字人口播重新识别字幕...`
+        ? `正在为任务 ${taskImport.outputDir} 的最终成片重新 ASR 打轴，并结合 ${subtitleArtifacts.source} 校准字幕...`
+        : `正在为任务 ${taskImport.outputDir} 的最终成片重新识别字幕...`
     });
   }
 
   const asrArgs = [
-    '--input', avatarInputPath,
+    '--input', asrInputPath,
     '--audio-json', 'aiman_audio.json',
     '--subtitles-json', 'aiman_subtitles.json',
     '--speaker-scene-json', 'aiman_speaker_scene.json',
     '--refine-subtitles'
   ];
   if (referencePath) {
-    asrArgs.push('--reference-subtitles-json', referencePath);
+    asrArgs.push('--reference-subtitles-json', referencePath, '--reference-text-authority');
   }
 
   await runPythonScript(runAsrScript, asrArgs, {
@@ -225,7 +226,15 @@ function createStandaloneHandler(deps) {
       let taskImport = sourceTaskDir
         ? resolveMaterialTaskImport({ projectsDir, taskDir: sourceTaskDir })
         : null;
-      if (taskImport) {
+      const shouldRefreshImportedTaskSubtitles = taskImport && (
+        req.body.useASR === 'true' || (
+          !req.files?.srt &&
+          req.body.useASR !== 'false' &&
+          !req.body.subtitlesPayload &&
+          !taskImport.hasSubtitles
+        )
+      );
+      if (shouldRefreshImportedTaskSubtitles) {
         taskImport = await refreshImportedAvatarSubtitles({
           taskImport,
           projectsDir,
@@ -289,7 +298,7 @@ function createStandaloneHandler(deps) {
         console.log('[Standalone] 启动 ASR 任务...');
         const asrArgs = ['--input', 'standalone_input.mp4', '--refine-subtitles'];
         if (fs.existsSync(referenceSubsJsonPath)) {
-          asrArgs.push('--reference-subtitles-json', referenceSubsJsonPath);
+          asrArgs.push('--reference-subtitles-json', referenceSubsJsonPath, '--reference-text-authority');
         }
         await runPythonScript(runAsrScript, asrArgs, {
           cwd: taskDir,

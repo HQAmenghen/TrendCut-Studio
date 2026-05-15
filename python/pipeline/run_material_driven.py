@@ -910,7 +910,8 @@ class MaterialDrivenPipeline:
             duration = float(block.get("duration") or 0.0)
             if duration <= 0:
                 duration = self.estimate_duration_from_text(block.get("text") or "", min_duration=2.0)
-            if should_insert_cutaway(block_type, layout):
+            wants_cutaway = should_insert_cutaway(block_type, layout)
+            if wants_cutaway:
                 if role == "hook":
                     min_clip = min_hook_clip_sec
                 elif role == "explain":
@@ -922,7 +923,7 @@ class MaterialDrivenPipeline:
             start_time = round(current_time, 2)
             end_time = round(current_time + duration, 2)
 
-            if block_type == "avatar_talk":
+            if block_type == "avatar_talk" and not wants_cutaway:
                 avatar_segment = avatar_map.get(str(block.get("script_ref")), {})
                 cut_start = avatar_segment.get("start")
                 cut_end = avatar_segment.get("end")
@@ -989,7 +990,7 @@ class MaterialDrivenPipeline:
                         avatar_total_duration if avatar_total_duration > 0 else 0.0,
                         self.estimate_duration_from_text(block.get("text") or "", min_duration=2.0)
                     )
-                    use_cutaway = should_insert_cutaway(block_type, layout)
+                    use_cutaway = wants_cutaway
 
                     if use_cutaway and avatar_cut_start is not None and avatar_cut_end is not None:
                         cutaway_end_time = round(start_time + clip_duration, 2)

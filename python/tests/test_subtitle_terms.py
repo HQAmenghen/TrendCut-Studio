@@ -148,6 +148,40 @@ class SubtitleTermsTest(unittest.TestCase):
 
         self.assertEqual(repaired, "这家公司营收突破1200万美元，市场情绪升温。")
 
+    def test_repairs_missing_english_scale_numeric_amount(self):
+        text = "他们每小时买入200的比特币"
+        reference_text = (
+            "MicroStrategy的CEO Michael Saylor在采访中透露，"
+            "他们每小时买入200 million美元的比特币，但价格几乎没波动。"
+        )
+
+        repaired = repair_reference_subtitle_text(text, reference_text)
+
+        self.assertEqual(repaired, "他们每小时买入200 million美元的比特币")
+
+    def test_repairs_claude_proper_nouns_from_reference_text(self):
+        reference_text = (
+            "Claude AI 在 Code with Claude 活动上给开发者发了批巴掌大的微型电脑，"
+            "结果他们捣鼓出的东西还真挺有意思"
+        )
+
+        self.assertEqual(
+            repair_reference_subtitle_text("云端AI", reference_text),
+            "Claude AI",
+        )
+        self.assertEqual(
+            repair_reference_subtitle_text("在 Code with Cloud", reference_text),
+            "在 Code with Claude",
+        )
+
+    def test_english_secondary_source_does_not_insert_punctuation_into_chinese_year(self):
+        repaired = repair_reference_subtitle_text(
+            "比特币2032年将突破100万美元。",
+            "Bitcoin will break one million dollars by 2032.",
+        )
+
+        self.assertEqual(repaired, "比特币2032年将突破100万美元。")
+
 
 if __name__ == "__main__":
     unittest.main()

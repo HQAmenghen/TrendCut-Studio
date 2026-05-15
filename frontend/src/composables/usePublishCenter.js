@@ -3,11 +3,14 @@ import axios from 'axios';
 
 const PLATFORM_DEFS = [
   { key: 'wechatChannels', label: '微信视频号', runModes: ['draft', 'publish'] },
-  { key: 'douyin', label: '抖音', runModes: [] },
-  { key: 'xiaohongshu', label: '小红书', runModes: [] },
+  { key: 'douyin', label: '抖音', runModes: ['draft', 'publish'] },
+  { key: 'xiaohongshu', label: '小红书', runModes: ['draft', 'publish'] },
   { key: 'x', label: 'X', runModes: [] },
   { key: 'youtube', label: 'YouTube', runModes: [] }
 ];
+
+const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu'];
+const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
 
 const AUTO_PILOT_PIPELINE_DEFS = [
   { key: 'vertical', label: '不带数字人', description: '直接生成竖屏成片并进入定时发布' },
@@ -85,6 +88,28 @@ function normalizeStringArray(value) {
   return [];
 }
 
+function normalizePlatformSelection(value, fallback = DEFAULT_AUTO_PILOT_PLATFORMS) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || '')
+      .split(',')
+      .map((item) => item.trim());
+  const selected = [];
+  for (const item of source) {
+    const platformKey = String(item || '').trim();
+    if (AUTO_PILOT_PLATFORM_KEYS.includes(platformKey) && !selected.includes(platformKey)) {
+      selected.push(platformKey);
+    }
+  }
+  if (selected.length) return selected;
+  return Array.isArray(fallback) ? [...fallback] : [...DEFAULT_AUTO_PILOT_PLATFORMS];
+}
+
+function normalizeAutoPilotPlatformRows(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => normalizePlatformSelection(item, []));
+}
+
 function normalizeAutoPilotPipelineModes(value, fallback = 'vertical') {
   const allowedModes = new Set(AUTO_PILOT_PIPELINE_DEFS.map((item) => item.key));
   const source = Array.isArray(value) ? value : [fallback];
@@ -107,7 +132,8 @@ function normalizeAutoPilotModeSchedules(value = {}) {
       accountIds: normalizeStringArray(item.accountIds),
       times: normalizeStringArray(item.times),
       partitionIds: normalizeStringArray(item.partitionIds),
-      sourceRanks: normalizeStringArray(item.sourceRanks)
+      sourceRanks: normalizeStringArray(item.sourceRanks),
+      platforms: normalizeAutoPilotPlatformRows(item.platforms)
     };
   }
   return schedules;
@@ -325,6 +351,9 @@ const clearErrorState = () => {
   });
 
   const platformDefs = PLATFORM_DEFS;
+  const autoPilotPlatformDefs = PLATFORM_DEFS.filter((platform) => AUTO_PILOT_PLATFORM_KEYS.includes(platform.key));
+  const getPlatformLabel = (platformKey) => platformDefs.find((platform) => platform.key === platformKey)?.label || platformKey;
+  const getPlatformLabels = (platformKeys) => normalizePlatformSelection(platformKeys).map((platformKey) => getPlatformLabel(platformKey));
 
   const selectedAsset = computed(() => assets.value.find((asset) => asset.id === selectedAssetId.value) || null);
 
@@ -358,24 +387,34 @@ const clearErrorState = () => {
     const times = normalizeStringArray(schedule.times);
     const partitionIds = normalizeStringArray(schedule.partitionIds);
     const sourceRanks = normalizeStringArray(schedule.sourceRanks);
-    if (accountIds.length || times.length || partitionIds.length || sourceRanks.length) {
-      return { accountIds, times, partitionIds, sourceRanks };
+    const platforms = normalizeAutoPilotPlatformRows(schedule.platforms);
+    if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length) {
+      return { accountIds, times, partitionIds, sourceRanks, platforms };
     }
     return {
       accountIds: normalizeStringArray(global.autoPilotAccountIds),
       times: normalizeStringArray(global.autoPilotTimes),
       partitionIds: [],
-      sourceRanks: []
+      sourceRanks: [],
+      platforms: []
     };
   };
 
   const getAutoPilotMappingsForMode = (mode) => {
-    const { accountIds, times, partitionIds, sourceRanks } = getAutoPilotModeSchedule(mode);
+    const { accountIds, times, partitionIds, sourceRanks, platforms } = getAutoPilotModeSchedule(mode);
     const global = config.value?.global || {};
     const mappings = [];
-    const maxLen = Math.max(accountIds.length, times.length, partitionIds.length, sourceRanks.length);
+    const maxLen = Math.max(accountIds.length, times.length, partitionIds.length, sourceRanks.length, platforms.length);
     for (let i = 0; i < maxLen; i++) {
-      if (accountIds[i]) {
+      const selectedPlatforms = normalizePlatformSelection(platforms[i]);
+      const hasConfiguredSlot = Boolean(
+        String(accountIds[i] || '').trim()
+        || String(times[i] || '').trim()
+        || String(partitionIds[i] || '').trim()
+        || String(sourceRanks[i] || '').trim()
+        || (Array.isArray(platforms[i]) && platforms[i].length > 0)
+      );
+      if (hasConfiguredSlot) {
         const partitionId = normalizeXaiPartitionId(partitionIds[i] || global.autoPilotPartitionId, global.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
         const partition = xaiPartitionOptions.value.find((item) => item.id === partitionId);
         const sourceRank = Math.max(1, Math.min(10, parseInt(sourceRanks[i] || '1', 10) || 1));
@@ -386,7 +425,9 @@ const clearErrorState = () => {
           accountId: accountIds[i],
           time: times[i] || global.autoPilotTime || '08:00',
           partitionId,
-          partitionLabel: partition?.label || partitionId
+          partitionLabel: partition?.label || partitionId,
+          platforms: selectedPlatforms,
+          platformLabels: getPlatformLabels(selectedPlatforms)
         });
       }
     }
@@ -422,7 +463,9 @@ const clearErrorState = () => {
       scheduledLabel: `每天 ${mapping.time || config.value?.global?.autoPilotTime || '08:00'}`,
       status: 'configured',
       statusLabel: '计划已配置',
-      accountLabel,
+      accountLabel: mapping.platforms.includes('wechatChannels') ? accountLabel : '无需视频号账号',
+      platforms: mapping.platforms,
+      platformLabels: mapping.platformLabels,
       partitionId: mapping.partitionId,
       partitionLabel: mapping.partitionLabel,
       sourceMode: config.value?.global?.autoPilotUseCurrentRanking ? 'current_ranking' : 'refresh_ranking',
@@ -448,6 +491,8 @@ const clearErrorState = () => {
         status: getJobTerminalState(job),
         statusLabel: getJobStatusLabel(job),
         accountLabel: task?.accountLabel || task?.accountId || job?.platformSelections?.wechatChannels?.accountLabel || job?.platformSelections?.wechatChannels?.accountId || '未指定账号',
+        platforms: Array.isArray(job?.selectedPlatforms) && job.selectedPlatforms.length ? job.selectedPlatforms : ['wechatChannels'],
+        platformLabels: getPlatformLabels(Array.isArray(job?.selectedPlatforms) && job.selectedPlatforms.length ? job.selectedPlatforms : ['wechatChannels']),
         partitionId: job?.autoPilot?.sourcePartitionId || job?.asset?.metadata?.sourcePartitionId || '',
         partitionLabel: job?.autoPilot?.sourcePartitionLabel || job?.asset?.metadata?.sourcePartitionLabel || '',
         sourceMode: job?.autoPilot?.sourceMode || '',
@@ -485,7 +530,8 @@ const clearErrorState = () => {
     const assignedAccounts = activeAutoPilotMappings.value.map(m => {
       const account = wechatAccounts.value.find((item) => item.id === m.accountId);
       const label = account?.displayName || account?.helperAccount || account?.finderUserName || m.accountId || '未知账号';
-      return `${m.pipelineLabel}: ${m.partitionLabel || '默认分区'} Top ${m.sourceRank || 1} -> ${label} @ ${m.time}`;
+      const target = m.platforms.includes('wechatChannels') ? label : '无需视频号账号';
+      return `${m.pipelineLabel}: ${m.partitionLabel || '默认分区'} Top ${m.sourceRank || 1} -> ${m.platformLabels.join(' / ')} -> ${target} @ ${m.time}`;
     });
 
     if (!assignedAccounts.length) {
@@ -675,6 +721,9 @@ const clearErrorState = () => {
     editor.value.platformSelections = job?.platformSelections && typeof job.platformSelections === 'object'
       ? JSON.parse(JSON.stringify(job.platformSelections))
       : { wechatChannels: { accountId: '' } };
+    if (!editor.value.platformSelections.wechatChannels) {
+      editor.value.platformSelections.wechatChannels = { accountId: '' };
+    }
     await refresh(false, { preserveEditor: true });
     appendLog(`已将发布任务载回编辑器：${job.id}`);
   };
@@ -710,11 +759,13 @@ const clearErrorState = () => {
 
   const updateAutoPilotModeArray = (mode, field, index, value) => {
     const schedules = normalizeAutoPilotModeSchedules(config.value?.global?.autoPilotModeSchedules);
-    const current = schedules[mode] || { accountIds: [], times: [], partitionIds: [], sourceRanks: [] };
+    const current = schedules[mode] || { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [] };
     const key = field === 'times'
       ? 'times'
-      : (field === 'partitionIds' ? 'partitionIds' : (field === 'sourceRanks' ? 'sourceRanks' : 'accountIds'));
-    const arr = normalizeStringArray(current[key]);
+      : (field === 'partitionIds' ? 'partitionIds' : (field === 'sourceRanks' ? 'sourceRanks' : (field === 'platforms' ? 'platforms' : 'accountIds')));
+    const arr = key === 'platforms'
+      ? normalizeAutoPilotPlatformRows(current[key])
+      : normalizeStringArray(current[key]);
     arr[index] = value;
     updateConfigField('global', 'autoPilotModeSchedules', {
       ...schedules,
@@ -763,13 +814,34 @@ const clearErrorState = () => {
       updateAutoPilotModeArray(mode, 'times', rIdx, config.value.global?.autoPilotTime || '08:00');
       updateAutoPilotModeArray(mode, 'partitionIds', rIdx, config.value.global?.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
       updateAutoPilotModeArray(mode, 'sourceRanks', rIdx, 1);
+    } else if (!accountIds[rIdx]) {
+      updateAutoPilotModeArray(mode, 'times', rIdx, config.value.global?.autoPilotTime || '08:00');
+      updateAutoPilotModeArray(mode, 'partitionIds', rIdx, config.value.global?.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
+      updateAutoPilotModeArray(mode, 'sourceRanks', rIdx, 1);
     }
+    updateAutoPilotModeArray(mode, 'platforms', rIdx, DEFAULT_AUTO_PILOT_PLATFORMS);
   };
 
   const removeAutoPilotModeMapping = (mode, rank) => {
     const rIdx = rank - 1;
     if (rIdx < 0) return;
     updateAutoPilotModeArray(mode, 'accountIds', rIdx, '');
+    updateAutoPilotModeArray(mode, 'times', rIdx, '');
+    updateAutoPilotModeArray(mode, 'partitionIds', rIdx, '');
+    updateAutoPilotModeArray(mode, 'sourceRanks', rIdx, '');
+    updateAutoPilotModeArray(mode, 'platforms', rIdx, []);
+  };
+
+  const toggleAutoPilotModePlatform = (mode, slot, platformKey, checked) => {
+    const rIdx = slot - 1;
+    if (rIdx < 0) return;
+    const schedule = getAutoPilotModeSchedule(mode);
+    const rows = normalizeAutoPilotPlatformRows(schedule.platforms);
+    const current = new Set(normalizePlatformSelection(rows[rIdx]));
+    if (checked) current.add(platformKey);
+    else current.delete(platformKey);
+    const next = AUTO_PILOT_PLATFORM_KEYS.filter((key) => current.has(key));
+    updateAutoPilotModeArray(mode, 'platforms', rIdx, next.length ? next : DEFAULT_AUTO_PILOT_PLATFORMS);
   };
 
   const getNextAutoPilotMappingSlot = (mode) => {
@@ -854,6 +926,9 @@ const clearErrorState = () => {
     if (checked) current.add(platformKey);
     else current.delete(platformKey);
     editor.value.platforms = Array.from(current);
+    if (platformKey === 'wechatChannels' && checked && !editor.value.platformSelections.wechatChannels) {
+      editor.value.platformSelections.wechatChannels = { accountId: '' };
+    }
   };
 
   const createJob = async () => {
@@ -933,37 +1008,50 @@ const clearErrorState = () => {
       setErrorState(normalizeApiError(err, "一键启动所有任务失败"));
     }
   };
-  const runWechat = async (job, mode = 'draft') => {
+
+  const runPlatform = async (job, platformKey, mode = 'draft') => {
     clearErrorState();
-    appendLog(`启动微信视频号任务：${mode === 'publish' ? '自动发布' : '填充到待发布页'} / ${job.id}`);
+    appendLog(`启动${getPlatformLabel(platformKey)}任务：${mode === 'publish' ? '自动发布' : '填充到待发布页'} / ${job.id}`);
     try {
-      const res = await axios.post(`/api/publish/jobs/${job.id}/wechat-channels`, { mode });
+      const res = await axios.post(`/api/publish/jobs/${job.id}/platforms/${platformKey}/start`, { mode });
       jobs.value = res.data?.jobs || jobs.value;
     } catch (err) {
-      setErrorState(normalizeApiError(err, '启动微信视频号任务失败'));
+      setErrorState(normalizeApiError(err, `启动${getPlatformLabel(platformKey)}任务失败`));
+    }
+  };
+
+  const runWechat = async (job, mode = 'draft') => {
+    await runPlatform(job, 'wechatChannels', mode);
+  };
+
+  const retryPlatform = async (job, platformKey, mode = '') => {
+    clearErrorState();
+    appendLog(`重试${getPlatformLabel(platformKey)}任务：${job.id}`);
+    try {
+      const res = await axios.post(`/api/publish/jobs/${job.id}/platforms/${platformKey}/retry`, { mode });
+      jobs.value = res.data?.jobs || jobs.value;
+    } catch (err) {
+      setErrorState(normalizeApiError(err, `重试${getPlatformLabel(platformKey)}任务失败`));
     }
   };
 
   const retryWechat = async (job, mode = '') => {
+    await retryPlatform(job, 'wechatChannels', mode);
+  };
+
+  const cancelPlatform = async (job, platformKey) => {
     clearErrorState();
-    appendLog(`重试微信视频号任务：${job.id}`);
+    appendLog(`取消${getPlatformLabel(platformKey)}任务：${job.id}`);
     try {
-      const res = await axios.post(`/api/publish/jobs/${job.id}/wechat-channels/retry`, { mode });
+      const res = await axios.post(`/api/publish/jobs/${job.id}/platforms/${platformKey}/cancel`);
       jobs.value = res.data?.jobs || jobs.value;
     } catch (err) {
-      setErrorState(normalizeApiError(err, '重试微信视频号任务失败'));
+      setErrorState(normalizeApiError(err, `取消${getPlatformLabel(platformKey)}任务失败`));
     }
   };
 
   const cancelWechat = async (job) => {
-    clearErrorState();
-    appendLog(`取消微信视频号任务：${job.id}`);
-    try {
-      const res = await axios.post(`/api/publish/jobs/${job.id}/wechat-channels/cancel`);
-      jobs.value = res.data?.jobs || jobs.value;
-    } catch (err) {
-      setErrorState(normalizeApiError(err, '取消微信视频号任务失败'));
-    }
+    await cancelPlatform(job, 'wechatChannels');
   };
 
   const archiveJob = async (job, archived = true) => {
@@ -1035,11 +1123,11 @@ const clearErrorState = () => {
 
   const getJobTerminalState = (job) => {
     const states = (job.platformTasks || []).map((task) => String(task.runtime?.state || task.status || ''));
-    if (states.some((state) => ['published', 'success'].includes(state))) return 'published';
-    if (states.some((state) => state === 'ready_for_manual_publish')) return 'ready_for_manual_publish';
-    if (states.some((state) => state === 'cancelled')) return 'cancelled';
-    if (states.some((state) => state === 'failed')) return 'failed';
     if (states.some((state) => ['publishing', 'editing', 'uploaded', 'processing', 'uploading', 'starting', 'navigating', 'login_ready', 'need_login', 'draft_preparing', 'edited'].includes(state))) return 'running';
+    if (states.some((state) => state === 'failed')) return 'failed';
+    if (states.some((state) => state === 'cancelled')) return 'cancelled';
+    if (states.length && states.every((state) => ['published', 'success'].includes(state))) return 'published';
+    if (states.some((state) => ['published', 'success', 'ready_for_manual_publish'].includes(state))) return 'ready_for_manual_publish';
     if (job.platformErrors?.length) return 'partial_ready';
     return job.status || 'ready';
   };
@@ -1067,15 +1155,19 @@ const clearErrorState = () => {
       .slice(0, 6);
   });
 
-  const getWechatProgress = (job) => {
-    const task = getTask(job);
+  const getTaskProgress = (job, platformKey = 'wechatChannels') => {
+    const task = getTask(job, platformKey);
     return Math.max(0, Math.min(100, Number(task?.runtime?.progress || 0)));
   };
 
-  const canRunWechat = (job) => {
-    const task = getTask(job);
+  const getWechatProgress = (job) => getTaskProgress(job, 'wechatChannels');
+
+  const canRunPlatform = (job, platformKey = 'wechatChannels') => {
+    const task = getTask(job, platformKey);
     return !!task && !['publishing', 'editing', 'uploaded', 'processing', 'uploading', 'starting', 'navigating'].includes(String(task.runtime?.state || task.status || ''));
   };
+
+  const canRunWechat = (job) => canRunPlatform(job, 'wechatChannels');
 
   const startAutoRefresh = () => {
     if (autoRefreshTimer) return;
@@ -1121,6 +1213,7 @@ const clearErrorState = () => {
     editor,
     jobFilter,
     platformDefs,
+    autoPilotPlatformDefs,
     autoPilotPipelineDefs: AUTO_PILOT_PIPELINE_DEFS,
     platformCards,
     wechatAccounts,
@@ -1147,6 +1240,7 @@ const clearErrorState = () => {
     updateAutoPilotArray,
     updateAutoPilotModeArray,
     toggleAutoPilotPipelineMode,
+    toggleAutoPilotModePlatform,
     addAutoPilotModeMapping,
     removeAutoPilotModeMapping,
     applySuggestedTitle,
@@ -1160,8 +1254,11 @@ const clearErrorState = () => {
     createJob,
     generateEditorDescription,
     runAllWechat,
+    runPlatform,
     runWechat,
+    retryPlatform,
     retryWechat,
+    cancelPlatform,
     cancelWechat,
     regenerateJobDescription,
     archiveJob,
@@ -1170,11 +1267,14 @@ const clearErrorState = () => {
     clearJobs,
     getFieldLabel,
     isSecretField,
+    getPlatformLabel,
     getTask,
     getWechatAccountOptions,
     getJobTerminalState,
     getJobStatusLabel,
+    getTaskProgress,
     getWechatProgress,
+    canRunPlatform,
     canRunWechat,
     formatAutoPilotJobTime,
     // 登录状态检测函数
