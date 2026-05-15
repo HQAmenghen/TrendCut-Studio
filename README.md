@@ -74,7 +74,7 @@
   - AI 视频审核
 - `python/publish/`
   - 发布文案生成、微信视频号 RPA、登录检测
-  - 抖音/小红书草稿填充走本地浏览器 RPA；自动发表可选复用本机 `social-auto-upload` checkout
+  - 抖音/小红书可选复用本机 `social-auto-upload` checkout；草稿模式停在发布前，自动发表模式继续提交
 - `python/xai/`
   - 热点榜单抓取与翻译
 

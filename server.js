@@ -334,6 +334,7 @@ const wechatRpaService = createWechatRpaService({
     wechatRpaTaskDir: paths.WECHAT_RPA_TASK_DIR,
     wechatRpaProfileRoot: paths.WECHAT_RPA_PROFILE_ROOT,
     platformRpaScript: paths.PLATFORM_RPA_SCRIPT,
+    socialAutoUploadAdapterScript: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT,
     platformRpaTaskDir: paths.PLATFORM_RPA_TASK_DIR,
     platformRpaProfileRoot: paths.PLATFORM_RPA_PROFILE_ROOT,
     socialAutoUploadDir: process.env.SOCIAL_AUTO_UPLOAD_DIR || '',
@@ -385,6 +386,7 @@ const {
                 { key: 'generate_title', label: '标题生成脚本', path: path.join(paths.PIPELINE_DIR, 'generate_title.py') },
                 { key: 'publish_description', label: '发布描述脚本', path: paths.PUBLISH_DESCRIPTION_SCRIPT },
                 { key: 'wechat_rpa', label: '微信发布脚本', path: paths.WECHAT_RPA_SCRIPT },
+                { key: 'social_auto_upload_adapter', label: 'social-auto-upload 适配脚本', path: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT },
                 { key: 'xai_runner', label: 'xAI 榜单脚本', path: paths.XAI_TOP10_SCRIPT }
             ],
             commandChecks: [

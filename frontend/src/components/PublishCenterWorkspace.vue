@@ -1085,8 +1085,8 @@ const requiredFieldMap = {
 
 const platformTips = {
   wechatChannels: '使用视频号助手浏览器 RPA，首次运行需要扫码登录；每个账号使用独立浏览器环境。',
-  douyin: '草稿填充走本地浏览器 RPA；自动发表优先复用 social-auto-upload，需要填写 SAU 账号名。',
-  xiaohongshu: '草稿填充走本地浏览器 RPA；自动发表优先复用 social-auto-upload，需要填写 SAU 账号名。',
+  douyin: '优先复用 social-auto-upload 代码级适配器；草稿会停在发布前，自动发表会继续提交。',
+  xiaohongshu: '优先复用 social-auto-upload 代码级适配器；草稿会停在发布前，自动发表会继续提交。',
   x: '预留 X 平台 API 字段，便于后续接入。',
   youtube: '预留 YouTube 频道 OAuth 字段。'
 };

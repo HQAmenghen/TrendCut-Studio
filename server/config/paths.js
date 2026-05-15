@@ -44,6 +44,7 @@ const WECHAT_RPA_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_rpa.py'
 const WECHAT_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles', 'wechatChannels');
 const WECHAT_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_tasks');
 const PLATFORM_RPA_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'browser_platform_rpa.py');
+const SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'social_auto_upload_adapter.py');
 const PLATFORM_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles');
 const PLATFORM_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'platform_rpa_tasks');
 
@@ -81,6 +82,7 @@ module.exports = {
   WECHAT_RPA_PROFILE_ROOT,
   WECHAT_RPA_TASK_DIR,
   PLATFORM_RPA_SCRIPT,
+  SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT,
   PLATFORM_RPA_PROFILE_ROOT,
   PLATFORM_RPA_TASK_DIR,
   TASK_STORE_DB_PATH

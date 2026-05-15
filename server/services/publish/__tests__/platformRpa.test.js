@@ -45,6 +45,7 @@ function createService(overrides = {}) {
     })),
     publishCenterDir: overrides.publishCenterDir || __dirname,
     platformRpaScript: overrides.platformRpaScript || path.join(__dirname, 'browser_platform_rpa.py'),
+    socialAutoUploadAdapterScript: overrides.socialAutoUploadAdapterScript || path.join(__dirname, 'social_auto_upload_adapter.py'),
     platformRpaTaskDir: overrides.platformRpaTaskDir || __dirname,
     platformRpaProfileRoot: overrides.platformRpaProfileRoot || path.join(os.tmpdir(), 'platform-rpa-profiles'),
     socialAutoUploadDir: overrides.socialAutoUploadDir || '',
@@ -113,11 +114,14 @@ describe('platform RPA service', () => {
     );
   });
 
-  test('uses social-auto-upload for publish mode when configured', async () => {
+  test('uses direct social-auto-upload adapter when configured', async () => {
     const videoPath = path.join(tempRoot, 'video.mp4');
     const sauDir = path.join(tempRoot, 'social-auto-upload');
+    const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
+    const payloadDir = path.join(tempRoot, 'payloads');
     fs.writeFileSync(videoPath, 'video');
     fs.mkdirSync(sauDir, { recursive: true });
+    fs.writeFileSync(adapterScript, 'print("ok")');
 
     const runPythonScriptCancellable = jest.fn(() => ({
       process: {},
@@ -128,24 +132,24 @@ describe('platform RPA service', () => {
       jobs: [createJob('job_1', videoPath, 'douyin')],
       socialAutoUploadDir: sauDir,
       socialAutoUploadPython: 'C:/Python/python.exe',
+      socialAutoUploadAdapterScript: adapterScript,
+      platformRpaTaskDir: payloadDir,
       runPythonScriptCancellable
     });
 
-    await service.startPlatformRpa('job_1', 'douyin', 'publish');
+    await service.startPlatformRpa('job_1', 'douyin', 'draft');
 
     expect(runPythonScriptCancellable).toHaveBeenCalledWith(
-      '-m',
-      expect.arrayContaining([
-        'sau_cli',
-        'douyin',
-        'upload-video',
-        '--account',
-        'dy_sau',
-        '--file',
-        videoPath,
-        '--headed'
-      ]),
-      expect.objectContaining({ cwd: sauDir, command: 'C:/Python/python.exe' })
+      adapterScript,
+      ['--payload', path.join(payloadDir, 'job_1_douyin_social_auto_upload.json'), '--social-auto-upload-dir', sauDir],
+      expect.objectContaining({ cwd: __dirname, command: 'C:/Python/python.exe' })
     );
+    const payload = JSON.parse(fs.readFileSync(path.join(payloadDir, 'job_1_douyin_social_auto_upload.json'), 'utf8'));
+    expect(payload).toMatchObject({
+      platform: 'douyin',
+      publishMode: 'draft',
+      accountName: 'dy_sau',
+      videoPath
+    });
   });
 });
