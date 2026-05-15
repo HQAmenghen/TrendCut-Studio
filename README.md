@@ -117,8 +117,10 @@ Copy-Item .env.example .env
 - `XAI_API_KEY`
 - `LLM_PROVIDER`
 - `AI_REVIEW_ENABLED`
-- `SOCIAL_AUTO_UPLOAD_DIR`（可选，指向 `https://github.com/dreammis/social-auto-upload` 本地目录）
-- `SOCIAL_AUTO_UPLOAD_PYTHON`（可选，指向该项目虚拟环境的 `python.exe`）
+
+抖音/小红书的 `social-auto-upload` 复用默认会自动查找 `C:\Users\<user>\social-auto-upload`
+和该项目 `.venv` 里的 Python。只有当你的 checkout 或 Python 环境放在其他位置时，才需要额外设置
+`SOCIAL_AUTO_UPLOAD_DIR` / `SOCIAL_AUTO_UPLOAD_PYTHON` 作为覆盖项。
 
 ### 3. 启动服务
 

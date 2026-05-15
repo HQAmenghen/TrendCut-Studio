@@ -166,11 +166,35 @@ function createPlatformRpaService(deps) {
   }
 
   function getSocialAutoUploadDir() {
-    return String(socialAutoUploadDir || process.env.SOCIAL_AUTO_UPLOAD_DIR || '').trim();
+    const configured = String(socialAutoUploadDir || process.env.SOCIAL_AUTO_UPLOAD_DIR || '').trim();
+    if (configured) return configured;
+    const candidates = [
+      process.env.SOCIAL_AUTO_UPLOAD_HOME,
+      process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'social-auto-upload') : '',
+      process.env.HOME ? path.join(process.env.HOME, 'social-auto-upload') : '',
+      path.resolve(process.cwd(), '..', 'social-auto-upload')
+    ].map((item) => String(item || '').trim()).filter(Boolean);
+    return candidates.find((candidate) => fs.existsSync(candidate)) || '';
   }
 
   function getSocialAutoUploadPython() {
-    return String(socialAutoUploadPython || process.env.SOCIAL_AUTO_UPLOAD_PYTHON || 'python').trim() || 'python';
+    const configured = String(socialAutoUploadPython || process.env.SOCIAL_AUTO_UPLOAD_PYTHON || '').trim();
+    if (configured) return configured;
+    const sauDir = getSocialAutoUploadDir();
+    if (sauDir) {
+      const candidates = process.platform === 'win32'
+        ? [
+          path.join(sauDir, '.venv', 'Scripts', 'python.exe'),
+          path.join(sauDir, 'venv', 'Scripts', 'python.exe')
+        ]
+        : [
+          path.join(sauDir, '.venv', 'bin', 'python'),
+          path.join(sauDir, 'venv', 'bin', 'python')
+        ];
+      const discovered = candidates.find((candidate) => fs.existsSync(candidate));
+      if (discovered) return discovered;
+    }
+    return 'python';
   }
 
   function getSauAccountName(platformKey, platformConfig = {}) {
