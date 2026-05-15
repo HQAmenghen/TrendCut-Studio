@@ -10,6 +10,7 @@ const CONFIG_DIR = path.join(PROJECT_ROOT, 'config');
 const PYTHON_DIR = path.join(PROJECT_ROOT, 'python');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const VENDOR_DIR = path.join(PROJECT_ROOT, 'vendor');
 
 // Pipeline 相关
 const WORKFLOW_PATH = path.join(CONFIG_DIR, 'workflow_api.json');
@@ -45,6 +46,8 @@ const WECHAT_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles'
 const WECHAT_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'wechat_channels_tasks');
 const PLATFORM_RPA_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'browser_platform_rpa.py');
 const SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT = path.join(PUBLISH_CENTER_DIR, 'social_auto_upload_adapter.py');
+const SOCIAL_AUTO_UPLOAD_VENDOR_DIR = path.join(VENDOR_DIR, 'social-auto-upload');
+const SOCIAL_AUTO_UPLOAD_RUNTIME_DIR = path.join(DATA_DIR, 'social-auto-upload-runtime');
 const PLATFORM_RPA_PROFILE_ROOT = path.join(PUBLISH_CENTER_DIR, 'browser_profiles');
 const PLATFORM_RPA_TASK_DIR = path.join(PUBLISH_CENTER_DIR, 'platform_rpa_tasks');
 
@@ -60,6 +63,7 @@ module.exports = {
   PYTHON_DIR,
   DATA_DIR,
   UPLOADS_DIR,
+  VENDOR_DIR,
   WORKFLOW_PATH,
   PIPELINE_DIR,
   XAI_TOP10_DIR,
@@ -83,6 +87,8 @@ module.exports = {
   WECHAT_RPA_TASK_DIR,
   PLATFORM_RPA_SCRIPT,
   SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT,
+  SOCIAL_AUTO_UPLOAD_VENDOR_DIR,
+  SOCIAL_AUTO_UPLOAD_RUNTIME_DIR,
   PLATFORM_RPA_PROFILE_ROOT,
   PLATFORM_RPA_TASK_DIR,
   TASK_STORE_DB_PATH

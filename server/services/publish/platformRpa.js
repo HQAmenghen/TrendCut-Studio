@@ -26,6 +26,7 @@ function createPlatformRpaService(deps) {
     platformRpaTaskDir,
     platformRpaProfileRoot,
     socialAutoUploadDir,
+    socialAutoUploadRuntimeDir,
     socialAutoUploadPython,
     readPublishJobs,
     readPublishConfig,
@@ -169,6 +170,7 @@ function createPlatformRpaService(deps) {
     const configured = String(socialAutoUploadDir || process.env.SOCIAL_AUTO_UPLOAD_DIR || '').trim();
     if (configured) return configured;
     const candidates = [
+      path.resolve(process.cwd(), 'vendor', 'social-auto-upload'),
       process.env.SOCIAL_AUTO_UPLOAD_HOME,
       process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'social-auto-upload') : '',
       process.env.HOME ? path.join(process.env.HOME, 'social-auto-upload') : '',
@@ -197,6 +199,14 @@ function createPlatformRpaService(deps) {
     return 'python';
   }
 
+  function getSocialAutoUploadRuntimeDir() {
+    return String(
+      socialAutoUploadRuntimeDir
+      || process.env.SOCIAL_AUTO_UPLOAD_RUNTIME_DIR
+      || path.resolve(process.cwd(), 'data', 'social-auto-upload-runtime')
+    ).trim();
+  }
+
   function getSauAccountName(platformKey, platformConfig = {}) {
     return String(
       platformConfig.sauAccountName
@@ -210,7 +220,9 @@ function createPlatformRpaService(deps) {
 
   function supportsSocialAutoUpload(platformKey, platformConfig = {}) {
     if (!['douyin', 'xiaohongshu'].includes(platformKey)) return false;
-    if (!getSocialAutoUploadDir()) return false;
+    const sauDir = getSocialAutoUploadDir();
+    if (!sauDir || !fs.existsSync(sauDir)) return false;
+    if (!fs.existsSync(socialAutoUploadAdapterScript)) return false;
     return Boolean(getSauAccountName(platformKey, platformConfig));
   }
 
@@ -406,6 +418,7 @@ function createPlatformRpaService(deps) {
     const adapterPayload = buildSocialAutoUploadPayload(platformKey, job, platformConfig, publishMode, videoPath);
     const payloadFile = path.join(platformRpaTaskDir, `${jobId}_${platformKey}_social_auto_upload.json`);
     await fs.promises.mkdir(platformRpaTaskDir, { recursive: true });
+    await fs.promises.mkdir(getSocialAutoUploadRuntimeDir(), { recursive: true });
     await fs.promises.writeFile(payloadFile, JSON.stringify(adapterPayload, null, 2), 'utf-8');
     const runtimeEntry = {
       proc: null,
@@ -479,7 +492,7 @@ function createPlatformRpaService(deps) {
     try {
       ({ process: proc, promise, cancel } = runPythonScriptCancellable(
         socialAutoUploadAdapterScript,
-        ['--payload', payloadFile, '--social-auto-upload-dir', cwd],
+        ['--payload', payloadFile, '--social-auto-upload-dir', cwd, '--runtime-dir', getSocialAutoUploadRuntimeDir()],
         {
           cwd: publishCenterDir,
           command: getSocialAutoUploadPython(),

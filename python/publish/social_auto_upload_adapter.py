@@ -38,7 +38,6 @@ def load_sau_modules(sau_dir: str):
         sys.path.insert(0, root_text)
 
     from patchright.async_api import async_playwright
-    from sau_cli import resolve_account_file
     from uploader.douyin_uploader.main import (
         DOUYIN_PUBLISH_STRATEGY_IMMEDIATE,
         DouYinVideo,
@@ -55,7 +54,6 @@ def load_sau_modules(sau_dir: str):
     return {
         "root": root,
         "async_playwright": async_playwright,
-        "resolve_account_file": resolve_account_file,
         "DouYinVideo": DouYinVideo,
         "douyin_setup": douyin_setup,
         "DOUYIN_PUBLISH_STRATEGY_IMMEDIATE": DOUYIN_PUBLISH_STRATEGY_IMMEDIATE,
@@ -65,6 +63,27 @@ def load_sau_modules(sau_dir: str):
         "xiaohongshu_setup": xiaohongshu_setup,
         "set_init_script": set_init_script,
     }
+
+
+def resolve_runtime_dir(runtime_dir: str) -> Path:
+    configured = runtime_dir or os.environ.get("SOCIAL_AUTO_UPLOAD_RUNTIME_DIR") or ""
+    if configured:
+        root = Path(configured).resolve()
+    else:
+        root = Path(__file__).resolve().parents[2] / "data" / "social-auto-upload-runtime"
+    root.mkdir(parents=True, exist_ok=True)
+    os.environ["SOCIAL_AUTO_UPLOAD_RUNTIME_DIR"] = str(root)
+    return root
+
+
+def resolve_account_file(runtime_dir: Path, platform: str, account_name: str) -> Path:
+    safe_platform = "".join(char for char in platform if char.isalnum() or char in ("-", "_")).strip("_-")
+    safe_account = "".join(char for char in account_name if char.isalnum() or char in ("-", "_")).strip("_-")
+    if not safe_platform or not safe_account:
+        raise ValueError("Invalid social-auto-upload account name")
+    account_file = runtime_dir / "cookies" / f"{safe_platform}_{safe_account}.json"
+    account_file.parent.mkdir(parents=True, exist_ok=True)
+    return account_file
 
 
 async def wait_for_manual_close(context, platform_label: str) -> None:
@@ -95,8 +114,8 @@ def build_common_payload(payload: dict) -> dict:
     }
 
 
-async def ensure_cookie_ready(modules: dict, platform: str, account_name: str, headless: bool) -> Path:
-    account_file = modules["resolve_account_file"](platform, account_name)
+async def ensure_cookie_ready(modules: dict, runtime_dir: Path, platform: str, account_name: str, headless: bool) -> Path:
+    account_file = resolve_account_file(runtime_dir, platform, account_name)
     setup_fn = modules["douyin_setup"] if platform == "douyin" else modules["xiaohongshu_setup"]
     emit("checking_login", f"正在检查{platform}登录态", 10)
     ready = await setup_fn(str(account_file), handle=True, return_detail=True, headless=headless)
@@ -211,7 +230,7 @@ async def run_xiaohongshu_draft(modules: dict, app) -> None:
             await browser.close()
 
 
-async def run_payload(payload: dict, sau_dir: str) -> None:
+async def run_payload(payload: dict, sau_dir: str, runtime_dir: str) -> None:
     data = build_common_payload(payload)
     if data["platform"] not in {"douyin", "xiaohongshu"}:
         raise ValueError(f"Unsupported platform: {data['platform']}")
@@ -220,8 +239,9 @@ async def run_payload(payload: dict, sau_dir: str) -> None:
     if not Path(data["video_path"]).exists():
         raise FileNotFoundError(f"Video file not found: {data['video_path']}")
 
+    runtime_root = resolve_runtime_dir(runtime_dir)
     modules = load_sau_modules(sau_dir)
-    account_file = await ensure_cookie_ready(modules, data["platform"], data["account_name"], data["headless"])
+    account_file = await ensure_cookie_ready(modules, runtime_root, data["platform"], data["account_name"], data["headless"])
 
     if data["platform"] == "douyin":
         app = modules["DouYinVideo"](
@@ -266,10 +286,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Direct social-auto-upload adapter")
     parser.add_argument("--payload", required=True)
     parser.add_argument("--social-auto-upload-dir", default="")
+    parser.add_argument("--runtime-dir", default="")
     args = parser.parse_args()
     payload = load_payload(Path(args.payload))
     emit("starting", "正在启动 social-auto-upload 代码级适配器", 3)
-    asyncio.run(run_payload(payload, args.social_auto_upload_dir))
+    asyncio.run(run_payload(payload, args.social_auto_upload_dir, args.runtime_dir))
     return 0
 
 

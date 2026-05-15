@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,27 @@ class SocialAutoUploadAdapterTest(unittest.TestCase):
             social_auto_upload_adapter.normalize_tags("#AI, 视频, ,#财经"),
             ["AI", "视频", "财经"],
         )
+
+    def test_resolve_runtime_dir_sets_environment(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_dir = social_auto_upload_adapter.resolve_runtime_dir(tmp_dir)
+
+            self.assertEqual(runtime_dir, Path(tmp_dir).resolve())
+            self.assertEqual(
+                Path(social_auto_upload_adapter.os.environ["SOCIAL_AUTO_UPLOAD_RUNTIME_DIR"]),
+                runtime_dir,
+            )
+
+    def test_resolve_account_file_keeps_cookies_under_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            account_file = social_auto_upload_adapter.resolve_account_file(
+                Path(tmp_dir),
+                "douyin",
+                "dy main/测试",
+            )
+
+            self.assertEqual(account_file.parent, Path(tmp_dir) / "cookies")
+            self.assertEqual(account_file.name, "douyin_dymain测试.json")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 node_modules
 data/uploads
+data/social-auto-upload-runtime
 *.log
 .env
 .env.*

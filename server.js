@@ -337,7 +337,8 @@ const wechatRpaService = createWechatRpaService({
     socialAutoUploadAdapterScript: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT,
     platformRpaTaskDir: paths.PLATFORM_RPA_TASK_DIR,
     platformRpaProfileRoot: paths.PLATFORM_RPA_PROFILE_ROOT,
-    socialAutoUploadDir: process.env.SOCIAL_AUTO_UPLOAD_DIR || '',
+    socialAutoUploadDir: process.env.SOCIAL_AUTO_UPLOAD_DIR || paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR,
+    socialAutoUploadRuntimeDir: paths.SOCIAL_AUTO_UPLOAD_RUNTIME_DIR,
     socialAutoUploadPython: process.env.SOCIAL_AUTO_UPLOAD_PYTHON || '',
     buildShortTitle,
     readPublishJobs,
@@ -378,7 +379,7 @@ const {
                 { key: 'uploads', label: 'uploads 目录', path: paths.UPLOADS_DIR },
                 { key: 'runtime', label: 'runtime_jobs 目录', path: paths.RUNTIME_ROOT, level: 'warn' },
                 { key: 'publish', label: 'publish 目录', path: paths.PUBLISH_CENTER_DIR },
-                { key: 'social_auto_upload', label: 'social-auto-upload 目录', path: process.env.SOCIAL_AUTO_UPLOAD_DIR || '', level: 'warn' }
+                { key: 'social_auto_upload', label: '项目内 social-auto-upload vendor', path: paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR, level: 'warn' }
             ],
             fileChecks: [
                 { key: 'workflow', label: '工作流配置', path: paths.WORKFLOW_PATH },
