@@ -61,6 +61,7 @@ python/publish/*.db-wal
 python/publish/*.bak
 python/publish/*.png
 python/publish/browser_profiles/
+python/publish/platform_rpa_tasks/
 python/publish/wechat_channels_tasks/
 python/publish/wechat_channels_user_data/
 python/pipeline/content.json
