@@ -20,6 +20,8 @@ function registerPublishRoutes(app, handlers) {
   app.post('/api/publish/jobs/:jobId/platforms/:platformKey/cancel', handlers.cancelPlatform);
   app.post('/api/publish/wechat/test-login/:accountId', handlers.testWechatLogin);
   app.post('/api/publish/wechat/content-manager/:accountId', handlers.openWechatContentManager);
+  app.post('/api/publish/platforms/:platformKey/accounts/:accountId/test-login', handlers.testPlatformLogin);
+  app.post('/api/publish/platforms/:platformKey/accounts/:accountId/content-manager', handlers.openPlatformContentManager);
 
   // Account dashboard routes
   app.get('/api/publish/accounts/dashboard', handlers.getAccountDashboard);

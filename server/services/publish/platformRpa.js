@@ -37,6 +37,9 @@ function createPlatformRpaService(deps) {
   } = deps;
 
   const runtimeProcesses = new Map();
+  const loginCheckSessions = new Map();
+  const contentManagerSessions = new Map();
+  const platformLoginStatusCache = new Map();
 
   function normalizePlatformKey(platformKey) {
     return String(platformKey || '').trim();
@@ -44,6 +47,12 @@ function createPlatformRpaService(deps) {
 
   function getPlatformDefinition(platformKey) {
     return BROWSER_RPA_PLATFORMS[normalizePlatformKey(platformKey)] || null;
+  }
+
+  function normalizeQrImage(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return raw.startsWith('data:image/') ? raw : `data:image/png;base64,${raw}`;
   }
 
   function safeUpdatePublishPlatformTask(jobId, platformKey, patch) {
@@ -227,6 +236,69 @@ function createPlatformRpaService(deps) {
     ).trim();
   }
 
+  function getSauAccounts(platformKey, config = readPublishConfig()) {
+    return Array.isArray(config?.[platformKey]?.accounts) ? config[platformKey].accounts : [];
+  }
+
+  function resolveSauAccount(platformKey, accountId, config = readPublishConfig()) {
+    const normalizedPlatform = normalizePlatformKey(platformKey);
+    const normalizedAccountId = String(accountId || '').trim();
+    const accounts = getSauAccounts(normalizedPlatform, config);
+    if (!normalizedAccountId && accounts.length) {
+      const firstAccount = accounts[0];
+      return {
+        account: firstAccount,
+        platformConfig: {
+          ...(config?.[normalizedPlatform] || {}),
+          ...firstAccount
+        }
+      };
+    }
+    const account = accounts.find((item) => String(item.id || '').trim() === normalizedAccountId) || null;
+    if (account) {
+      return {
+        account,
+        platformConfig: {
+          ...(config?.[normalizedPlatform] || {}),
+          ...account
+        }
+      };
+    }
+    const platformConfig = config?.[normalizedPlatform] || {};
+    const fallbackAccountName = getSauAccountName(normalizedPlatform, platformConfig);
+    if (!normalizedAccountId && fallbackAccountName) {
+      return {
+        account: {
+          id: fallbackAccountName,
+          displayName: platformConfig.displayName || '',
+          sauAccountName: fallbackAccountName,
+          accountId: platformConfig.accountId || '',
+          openId: platformConfig.openId || ''
+        },
+        platformConfig
+      };
+    }
+    if (normalizedAccountId && [
+      platformConfig.sauAccountName,
+      platformConfig.accountName,
+      platformConfig.accountId,
+      platformConfig.openId,
+      platformConfig.displayName
+    ].map((item) => String(item || '').trim()).includes(normalizedAccountId)) {
+      return {
+        account: {
+          id: normalizedAccountId,
+          displayName: platformConfig.displayName || '',
+          sauAccountName: platformConfig.sauAccountName || normalizedAccountId,
+          accountId: platformConfig.accountId || '',
+          openId: platformConfig.openId || ''
+        },
+        platformConfig
+      };
+    }
+    return { account: null, platformConfig };
+  }
+
   function supportsSocialAutoUpload(platformKey, platformConfig = {}) {
     if (!['douyin', 'xiaohongshu'].includes(platformKey)) return false;
     const sauDir = getSocialAutoUploadDir();
@@ -235,18 +307,97 @@ function createPlatformRpaService(deps) {
     return Boolean(getSauAccountName(platformKey, platformConfig));
   }
 
+  function getCookieStatus(platformKey, accountName) {
+    const account = String(accountName || '').trim();
+    if (!account) {
+      return {
+        status: 'unknown',
+        message: '账号别名为空',
+        lastCheckedAt: null
+      };
+    }
+    const safePlatform = String(platformKey || '').replace(/[^a-zA-Z0-9_-]+/g, '').replace(/^[-_]+|[-_]+$/g, '');
+    const safeAccount = account.replace(/[^\p{L}\p{N}_-]+/gu, '').replace(/^[-_]+|[-_]+$/g, '');
+    const cookiePath = path.join(getSocialAutoUploadRuntimeDir(), 'cookies', `${safePlatform}_${safeAccount}.json`);
+    try {
+      const stat = fs.statSync(cookiePath);
+      return {
+        status: 'unknown',
+        message: '已发现本地登录态，需检测后确认是否仍有效',
+        lastCheckedAt: stat.mtime.toISOString(),
+        cookiePath
+      };
+    } catch (_err) {
+      return {
+        status: 'need_login',
+        message: '未发现本地登录态，请扫码登录',
+        lastCheckedAt: null,
+        cookiePath
+      };
+    }
+  }
+
+  function checkPlatformLoginStatus(platformKey, account) {
+    const accountName = getSauAccountName(platformKey, account);
+    const cacheKey = `${platformKey}:${String(account?.id || accountName || '').trim()}`;
+    const cached = platformLoginStatusCache.get(cacheKey);
+    if (cached) return cached;
+    const cookieStatus = getCookieStatus(platformKey, accountName);
+    return {
+      status: cookieStatus.status,
+      lastCheckedAt: cookieStatus.lastCheckedAt,
+      message: cookieStatus.message,
+      cookiePath: cookieStatus.cookiePath || '',
+      accountId: String(account?.id || accountName || '').trim(),
+      accountLabel: String(account?.displayName || accountName || '').trim()
+    };
+  }
+
+  function rememberPlatformLoginStatus(platformKey, account, response) {
+    const accountName = getSauAccountName(platformKey, account);
+    const cacheKey = `${platformKey}:${String(account?.id || accountName || '').trim()}`;
+    const status = response?.status === 'need_scan' ? 'need_login' : (response?.status || 'unknown');
+    platformLoginStatusCache.set(cacheKey, {
+      status,
+      lastCheckedAt: new Date().toISOString(),
+      message: response?.message || '',
+      accountId: String(account?.id || accountName || '').trim(),
+      accountLabel: response?.accountLabel || account?.displayName || accountName || '',
+      qrCodeBase64: response?.qrCodeBase64 || '',
+      qrCodePath: response?.qrCodePath || ''
+    });
+  }
+
   function buildSocialAutoUploadPayload(platformKey, job, platformConfig, publishMode, videoPath) {
     const definition = getPlatformDefinition(platformKey);
     return {
       platformKey,
       platform: platformKey,
       platformLabel: definition.label,
+      action: 'publish',
       publishMode,
       accountName: getSauAccountName(platformKey, platformConfig),
       videoPath,
       title: job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布',
       description: job.publishData?.description || job.asset?.metadata?.suggestedDescription || '',
       tags: Array.isArray(job.publishData?.tags) ? job.publishData.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
+      headless: false
+    };
+  }
+
+  function buildSocialAutoUploadAccountPayload(platformKey, platformConfig, action) {
+    const definition = getPlatformDefinition(platformKey);
+    return {
+      platformKey,
+      platform: platformKey,
+      platformLabel: definition.label,
+      action,
+      publishMode: 'draft',
+      accountName: getSauAccountName(platformKey, platformConfig),
+      videoPath: '',
+      title: '',
+      description: '',
+      tags: [],
       headless: false
     };
   }
@@ -269,9 +420,18 @@ function createPlatformRpaService(deps) {
     if (!task) throw new Error(`该任务未选择${definition.label}`);
 
     const publishConfig = readPublishConfig();
-    const platformConfig = publishConfig[platformKey] || { enabled: false };
-    if (!platformConfig.enabled) {
+    const platformRootConfig = publishConfig[platformKey] || { enabled: false };
+    if (!platformRootConfig.enabled) {
       throw new Error(`${definition.label}尚未启用`);
+    }
+    let platformConfig = platformRootConfig;
+    if (['douyin', 'xiaohongshu'].includes(platformKey)) {
+      const selectedAccountId = String(task?.accountId || '').trim();
+      const resolved = resolveSauAccount(platformKey, selectedAccountId, publishConfig);
+      if (!resolved.account) {
+        throw new Error(`未找到${definition.label}发布账号，请在发布中心重新选择账号`);
+      }
+      platformConfig = resolved.platformConfig;
     }
 
     const videoPath = resolveJobVideoPath(job);
@@ -413,6 +573,223 @@ function createPlatformRpaService(deps) {
           }
         });
       });
+  }
+
+  function runSocialAutoUploadAccountAction(platformKey, accountId, action) {
+    return new Promise((resolve, reject) => {
+      const normalizedPlatform = normalizePlatformKey(platformKey);
+      const definition = getPlatformDefinition(normalizedPlatform);
+      if (!definition || !['douyin', 'xiaohongshu'].includes(normalizedPlatform)) {
+        reject(new Error(`平台暂未接入账号操作: ${platformKey}`));
+        return;
+      }
+      const config = readPublishConfig();
+      const platformConfigRoot = config?.[normalizedPlatform] || {};
+      if (!platformConfigRoot.enabled) {
+        reject(new Error(`${definition.label}尚未启用`));
+        return;
+      }
+      const { account, platformConfig } = resolveSauAccount(normalizedPlatform, accountId, config);
+      if (!account) {
+        reject(new Error(`未找到${definition.label}账号: ${accountId}`));
+        return;
+      }
+      if (!supportsSocialAutoUpload(normalizedPlatform, platformConfig)) {
+        reject(new Error(`${definition.label}账号缺少登录账号别名或 social-auto-upload 运行目录不可用`));
+        return;
+      }
+
+      const sessionKey = `${action}:${normalizedPlatform}:${account.id}`;
+      const sessionMap = action === 'open_manager' ? contentManagerSessions : loginCheckSessions;
+      const existing = sessionMap.get(sessionKey);
+      if (existing && action === 'check_login') {
+        resolve(existing.latestResponse || {
+          success: true,
+          status: 'checking',
+          platform: normalizedPlatform,
+          accountId: account.id,
+          accountLabel: account.displayName || getSauAccountName(normalizedPlatform, platformConfig),
+          message: `${definition.label}登录检测正在进行`
+        });
+        return;
+      }
+      if (existing && action === 'open_manager') {
+        resolve({
+          success: true,
+          status: 'already_open',
+          platform: normalizedPlatform,
+          accountId: account.id,
+          accountLabel: account.displayName || getSauAccountName(normalizedPlatform, platformConfig),
+          message: `${definition.label}管理窗口已经打开`
+        });
+        return;
+      }
+
+      const cwd = getSocialAutoUploadDir();
+      if (!fs.existsSync(cwd)) {
+        reject(new Error(`social-auto-upload 目录不存在: ${cwd}`));
+        return;
+      }
+      if (!fs.existsSync(socialAutoUploadAdapterScript)) {
+        reject(new Error('social-auto-upload 代码级适配脚本不存在'));
+        return;
+      }
+
+      const adapterPayload = buildSocialAutoUploadAccountPayload(normalizedPlatform, platformConfig, action);
+      const payloadFile = path.join(platformRpaTaskDir, `${Date.now()}_${normalizedPlatform}_${account.id}_${action}.json`);
+      const settleOn = action === 'open_manager' ? new Set(['opened']) : new Set(['need_login', 'login_ready', 'success']);
+      fs.mkdirSync(platformRpaTaskDir, { recursive: true });
+      fs.mkdirSync(getSocialAutoUploadRuntimeDir(), { recursive: true });
+      fs.writeFileSync(payloadFile, JSON.stringify(adapterPayload, null, 2), 'utf-8');
+
+      let settled = false;
+      let latestStatus = 'starting';
+      let latestPayload = null;
+      const resolveOnce = (payload) => {
+        if (settled) return;
+        settled = true;
+        latestPayload = payload;
+        resolve(payload);
+      };
+      const rejectOnce = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+
+      const handleOutput = (chunk) => {
+        const lines = chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        for (const line of lines) {
+          const parsed = parseStatusLine(line);
+          if (!parsed) continue;
+          latestStatus = parsed.state;
+          if (parsed.state === 'need_login') {
+            const response = {
+              success: true,
+              status: 'need_scan',
+              platform: normalizedPlatform,
+              accountId: account.id,
+              accountLabel: account.displayName || parsed.extra?.accountLabel || definition.label,
+              sauAccountName: getSauAccountName(normalizedPlatform, platformConfig),
+              qrCodeBase64: normalizeQrImage(parsed.extra?.qrCodeBase64),
+              qrCodePath: parsed.extra?.qrCodePath || '',
+              message: parsed.message || `${definition.label}需要扫码登录`
+            };
+            const currentSession = sessionMap.get(sessionKey);
+            if (currentSession) currentSession.latestResponse = response;
+            rememberPlatformLoginStatus(normalizedPlatform, account, response);
+            resolveOnce(response);
+            continue;
+          }
+          if (settleOn.has(parsed.state)) {
+            const response = {
+              success: true,
+              status: parsed.state === 'opened' ? 'opened' : 'logged_in',
+              platform: normalizedPlatform,
+              accountId: account.id,
+              accountLabel: account.displayName || parsed.extra?.accountLabel || definition.label,
+              sauAccountName: getSauAccountName(normalizedPlatform, platformConfig),
+              message: parsed.message || `${definition.label}登录态可用`
+            };
+            const currentSession = sessionMap.get(sessionKey);
+            if (currentSession) currentSession.latestResponse = response;
+            rememberPlatformLoginStatus(normalizedPlatform, account, response);
+            resolveOnce(response);
+          }
+          if (parsed.state === 'failed') {
+            rejectOnce(new Error(parsed.message || `${definition.label}账号操作失败`));
+          }
+        }
+      };
+
+      let launched;
+      try {
+        launched = runPythonScriptCancellable(
+          socialAutoUploadAdapterScript,
+          ['--payload', payloadFile, '--social-auto-upload-dir', cwd, '--runtime-dir', getSocialAutoUploadRuntimeDir()],
+          {
+            cwd: publishCenterDir,
+            command: getSocialAutoUploadPython(),
+            onStdout: handleOutput,
+            onStderr: handleOutput
+          }
+        );
+      } catch (err) {
+        rejectOnce(err);
+        return;
+      }
+
+      const session = {
+        ...launched,
+        platform: normalizedPlatform,
+        accountId: account.id,
+        action,
+        startedAt: new Date().toISOString(),
+        latestResponse: null
+      };
+      sessionMap.set(sessionKey, session);
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          if (action === 'open_manager') {
+            const response = {
+              success: true,
+              status: 'opening',
+              platform: normalizedPlatform,
+              accountId: account.id,
+              accountLabel: account.displayName || definition.label,
+              message: `${definition.label}创作中心正在打开`
+            };
+            if (action !== 'open_manager') rememberPlatformLoginStatus(normalizedPlatform, account, response);
+            resolveOnce(response);
+          } else {
+            const response = {
+              success: true,
+              status: latestStatus === 'starting' ? 'checking' : latestStatus,
+              platform: normalizedPlatform,
+              accountId: account.id,
+              accountLabel: account.displayName || definition.label,
+              message: `${definition.label}登录检测已启动`
+            };
+            rememberPlatformLoginStatus(normalizedPlatform, account, response);
+            resolveOnce(response);
+          }
+        }
+      }, action === 'open_manager' ? 5000 : 12000);
+
+      launched.promise
+        .then(() => {
+          clearTimeout(timeout);
+          sessionMap.delete(sessionKey);
+          if (!settled && action !== 'open_manager') {
+            const response = {
+              success: true,
+              status: 'logged_in',
+              platform: normalizedPlatform,
+              accountId: account.id,
+              accountLabel: account.displayName || definition.label,
+              message: `${definition.label}登录态可用`
+            };
+            rememberPlatformLoginStatus(normalizedPlatform, account, response);
+            resolveOnce(response);
+          } else if (!settled && latestPayload) {
+            resolveOnce(latestPayload);
+          }
+        })
+        .catch((error) => {
+          clearTimeout(timeout);
+          sessionMap.delete(sessionKey);
+          if (!settled) rejectOnce(error);
+        });
+    });
+  }
+
+  function checkPlatformLogin(platformKey, accountId) {
+    return runSocialAutoUploadAccountAction(platformKey, accountId, 'check_login');
+  }
+
+  function openPlatformContentManager(platformKey, accountId) {
+    return runSocialAutoUploadAccountAction(platformKey, accountId, 'open_manager');
   }
 
   async function startSocialAutoUploadRpa(jobId, platformKey, job, platformConfig, publishMode, videoPath, task) {
@@ -641,7 +1018,10 @@ function createPlatformRpaService(deps) {
   return {
     startPlatformRpa,
     retryPlatformRpa,
-    cancelPlatformRpa
+    cancelPlatformRpa,
+    checkPlatformLogin,
+    openPlatformContentManager,
+    checkPlatformLoginStatus
   };
 }
 

@@ -109,6 +109,9 @@ function createWechatRpaService(deps) {
     startPlatformRpa: platformRpaService.startPlatformRpa,
     retryPlatformRpa: platformRpaService.retryPlatformRpa,
     cancelPlatformRpa: platformRpaService.cancelPlatformRpa,
+    checkPlatformLogin: platformRpaService.checkPlatformLogin,
+    openPlatformContentManager: platformRpaService.openPlatformContentManager,
+    checkPlatformLoginStatus: platformRpaService.checkPlatformLoginStatus,
     checkWechatLogin: loginService.checkWechatLogin,
     openWechatContentManager: loginService.openWechatContentManager
   };

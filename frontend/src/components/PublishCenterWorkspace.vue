@@ -504,7 +504,7 @@
                     </div>
                   </div>
                 </template>
-                <template v-else>
+                <template v-else-if="isSauPlatform(platform.key)">
                   <div v-if="isSauPlatform(platform.key)" class="setup-guide">
                     <div class="guide-row">
                       <span class="guide-step" :class="{ done: !!center.config.value?.[platform.key]?.enabled }">1</span>
@@ -514,10 +514,10 @@
                       </div>
                     </div>
                     <div class="guide-row">
-                      <span class="guide-step" :class="{ done: !!sauAccountName(platform.key) }">2</span>
+                      <span class="guide-step" :class="{ done: sauAccounts(platform.key).length > 0 }">2</span>
                       <div>
-                        <strong>填写登录账号别名</strong>
-                        <p>{{ platform.label }} 会把登录态保存到当前项目的运行目录；别名用于区分不同账号。</p>
+                        <strong>添加发布账号</strong>
+                        <p>{{ platform.label }} 会把每个账号的登录态保存到当前项目运行目录；登录账号别名用于区分 cookie。</p>
                       </div>
                     </div>
                     <div class="guide-row">
@@ -528,6 +528,72 @@
                       </div>
                     </div>
                   </div>
+                  <div class="account-manager">
+                    <div class="account-manager-head">
+                      <div class="platform-tip">首次检测会弹出二维码；扫码后复用 <code>data/social-auto-upload-runtime/cookies</code> 中的登录态。</div>
+                      <button type="button" class="ghost-btn compact-btn" @click="center.addSauAccount(platform.key)">新增账号</button>
+                    </div>
+                    <div v-if="!sauAccounts(platform.key).length" class="issue-box">还没有配置{{ platform.label }}账号。</div>
+                    <div v-for="account in sauAccounts(platform.key)" :key="account.id" class="account-card">
+                      <div class="account-card-head" @click="toggleAccountExpand(account.id)" style="cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                          <span class="expand-icon" :class="{ expanded: expandedAccounts.has(account.id) }">▶</span>
+                          <strong>{{ account.displayName || account.sauAccountName || account.accountId || account.openId || account.id }}</strong>
+                        </div>
+                        <div style="display: flex; gap: 8px;" @click.stop>
+                          <button
+                            type="button"
+                            class="ghost-btn compact-btn"
+                            :disabled="checkingLoginAccounts.has(`${platform.key}:${account.id}`)"
+                            @click="center.checkPlatformAccountLogin(platform.key, account.id)"
+                          >
+                            {{ checkingLoginAccounts.has(`${platform.key}:${account.id}`) ? '检测中...' : '检测登录' }}
+                          </button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.removeSauAccount(platform.key, account.id)">删除</button>
+                        </div>
+                      </div>
+                      <div v-show="expandedAccounts.has(account.id)" class="platform-fields">
+                        <input
+                          class="input-dark text-sm"
+                          :value="account.displayName || ''"
+                          placeholder="账号备注 / Account Alias"
+                          @input="center.updateSauAccountField(platform.key, account.id, 'displayName', $event.target.value)"
+                        />
+                        <div>
+                          <label class="control-label field-label">
+                            <span>登录账号别名</span>
+                            <span class="required-tag">Required</span>
+                          </label>
+                          <div class="field-help">示例：{{ defaultSauAccountName(platform.key) }}。不要和同平台其他账号重复。</div>
+                          <input
+                            :class="['input-dark text-sm', !(account.sauAccountName || '').trim() ? 'missing-field' : '']"
+                            :placeholder="defaultSauAccountName(platform.key)"
+                            :value="account.sauAccountName || ''"
+                            @input="center.updateSauAccountField(platform.key, account.id, 'sauAccountName', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>{{ platform.key === 'douyin' ? 'Open ID（选填）' : '账号 ID（选填）' }}</span>
+                          </label>
+                          <input
+                            class="input-dark text-sm"
+                            :value="platform.key === 'douyin' ? (account.openId || '') : (account.accountId || '')"
+                            @input="center.updateSauAccountField(platform.key, account.id, platform.key === 'douyin' ? 'openId' : 'accountId', $event.target.value)"
+                          />
+                        </div>
+                        <textarea
+                          class="input-dark text-sm"
+                          rows="2"
+                          :value="account.notes || ''"
+                          placeholder="备注"
+                          @input="center.updateSauAccountField(platform.key, account.id, 'notes', $event.target.value)"
+                        ></textarea>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template v-else>
                   <input
                     class="input-dark text-sm"
                     :value="center.config.value?.[platform.key]?.displayName || ''"
@@ -539,10 +605,6 @@
                       <span>{{ center.getFieldLabel(platform.key, field) }}</span>
                       <span v-if="requiredFields(platform.key).includes(field)" class="required-tag">Required</span>
                     </label>
-                    <div v-if="isSauPlatform(platform.key) && field === 'sauAccountName'" class="field-help">
-                      示例：{{ defaultSauAccountName(platform.key) }}。首次草稿测试会打开浏览器登录；后续复用
-                      <code>data/social-auto-upload-runtime/cookies</code> 里的登录态。
-                    </div>
                     <input
                       :type="center.isSecretField(field) ? 'password' : 'text'"
                       :class="['input-dark text-sm', isMissing(platform.key, field) ? 'missing-field' : '']"
@@ -550,16 +612,6 @@
                       :value="center.config.value?.[platform.key]?.[field] || ''"
                       @input="center.updateConfigField(platform.key, field, $event.target.value)"
                     />
-                  </div>
-                  <div v-if="isSauPlatform(platform.key)" class="quick-config-actions">
-                    <button
-                      type="button"
-                      class="ghost-btn compact-btn"
-                      @click="applySauDefaults(platform.key)"
-                    >
-                      填入推荐别名
-                    </button>
-                    <span>{{ sauReady(platform.key) ? '已可创建草稿测试任务' : '启用平台并填写别名后可测试' }}</span>
                   </div>
                 </template>
               </div>
@@ -715,6 +767,20 @@
                     >
                       <option value="">请选择视频号账号</option>
                       <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
+                        {{ account.label }}
+                      </option>
+                    </select>
+                  </div>
+
+                  <div v-for="platformKey in ['douyin', 'xiaohongshu']" :key="`editor-account-${platformKey}`" v-show="center.editor.value.platforms.includes(platformKey)">
+                    <label class="control-label">{{ platformLabel(platformKey) }}发布账号</label>
+                    <select
+                      class="input-dark text-sm"
+                      :value="center.editor.value.platformSelections[platformKey]?.accountId || ''"
+                      @change="setEditorPlatformAccount(platformKey, $event.target.value)"
+                    >
+                      <option value="">请选择{{ platformLabel(platformKey) }}账号</option>
+                      <option v-for="account in center.getPlatformAccountOptions(platformKey)" :key="account.id" :value="account.id">
                         {{ account.label }}
                       </option>
                     </select>
@@ -1133,6 +1199,9 @@ const platformTips = {
 };
 
 const sauPlatformKeys = new Set(['douyin', 'xiaohongshu']);
+const sauAccounts = (platformKey) => Array.isArray(props.center.config.value?.[platformKey]?.accounts)
+  ? props.center.config.value[platformKey].accounts
+  : [];
 
 const editorHealth = computed(() => {
   let score = 0;
@@ -1151,7 +1220,7 @@ const editableFields = (platformKey) => {
     return ['finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'];
   }
   const source = props.center.config.value?.[platformKey] || {};
-  return Object.keys(source).filter((field) => !['enabled', 'displayName', 'notes'].includes(field));
+  return Object.keys(source).filter((field) => !['enabled', 'displayName', 'notes', 'accounts'].includes(field));
 };
 
 const requiredFields = (platformKey) => requiredFieldMap[platformKey] || [];
@@ -1179,8 +1248,6 @@ const platformTip = (platformKey) => platformTips[platformKey] || '平台接入�
 const platformLabel = (key) => props.center.platformDefs.find((platform) => platform.key === key)?.label || key;
 const isSauPlatform = (platformKey) => sauPlatformKeys.has(platformKey);
 const defaultSauAccountName = (platformKey) => (platformKey === 'douyin' ? 'douyin_main' : 'xhs_main');
-const sauAccountName = (platformKey) => String(props.center.config.value?.[platformKey]?.sauAccountName || '').trim();
-const sauReady = (platformKey) => !!props.center.config.value?.[platformKey]?.enabled && !!sauAccountName(platformKey);
 const wechatTask = (job) => props.center.getTask(job, 'wechatChannels');
 const platformTasks = (job) => Array.isArray(job?.platformTasks) ? job.platformTasks : [];
 const selectedPlatformLabels = (job) => {
@@ -1192,12 +1259,16 @@ const selectedPlatformLabels = (job) => {
 
 function applySauDefaults(platformKey) {
   props.center.updateConfigField(platformKey, 'enabled', true);
-  if (!sauAccountName(platformKey)) {
-    props.center.updateConfigField(platformKey, 'sauAccountName', defaultSauAccountName(platformKey));
+  if (!sauAccounts(platformKey).length) {
+    props.center.addSauAccount(platformKey);
   }
-  if (!String(props.center.config.value?.[platformKey]?.displayName || '').trim()) {
-    props.center.updateConfigField(platformKey, 'displayName', platformLabel(platformKey));
+}
+
+function setEditorPlatformAccount(platformKey, accountId) {
+  if (!props.center.editor.value.platformSelections[platformKey]) {
+    props.center.editor.value.platformSelections[platformKey] = { accountId: '' };
   }
+  props.center.editor.value.platformSelections[platformKey].accountId = accountId;
 }
 
 function fieldPlaceholder(platformKey, field) {

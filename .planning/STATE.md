@@ -5,7 +5,7 @@ milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
 last_updated: "2026-05-08T06:04:00Z"
-last_activity: 2026-05-15 — Completed quick task: 禁用登录检查自动推送飞书
+last_activity: 2026-05-15 — Completed quick task: 账号看板新增抖音和小红书登录检测控制与多账户适配
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-15 — Completed quick task: 禁用登录检查自动推送飞书
+Last activity: 2026-05-15 — Completed quick task: 账号看板新增抖音和小红书登录检测控制与多账户适配
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -108,6 +108,7 @@ None yet.
 | 2026-05-11 | 账号控制中心新增账号内容管理入口 | `.planning/quick/260511-ov3-account-content-management-button/260511-ov3-SUMMARY.md` |
 | 2026-05-15 | 口播稿编号安全化，避免法案编号被 TTS 误读成大数字 | `.planning/quick/260515-d5l-fix-tts-narration-so-law-bill-identifier/SUMMARY.md` |
 | 2026-05-15 | 禁用登录检查自动推送飞书 | `.planning/quick/260515-kkq-disable-login-check-feishu/260515-kkq-SUMMARY.md` |
+| 2026-05-15 | 账号看板新增抖音和小红书登录检测控制与多账户适配 | `.planning/quick/260515-lf6-account-dashboard-social-accounts/SUMMARY.md` |
 
 ## Session Continuity
 

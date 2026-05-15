@@ -113,6 +113,12 @@ async def wait_for_manual_close(context, platform_label: str) -> None:
         await asyncio.sleep(5)
 
 
+async def wait_for_manual_manage_close(context, platform_label: str) -> None:
+    emit("opened", f"{platform_label}创作中心已打开，请在浏览器中操作；关闭浏览器后本次管理会话结束", 100)
+    while len(context.pages) > 0:
+        await asyncio.sleep(5)
+
+
 def normalize_tags(value) -> list[str]:
     if isinstance(value, list):
         source = value
@@ -125,6 +131,7 @@ def build_common_payload(payload: dict) -> dict:
     return {
         "platform": str(payload.get("platform") or "").strip(),
         "platform_label": str(payload.get("platformLabel") or payload.get("platform") or "平台").strip(),
+        "action": str(payload.get("action") or "publish").strip(),
         "publish_mode": str(payload.get("publishMode") or "draft").strip(),
         "account_name": str(payload.get("accountName") or payload.get("accountId") or payload.get("accountLabel") or "").strip(),
         "video_path": str(payload.get("videoPath") or "").strip(),
@@ -267,18 +274,57 @@ async def run_xiaohongshu_draft(modules: dict, app) -> None:
             await browser.close()
 
 
+async def open_content_manager(modules: dict, data: dict, account_file: Path) -> None:
+    async_playwright = modules["async_playwright"]
+    set_init_script = modules["set_init_script"]
+    platform = data["platform"]
+    platform_label = data["platform_label"]
+    target_url = (
+        "https://creator.douyin.com/creator-micro/content/manage"
+        if platform == "douyin"
+        else "https://creator.xiaohongshu.com/publish/publish"
+    )
+    emit("opening", f"正在打开{platform_label}创作中心", 50, url=target_url)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=data["headless"], channel="chrome")
+        context = await browser.new_context(
+            storage_state=str(account_file),
+            permissions=["geolocation"],
+        )
+        context = await set_init_script(context)
+        try:
+            page = await context.new_page()
+            await page.goto(target_url)
+            await context.storage_state(path=str(account_file))
+            await wait_for_manual_manage_close(context, platform_label)
+        finally:
+            await context.close()
+            await browser.close()
+
+
 async def run_payload(payload: dict, sau_dir: str, runtime_dir: str) -> None:
     data = build_common_payload(payload)
     if data["platform"] not in {"douyin", "xiaohongshu"}:
         raise ValueError(f"Unsupported platform: {data['platform']}")
     if not data["account_name"]:
         raise ValueError("Missing social-auto-upload account name")
-    if not Path(data["video_path"]).exists():
+    if data["action"] == "publish" and not Path(data["video_path"]).exists():
         raise FileNotFoundError(f"Video file not found: {data['video_path']}")
 
     runtime_root = resolve_runtime_dir(runtime_dir)
     modules = load_sau_modules(sau_dir)
     account_file = await ensure_cookie_ready(modules, runtime_root, data["platform"], data["account_name"], data["headless"])
+
+    if data["action"] == "check_login":
+        emit("success", f"{data['platform_label']}登录态可用", 100, accountId=data["account_name"])
+        return
+
+    if data["action"] == "open_manager":
+        await open_content_manager(modules, data, account_file)
+        return
+
+    if data["action"] != "publish":
+        raise ValueError(f"Unsupported action: {data['action']}")
 
     if data["platform"] == "douyin":
         app = modules["DouYinVideo"](

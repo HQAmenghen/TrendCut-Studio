@@ -11,6 +11,7 @@ const PLATFORM_DEFS = [
 
 const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu'];
 const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
+const SAU_PLATFORM_KEYS = ['douyin', 'xiaohongshu'];
 
 const AUTO_PILOT_PIPELINE_DEFS = [
   { key: 'vertical', label: '不带数字人', description: '直接生成竖屏成片并进入定时发布' },
@@ -159,6 +160,17 @@ function normalizeApiError(err, fallbackMessage = '请求失败') {
     stage: payload?.stage || '',
     hint: payload?.hint || '',
     details: payload?.details || ''
+  };
+}
+
+function createSauAccount(platformKey) {
+  return {
+    id: `${platformKey}_${Math.random().toString(36).slice(2, 10)}`,
+    displayName: '',
+    sauAccountName: platformKey === 'douyin' ? 'douyin_main' : 'xhs_main',
+    openId: '',
+    accountId: '',
+    notes: ''
   };
 }
 
@@ -438,6 +450,38 @@ export function usePublishCenter() {
   }));
 
   const wechatAccounts = computed(() => Array.isArray(config.value?.wechatChannels?.accounts) ? config.value.wechatChannels.accounts : []);
+  const getSauAccounts = (platformKey) => Array.isArray(config.value?.[platformKey]?.accounts) ? config.value[platformKey].accounts : [];
+  const douyinAccounts = computed(() => getSauAccounts('douyin'));
+  const xiaohongshuAccounts = computed(() => getSauAccounts('xiaohongshu'));
+  const getPlatformAccountOptions = (platformKey) => {
+    if (platformKey === 'wechatChannels') {
+      return wechatAccounts.value.map((account) => ({
+        id: account.id,
+        label: account.displayName || account.helperAccount || account.finderUserName || account.id
+      }));
+    }
+    if (SAU_PLATFORM_KEYS.includes(platformKey)) {
+      return getSauAccounts(platformKey).map((account) => ({
+        id: account.id,
+        label: account.displayName || account.sauAccountName || account.accountId || account.openId || account.id
+      }));
+    }
+    return [];
+  };
+  const ensureEditorPlatformSelection = (platformKey) => {
+    if (!editor.value.platformSelections[platformKey]) {
+      editor.value.platformSelections[platformKey] = { accountId: '' };
+    }
+    const selection = editor.value.platformSelections[platformKey];
+    const options = getPlatformAccountOptions(platformKey);
+    if (!selection.accountId) {
+      const firstAccount = options[0];
+      if (firstAccount) selection.accountId = firstAccount.id;
+    }
+    if (selection.accountId && !options.some((account) => account.id === selection.accountId)) {
+      selection.accountId = options[0]?.id || '';
+    }
+  };
   const xaiPartitionOptions = computed(() => {
     const source = Array.isArray(xaiPartitions.value) && xaiPartitions.value.length
       ? xaiPartitions.value
@@ -644,6 +688,18 @@ export function usePublishCenter() {
         accountCount: accounts.length
       };
     }
+    if (SAU_PLATFORM_KEYS.includes(platform.key)) {
+      const accounts = Array.isArray(item.accounts) ? item.accounts : [];
+      const filled = accounts.filter((account) => String(account.sauAccountName || '').trim()).length;
+      const total = accounts.length || 1;
+      return {
+        ...platform,
+        config: item,
+        percent: item.enabled ? Math.round((filled / total) * 100) : 0,
+        fieldKeys: ['accounts'],
+        accountCount: accounts.length
+      };
+    }
     const fieldKeys = Object.keys(item).filter((key) => key !== 'enabled');
     const filled = fieldKeys.filter((key) => String(item[key] ?? '').trim()).length;
     const total = fieldKeys.length || 1;
@@ -671,8 +727,8 @@ export function usePublishCenter() {
     editor.value.tagStrategy = 'model';
     editor.value.tags = '';
     editor.value.coverUrl = asset.metadata?.coverUrl || '';
-    if (!editor.value.platformSelections.wechatChannels.accountId && wechatAccounts.value.length) {
-      editor.value.platformSelections.wechatChannels.accountId = wechatAccounts.value[0].id;
+    for (const platformKey of editor.value.platforms || []) {
+      ensureEditorPlatformSelection(platformKey);
     }
   };
 
@@ -727,8 +783,8 @@ export function usePublishCenter() {
       config.value = configRes.data.config || {};
       selfCheck.value = selfCheckRes.data?.report || null;
       xaiPartitions.value = xaiConfigRes.data?.config?.partitions || [];
-      if (!editor.value.platformSelections.wechatChannels.accountId && (config.value?.wechatChannels?.accounts || []).length) {
-        editor.value.platformSelections.wechatChannels.accountId = config.value.wechatChannels.accounts[0].id;
+      for (const platformKey of editor.value.platforms || []) {
+        ensureEditorPlatformSelection(platformKey);
       }
 
       const nextSelected = assets.value.find((asset) => asset.id === keepId)?.id || assets.value[0]?.id || '';
@@ -800,17 +856,20 @@ export function usePublishCenter() {
     if (!editor.value.platformSelections.wechatChannels) {
       editor.value.platformSelections.wechatChannels = { accountId: '' };
     }
+    for (const platformKey of editor.value.platforms || []) {
+      ensureEditorPlatformSelection(platformKey);
+    }
     await refresh(false, { preserveEditor: true });
     appendLog(`已将发布任务载回编辑器：${job.id}`);
   };
 
   const updateConfigField = (platformKey, field, value) => {
     if (!config.value[platformKey]) return;
-    if (platformKey === 'wechatChannels' && field === 'accounts') {
+    if (['wechatChannels', ...SAU_PLATFORM_KEYS].includes(platformKey) && field === 'accounts') {
       config.value = {
         ...config.value,
-        wechatChannels: {
-          ...config.value.wechatChannels,
+        [platformKey]: {
+          ...config.value[platformKey],
           accounts: Array.isArray(value) ? value : []
         }
       };
@@ -965,6 +1024,32 @@ export function usePublishCenter() {
     }
   };
 
+  const addSauAccount = (platformKey) => {
+    if (!SAU_PLATFORM_KEYS.includes(platformKey)) return;
+    const nextAccount = createSauAccount(platformKey);
+    const accounts = getSauAccounts(platformKey);
+    updateConfigField(platformKey, 'accounts', [...accounts, nextAccount]);
+    ensureEditorPlatformSelection(platformKey);
+  };
+
+  const updateSauAccountField = (platformKey, accountId, field, value) => {
+    if (!SAU_PLATFORM_KEYS.includes(platformKey)) return;
+    updateConfigField(
+      platformKey,
+      'accounts',
+      getSauAccounts(platformKey).map((account) => (account.id === accountId ? { ...account, [field]: String(value ?? '') } : account))
+    );
+  };
+
+  const removeSauAccount = (platformKey, accountId) => {
+    if (!SAU_PLATFORM_KEYS.includes(platformKey)) return;
+    const nextAccounts = getSauAccounts(platformKey).filter((account) => account.id !== accountId);
+    updateConfigField(platformKey, 'accounts', nextAccounts);
+    if (editor.value.platformSelections[platformKey]?.accountId === accountId) {
+      editor.value.platformSelections[platformKey].accountId = nextAccounts[0]?.id || '';
+    }
+  };
+
   const saveConfig = async (label) => {
     const tag = label || '平台配置';
     savingConfig.value = true;
@@ -1004,6 +1089,9 @@ export function usePublishCenter() {
     editor.value.platforms = Array.from(current);
     if (platformKey === 'wechatChannels' && checked && !editor.value.platformSelections.wechatChannels) {
       editor.value.platformSelections.wechatChannels = { accountId: '' };
+    }
+    if (checked && SAU_PLATFORM_KEYS.includes(platformKey)) {
+      ensureEditorPlatformSelection(platformKey);
     }
   };
 
@@ -1192,10 +1280,7 @@ export function usePublishCenter() {
   const isSecretField = (field) => SECRET_HINT_FIELDS.has(field);
 
   const getTask = (job, platformKey = 'wechatChannels') => (job.platformTasks || []).find((task) => task.platform === platformKey) || null;
-  const getWechatAccountOptions = () => wechatAccounts.value.map((account) => ({
-    id: account.id,
-    label: account.displayName || account.helperAccount || account.finderUserName || account.id
-  }));
+  const getWechatAccountOptions = () => getPlatformAccountOptions('wechatChannels');
 
   const getJobTerminalState = (job) => {
     const states = (job.platformTasks || []).map((task) => String(task.runtime?.state || task.status || ''));
@@ -1293,6 +1378,8 @@ export function usePublishCenter() {
     autoPilotPipelineDefs: AUTO_PILOT_PIPELINE_DEFS,
     platformCards,
     wechatAccounts,
+    douyinAccounts,
+    xiaohongshuAccounts,
     xaiPartitionOptions,
     activeAutoPilotPipelineModes,
     activeAutoPilotMappings,
@@ -1325,6 +1412,9 @@ export function usePublishCenter() {
     addWechatAccount,
     updateWechatAccountField,
     removeWechatAccount,
+    addSauAccount,
+    updateSauAccountField,
+    removeSauAccount,
     saveConfig,
     toggleEditorPlatform,
     createJob,
@@ -1344,6 +1434,7 @@ export function usePublishCenter() {
     getFieldLabel,
     isSecretField,
     getPlatformLabel,
+    getPlatformAccountOptions,
     getTask,
     getWechatAccountOptions,
     getJobTerminalState,
@@ -1386,6 +1477,110 @@ export function usePublishCenter() {
         console.error('检测登录状态失败:', err);
       } finally {
         checkingLoginAccounts.value.delete(accountId);
+      }
+      return null;
+    },
+    checkPlatformAccountLogin: async (platformKey, accountId) => {
+      const statusKey = `${platformKey}:${accountId}`;
+      checkingLoginAccounts.value.add(statusKey);
+      try {
+        stopWechatLoginPolling();
+        const res = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
+        if (res.data?.success) {
+          const status = res.data.status === 'need_scan' ? 'need_login' : res.data.status;
+          const result = {
+            ...res.data,
+            status,
+            lastCheckedAt: new Date().toISOString()
+          };
+          accountLoginStatus.value = {
+            ...accountLoginStatus.value,
+            [statusKey]: result
+          };
+          if (res.data.status === 'need_scan') {
+            const rawBase64 = String(res.data.qrCodeBase64 || '').trim();
+            qrCodeData.value = {
+              show: true,
+              accountId: statusKey,
+              accountLabel: res.data.accountLabel || accountId,
+              source: 'platform-account-login',
+              base64: rawBase64 && !rawBase64.startsWith('data:image/') ? `data:image/png;base64,${rawBase64}` : rawBase64,
+              qrCodePath: res.data.qrCodePath || '',
+              status: 'need_scan',
+              error: '',
+              message: res.data.message || '请扫描二维码登录'
+            };
+            qrLoginPollTimer = window.setInterval(async () => {
+              if (!qrCodeData.value.show || qrCodeData.value.accountId !== statusKey) {
+                stopWechatLoginPolling();
+                return;
+              }
+              try {
+                const pollRes = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
+                if (!pollRes.data?.success) return;
+                const pollStatus = pollRes.data.status === 'need_scan' ? 'need_login' : pollRes.data.status;
+                accountLoginStatus.value = {
+                  ...accountLoginStatus.value,
+                  [statusKey]: {
+                    ...pollRes.data,
+                    status: pollStatus,
+                    lastCheckedAt: new Date().toISOString()
+                  }
+                };
+                if (pollRes.data.status === 'logged_in') {
+                  qrCodeData.value = {
+                    show: true,
+                    accountId: statusKey,
+                    accountLabel: pollRes.data.accountLabel || accountId,
+                    source: 'platform-account-login',
+                    base64: '',
+                    qrCodePath: '',
+                    status: 'logged_in',
+                    error: '',
+                    message: pollRes.data.message || '登录态可用'
+                  };
+                  stopWechatLoginPolling();
+                  window.setTimeout(() => {
+                    if (qrCodeData.value.accountId === statusKey && qrCodeData.value.status === 'logged_in') {
+                      qrCodeData.value.show = false;
+                    }
+                  }, 1800);
+                }
+              } catch (_err) {}
+            }, 4000);
+          } else if (res.data.status === 'logged_in') {
+            qrCodeData.value = {
+              show: true,
+              accountId: statusKey,
+              accountLabel: res.data.accountLabel || accountId,
+              source: 'platform-account-login',
+              base64: '',
+              qrCodePath: '',
+              status: 'logged_in',
+              error: '',
+              message: res.data.message || '登录态可用'
+            };
+            window.setTimeout(() => {
+              if (qrCodeData.value.accountId === statusKey && qrCodeData.value.status === 'logged_in') {
+                qrCodeData.value.show = false;
+              }
+            }, 1800);
+          }
+          return result;
+        }
+      } catch (err) {
+        const normalized = normalizeApiError(err, '检测平台账号登录状态失败');
+        accountLoginStatus.value = {
+          ...accountLoginStatus.value,
+          [statusKey]: {
+            status: 'error',
+            message: normalized.message,
+            lastCheckedAt: new Date().toISOString()
+          }
+        };
+        appendError(`检测${getPlatformLabel(platformKey)}登录状态失败: ${normalized.message}`);
+      } finally {
+        checkingLoginAccounts.value.delete(statusKey);
       }
       return null;
     },

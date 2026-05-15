@@ -341,10 +341,11 @@ function createPublishStore(deps) {
   }
 
   function reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig, selection = {}) {
-    const preservedOptions = platformKey === 'wechatChannels'
+    const preservedOptions = ['wechatChannels', 'douyin', 'xiaohongshu'].includes(platformKey)
       ? {
         accountId: String(selection?.accountId || existingTask?.accountId || '').trim(),
-        accountLabel: String(selection?.accountLabel || existingTask?.accountLabel || '').trim()
+        accountLabel: String(selection?.accountLabel || existingTask?.accountLabel || '').trim(),
+        sauAccountName: String(selection?.sauAccountName || existingTask?.sauAccountName || '').trim()
       }
       : {};
     const rebuiltTask = buildPublishTask(platformKey, publishData, assetUrl, platformConfig, preservedOptions);

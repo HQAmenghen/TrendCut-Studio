@@ -17,8 +17,10 @@ function createPublishHandlers(deps) {
     buildShortTitle,
     generatePublishDescription,
     getWechatAccountMap,
+    getSauAccountMap,
     buildPublishTask,
     validateWechatTaskConfig,
+    validateSauTaskConfig,
     collectPlatformValidation,
     startWechatRpa,
     retryWechatRpa,
@@ -28,6 +30,8 @@ function createPublishHandlers(deps) {
     cancelPlatformRpa,
     checkWechatLogin,
     openWechatContentManager,
+    checkPlatformLogin,
+    openPlatformContentManager,
     triggerAutoPilotNow
   } = deps;
 
@@ -282,6 +286,10 @@ function createPublishHandlers(deps) {
         const platformErrors = [];
         const platformSelections = {};
         const wechatAccountMap = getWechatAccountMap(config);
+        const sauAccountMaps = {
+          douyin: typeof getSauAccountMap === 'function' ? getSauAccountMap('douyin', config) : new Map(),
+          xiaohongshu: typeof getSauAccountMap === 'function' ? getSauAccountMap('xiaohongshu', config) : new Map()
+        };
 
         for (const platformKey of selectedPlatforms) {
           const platformConfig = config[platformKey];
@@ -304,6 +312,15 @@ function createPublishHandlers(deps) {
               accountId,
               accountLabel: account?.displayName || account?.helperAccount || account?.finderUserName || ''
             };
+          } else if (['douyin', 'xiaohongshu'].includes(platformKey)) {
+            const accountId = String(selection.accountId || '').trim();
+            const accounts = Array.from(sauAccountMaps[platformKey]?.values?.() || []);
+            const account = sauAccountMaps[platformKey]?.get(accountId) || accounts[0] || null;
+            normalizedSelection = {
+              accountId: account?.id || accountId,
+              accountLabel: account?.displayName || account?.sauAccountName || account?.accountId || account?.openId || '',
+              sauAccountName: account?.sauAccountName || platformConfig.sauAccountName || ''
+            };
           }
           platformSelections[platformKey] = normalizedSelection;
           const task = buildPublishTask(platformKey, publishData, asset.url, platformConfig, normalizedSelection);
@@ -312,10 +329,16 @@ function createPublishHandlers(deps) {
           }
           const validation = platformKey === 'wechatChannels'
             ? validateWechatTaskConfig(platformConfig, task)
-            : collectPlatformValidation(platformKey, platformConfig, task.requiredFields || []);
+            : (['douyin', 'xiaohongshu'].includes(platformKey) && typeof validateSauTaskConfig === 'function'
+              ? validateSauTaskConfig(platformKey, platformConfig, task)
+              : collectPlatformValidation(platformKey, platformConfig, task.requiredFields || []));
           task.validation = validation;
           if (platformKey === 'wechatChannels' && validation.account) {
             task.accountLabel = validation.account.displayName || validation.account.helperAccount || validation.account.finderUserName || task.accountLabel || '';
+          }
+          if (['douyin', 'xiaohongshu'].includes(platformKey) && validation.account) {
+            task.accountLabel = validation.account.displayName || validation.account.sauAccountName || validation.account.accountId || validation.account.openId || task.accountLabel || '';
+            task.sauAccountName = validation.account.sauAccountName || task.sauAccountName || '';
           }
           if (validation.missingFields.length > 0) {
             platformErrors.push({
@@ -564,6 +587,45 @@ function createPublishHandlers(deps) {
         sendError(res, { status: 500, code: 'PUBLISH_WECHAT_CONTENT_MANAGER_FAILED', stage: 'publish.wechat', error: '打开内容管理页失败', details: err.message });
       }
     },
+    testPlatformLogin: async (req, res) => {
+      try {
+        const platformKey = String(req.params.platformKey || '').trim();
+        const accountId = String(req.params.accountId || '').trim();
+        if (!['douyin', 'xiaohongshu'].includes(platformKey)) {
+          return sendError(res, { status: 400, code: 'PUBLISH_PLATFORM_UNSUPPORTED', stage: 'publish.platform_login', error: '该平台暂不支持账号登录检测' });
+        }
+        if (!accountId) return sendError(res, { status: 400, code: 'PUBLISH_ACCOUNT_ID_MISSING', stage: 'publish.platform_login', error: '缺少账号 ID' });
+        if (typeof checkPlatformLogin !== 'function') {
+          return sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_LOGIN_UNAVAILABLE', stage: 'publish.platform_login', error: '平台登录检测服务未初始化' });
+        }
+        const result = await checkPlatformLogin(platformKey, accountId);
+        res.json(result);
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_TEST_LOGIN_FAILED', stage: 'publish.platform_login', error: '测试平台登录状态失败', details: err.message });
+      }
+    },
+    openPlatformContentManager: async (req, res) => {
+      try {
+        const platformKey = String(req.params.platformKey || '').trim();
+        const accountId = String(req.params.accountId || '').trim();
+        if (!['douyin', 'xiaohongshu'].includes(platformKey)) {
+          return sendError(res, { status: 400, code: 'PUBLISH_PLATFORM_UNSUPPORTED', stage: 'publish.platform_manager', error: '该平台暂不支持内容管理入口' });
+        }
+        if (!accountId) return sendError(res, { status: 400, code: 'PUBLISH_ACCOUNT_ID_MISSING', stage: 'publish.platform_manager', error: '缺少账号 ID' });
+        if (typeof openPlatformContentManager !== 'function') {
+          return sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_MANAGER_UNAVAILABLE', stage: 'publish.platform_manager', error: '平台内容管理服务未初始化' });
+        }
+        const result = await openPlatformContentManager(platformKey, accountId);
+        res.json({
+          ...result,
+          success: result?.success !== false,
+          platform: platformKey,
+          accountId
+        });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_PLATFORM_CONTENT_MANAGER_FAILED', stage: 'publish.platform_manager', error: '打开平台内容管理页失败', details: err.message });
+      }
+    },
     getAccountDashboard: async (req, res) => {
       try {
         if (!deps.accountDashboardService) {
@@ -581,10 +643,11 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 500, code: 'ACCOUNT_DASHBOARD_NOT_AVAILABLE', stage: 'publish.accounts', error: '账号看板服务未初始化' });
         }
         const accountId = String(req.params.accountId || '').trim();
+        const platform = String(req.query.platform || 'wechatChannels').trim();
         if (!accountId) return sendError(res, { status: 400, code: 'ACCOUNT_ID_MISSING', stage: 'publish.accounts', error: '缺少账号 ID' });
         const status = String(req.query.status || '').trim() || undefined;
         const limit = parseInt(req.query.limit || '50', 10);
-        const jobs = deps.accountDashboardService.getAccountJobs(accountId, { status, limit });
+        const jobs = deps.accountDashboardService.getAccountJobs(accountId, { status, limit, platform });
         res.json({ success: true, jobs });
       } catch (err) {
         sendError(res, { status: 500, code: 'ACCOUNT_JOBS_FAILED', stage: 'publish.accounts', error: '获取账号任务列表失败', details: err.message });
@@ -596,9 +659,10 @@ function createPublishHandlers(deps) {
           return sendError(res, { status: 500, code: 'ACCOUNT_DASHBOARD_NOT_AVAILABLE', stage: 'publish.accounts', error: '账号看板服务未初始化' });
         }
         const accountId = String(req.params.accountId || '').trim();
+        const platform = String(req.query.platform || 'wechatChannels').trim();
         if (!accountId) return sendError(res, { status: 400, code: 'ACCOUNT_ID_MISSING', stage: 'publish.accounts', error: '缺少账号 ID' });
         const limit = parseInt(req.query.limit || '20', 10);
-        const jobs = deps.accountDashboardService.getAccountFailedJobs(accountId, limit);
+        const jobs = deps.accountDashboardService.getAccountFailedJobs(accountId, limit, platform);
         res.json({ success: true, jobs });
       } catch (err) {
         sendError(res, { status: 500, code: 'ACCOUNT_FAILURES_FAILED', stage: 'publish.accounts', error: '获取账号失败任务失败', details: err.message });

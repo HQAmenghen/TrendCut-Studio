@@ -5,7 +5,7 @@
  * - 平台配置读写
  * - 配置规范化和验证
  * - 敏感信息掩码
- * - WeChat 账号管理
+ * - WeChat / social-auto-upload 账号管理
  */
 
 function createPublishConfigService(deps) {
@@ -20,6 +20,7 @@ function createPublishConfigService(deps) {
 
   const autoPilotPlatformKeys = ['wechatChannels', 'douyin', 'xiaohongshu'];
   const defaultAutoPilotPlatforms = ['wechatChannels'];
+  const sauPlatformKeys = ['douyin', 'xiaohongshu'];
 
   const platformFieldLabels = {
     wechatChannels: {
@@ -96,6 +97,78 @@ function createPublishConfigService(deps) {
       sanitized.push(next);
     }
     return sanitized;
+  }
+
+  function createEmptySauAccount(platformKey) {
+    const generatedId = typeof makeJobId === 'function'
+      ? String(makeJobId() || '').trim()
+      : `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const account = {
+      id: `${platformKey}_${generatedId}`,
+      displayName: '',
+      sauAccountName: '',
+      notes: ''
+    };
+    if (platformKey === 'douyin') {
+      account.openId = '';
+    } else if (platformKey === 'xiaohongshu') {
+      account.accountId = '';
+    }
+    return account;
+  }
+
+  function getSauAccountFields(platformKey) {
+    return platformKey === 'douyin'
+      ? ['displayName', 'sauAccountName', 'openId', 'notes']
+      : ['displayName', 'sauAccountName', 'accountId', 'notes'];
+  }
+
+  function hasSauLegacyValue(platformKey, source = {}) {
+    const fields = getSauAccountFields(platformKey);
+    return fields.some((field) => String(source?.[field] ?? '').trim());
+  }
+
+  function createLegacySauAccount(platformKey, source = {}) {
+    const account = createEmptySauAccount(platformKey);
+    account.id = `${platformKey}_main`;
+    for (const field of getSauAccountFields(platformKey)) {
+      account[field] = String(source?.[field] ?? '').trim();
+    }
+    return account;
+  }
+
+  function sanitizeSauAccounts(platformKey, accounts, legacySource = {}) {
+    const source = Array.isArray(accounts)
+      ? accounts
+      : (hasSauLegacyValue(platformKey, legacySource) ? [createLegacySauAccount(platformKey, legacySource)] : []);
+    const seen = new Set();
+    const sanitized = [];
+    for (const item of source) {
+      if (!item || typeof item !== 'object') continue;
+      const next = createEmptySauAccount(platformKey);
+      const candidateId = String(item.id || '').trim() || next.id;
+      const id = seen.has(candidateId) ? createEmptySauAccount(platformKey).id : candidateId;
+      seen.add(id);
+      next.id = id;
+      for (const field of getSauAccountFields(platformKey)) {
+        next[field] = String(item[field] ?? '').trim();
+      }
+      sanitized.push(next);
+    }
+    return sanitized;
+  }
+
+  function syncSauTopLevelFromAccounts(platformKey, platformConfig) {
+    const accounts = Array.isArray(platformConfig?.accounts) ? platformConfig.accounts : [];
+    const primary = accounts[0] || null;
+    if (!primary) return platformConfig;
+    const next = platformConfig;
+    for (const field of getSauAccountFields(platformKey)) {
+      if (!String(next[field] ?? '').trim()) {
+        next[field] = String(primary[field] ?? '').trim();
+      }
+    }
+    return next;
   }
 
   function sanitizeAutoPilotPipelineModes(value, fallback = 'vertical') {
@@ -221,8 +294,8 @@ function createPublishConfigService(deps) {
         avatarPipelineConfig: {}
       },
       wechatChannels: { enabled: false, accounts: [] },
-      douyin: { enabled: false, displayName: '', sauAccountName: '', clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
-      xiaohongshu: { enabled: false, displayName: '', sauAccountName: '', appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
+      douyin: { enabled: false, displayName: '', sauAccountName: '', accounts: [], clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
+      xiaohongshu: { enabled: false, displayName: '', sauAccountName: '', accounts: [], appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
       x: { enabled: false, displayName: '', apiKey: '', apiSecret: '', accessToken: '', accessSecret: '', bearerToken: '', notes: '' },
       youtube: { enabled: false, displayName: '', clientId: '', clientSecret: '', refreshToken: '', channelId: '', notes: '' }
     };
@@ -268,10 +341,15 @@ function createPublishConfigService(deps) {
       const incoming = source?.[platform];
       if (!incoming || typeof incoming !== 'object') continue;
       for (const key of Object.keys(next[platform])) {
+        if (key === 'accounts') continue;
         if (incoming[key] === undefined) continue;
         next[platform][key] = typeof next[platform][key] === 'boolean'
           ? Boolean(incoming[key])
           : String(incoming[key] ?? '').trim();
+      }
+      if (sauPlatformKeys.includes(platform)) {
+        next[platform].accounts = sanitizeSauAccounts(platform, incoming.accounts, incoming);
+        syncSauTopLevelFromAccounts(platform, next[platform]);
       }
     }
 
@@ -300,6 +378,16 @@ function createPublishConfigService(deps) {
    */
   function getWechatAccountMap(config = readPublishConfig()) {
     const accounts = Array.isArray(config?.wechatChannels?.accounts) ? config.wechatChannels.accounts : [];
+    return new Map(accounts.map((account) => [String(account.id || '').trim(), account]).filter(([id]) => id));
+  }
+
+  function getSauPlatformAccounts(platformKey, config = readPublishConfig()) {
+    if (!sauPlatformKeys.includes(platformKey)) return [];
+    return Array.isArray(config?.[platformKey]?.accounts) ? config[platformKey].accounts : [];
+  }
+
+  function getSauAccountMap(platformKey, config = readPublishConfig()) {
+    const accounts = getSauPlatformAccounts(platformKey, config);
     return new Map(accounts.map((account) => [String(account.id || '').trim(), account]).filter(([id]) => id));
   }
 
@@ -350,6 +438,17 @@ function createPublishConfigService(deps) {
           return next;
         });
         continue;
+      }
+      if (sauPlatformKeys.includes(platform) && Array.isArray(payload[platform]?.accounts)) {
+        payload[platform].accounts = payload[platform].accounts.map((account) => {
+          const next = { ...account };
+          for (const key of Object.keys(next)) {
+            if (secretKeys.has(key)) {
+              next[`${key}Masked`] = maskSecretValue(next[key]);
+            }
+          }
+          return next;
+        });
       }
       for (const key of Object.keys(payload[platform] || {})) {
         if (secretKeys.has(key)) {
@@ -421,10 +520,17 @@ function createPublishConfigService(deps) {
         continue;
       }
       for (const key of Object.keys(next[platform])) {
+        if (key === 'accounts') continue;
         if (source[key] === undefined) continue;
         next[platform][key] = typeof next[platform][key] === 'boolean'
           ? Boolean(source[key])
           : String(source[key] ?? '').trim();
+      }
+      if (sauPlatformKeys.includes(platform)) {
+        next[platform].accounts = Array.isArray(source.accounts)
+          ? sanitizeSauAccounts(platform, source.accounts, source)
+          : sanitizeSauAccounts(platform, next[platform].accounts, next[platform]);
+        syncSauTopLevelFromAccounts(platform, next[platform]);
       }
     }
     return next;
@@ -458,11 +564,40 @@ function createPublishConfigService(deps) {
     };
   }
 
+  function validateSauTaskConfig(platformKey, platformConfig, task) {
+    const accountId = String(task?.accountId || '').trim();
+    if (!accountId) {
+      return {
+        missingFields: ['selectedAccount'],
+        missingFieldLabels: ['发布账号 / Publish Account'],
+        account: null
+      };
+    }
+    const accountMap = getSauAccountMap(platformKey, { [platformKey]: platformConfig });
+    const account = accountMap.get(accountId) || null;
+    if (!account) {
+      return {
+        missingFields: ['selectedAccount'],
+        missingFieldLabels: ['发布账号 / Publish Account'],
+        account: null
+      };
+    }
+    const baseValidation = collectPlatformValidation(platformKey, account, task.requiredFields || []);
+    return {
+      ...baseValidation,
+      account
+    };
+  }
+
   return {
     createEmptyWechatAccount,
     sanitizeWechatAccounts,
+    createEmptySauAccount,
+    sanitizeSauAccounts,
+    getSauPlatformAccounts,
     normalizePublishConfig,
     getWechatAccountMap,
+    getSauAccountMap,
     readPublishConfig,
     writePublishConfig,
     maskSecretValue,
@@ -470,7 +605,8 @@ function createPublishConfigService(deps) {
     formatPlatformFieldLabel,
     collectPlatformValidation,
     sanitizePlatformConfigInput,
-    validateWechatTaskConfig
+    validateWechatTaskConfig,
+    validateSauTaskConfig
   };
 }
 
