@@ -386,7 +386,7 @@ import { ref, computed, onMounted } from 'vue';
 
 const feishuConfig = ref({
   webhookUrl: '',
-  notifyLoginStatus: true,
+  notifyLoginStatus: false,
   notifyAutoPilot: false,
   notifyReview: false
 });

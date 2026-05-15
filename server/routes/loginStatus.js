@@ -89,7 +89,7 @@ function registerLoginStatusRoutes(app, loginStatusService, feishuService) {
         });
       }
 
-      const result = await loginStatusService.checkAccountStatus(account);
+      const result = await loginStatusService.checkAccountStatus(account, { notifyFeishu: false });
       res.json({
         success: true,
         accountId,
@@ -109,8 +109,8 @@ function registerLoginStatusRoutes(app, loginStatusService, feishuService) {
       console.log(`[LoginStatus] 收到获取最新二维码请求: accountId=${accountId}, method=${req.method}`);
 
       const result = await loginStatusService.requestLatestQrCode(accountId, {
-        notifyFeishu: true,
-        trigger: 'feishu_card'
+        notifyFeishu: false,
+        trigger: 'manual_refresh'
       });
 
       console.log('[LoginStatus] 获取最新二维码请求完成:', {
@@ -128,10 +128,10 @@ function registerLoginStatusRoutes(app, loginStatusService, feishuService) {
       res.send(renderActionPage({
         success: true,
         title: '最新二维码请求已提交',
-        message: `账号 ${accountId} 的最新二维码请求已发送到服务端，系统会直接把最新二维码推送到飞书。`,
+        message: `账号 ${accountId} 的最新二维码请求已发送到服务端，请回到控制台查看最新登录二维码。`,
         details: result.status === 'logged_in'
-          ? '当前账号已处于登录状态，本次不会再推送新的登录卡片。'
-          : '本次只会推送最新二维码，不再额外发送一张状态变更卡片。'
+          ? '当前账号已处于登录状态，本次不会推送登录通知。'
+          : '本次只会刷新本地二维码缓存，不会推送飞书。'
       }));
     } catch (err) {
       console.error('[LoginStatus] 获取最新二维码请求失败:', err.message);

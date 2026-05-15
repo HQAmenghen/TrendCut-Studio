@@ -576,4 +576,33 @@ describe('system scheduler autopilot safeguards', () => {
     expect(publishStore.updatePublishJob).not.toHaveBeenCalled();
     expect(publishStore.readPublishJobs().jobs.map((job) => job.status)).toEqual(['scheduled_wait', 'scheduled_wait']);
   });
+
+  test('runs scheduled login checks without sending Feishu alerts', async () => {
+    const { startScheduler } = require('../scheduler');
+    const loginStatusService = {
+      checkAllAccounts: jest.fn(async () => ({
+        checked: 1,
+        logged_in: 0,
+        need_login: 1,
+        error: 0,
+        results: [{ accountId: 'wechat_a', accountLabel: 'Account A', status: 'need_login' }]
+      }))
+    };
+    const feishuService = {
+      sendText: jest.fn()
+    };
+
+    startScheduler({
+      loginStatusService,
+      feishuService
+    });
+
+    const loginCheckTask = scheduledTasks.find((task) => task.expression !== '* * * * *');
+    expect(loginCheckTask).toBeTruthy();
+
+    await loginCheckTask.callback();
+
+    expect(loginStatusService.checkAllAccounts).toHaveBeenCalledWith({ notifyFeishu: false });
+    expect(feishuService.sendText).not.toHaveBeenCalled();
+  });
 });

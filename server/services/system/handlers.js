@@ -183,7 +183,7 @@ function createSystemHandlers(deps) {
         const { values } = readProjectEnv(baseDir);
         const config = {
           webhookUrl: values.FEISHU_WEBHOOK_URL || process.env.FEISHU_WEBHOOK_URL || '',
-          notifyLoginStatus: (values.FEISHU_NOTIFY_LOGIN_STATUS ?? process.env.FEISHU_NOTIFY_LOGIN_STATUS) !== 'false',
+          notifyLoginStatus: (values.FEISHU_NOTIFY_LOGIN_STATUS ?? process.env.FEISHU_NOTIFY_LOGIN_STATUS) === 'true',
           notifyAutoPilot: (values.FEISHU_NOTIFY_AUTOPILOT ?? process.env.FEISHU_NOTIFY_AUTOPILOT) === 'true',
           notifyReview: (values.FEISHU_NOTIFY_REVIEW ?? process.env.FEISHU_NOTIFY_REVIEW) === 'true'
         };

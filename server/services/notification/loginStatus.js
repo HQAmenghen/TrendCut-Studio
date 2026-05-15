@@ -21,7 +21,7 @@ class LoginStatusService {
     // 配置
     this.enabled = process.env.LOGIN_CHECK_ENABLED !== 'false';
     this.retryTimes = parseInt(process.env.LOGIN_CHECK_RETRY_TIMES) || 3;
-    this.notifyLoginStatus = process.env.FEISHU_NOTIFY_LOGIN_STATUS !== 'false';
+    this.notifyLoginStatus = process.env.FEISHU_NOTIFY_LOGIN_STATUS === 'true';
     this.panelBaseUrl = this.resolvePublicPanelBaseUrl();
   }
 
@@ -137,7 +137,7 @@ class LoginStatusService {
   async checkAccountStatus(account, options = {}) {
     const accountId = account.id;
     const retryTimes = options.retryTimes || this.retryTimes;
-    const notifyFeishu = options.notifyFeishu !== undefined ? options.notifyFeishu : true;
+    const notifyFeishu = options.notifyFeishu === true;
 
     // 防止并发检测同一账号
     if (this.checkInProgress.has(accountId)) {
@@ -249,7 +249,7 @@ class LoginStatusService {
       return { checked: 0, results: [] };
     }
 
-    const { notifyFeishu = true } = options;
+    const { notifyFeishu = false } = options;
     const accounts = this.getAccountsToCheck();
 
     if (accounts.length === 0) {
@@ -293,7 +293,7 @@ class LoginStatusService {
       return { checked: 0, results: [] };
     }
 
-    const { notifyFeishu = true, parallel = false } = options;
+    const { notifyFeishu = false, parallel = false } = options;
     const allAccounts = this.getAccountsToCheck();
     const accounts = allAccounts.filter(acc => accountIds.includes(acc.id));
 
@@ -430,10 +430,10 @@ class LoginStatusService {
   }
 
   /**
-   * 主动获取最新二维码并发送到飞书
+   * 主动获取最新二维码并更新本地缓存
    */
   async requestLatestQrCode(accountId, options = {}) {
-    const notifyFeishu = options.notifyFeishu !== false;
+    const notifyFeishu = options.notifyFeishu === true;
     const trigger = String(options.trigger || 'manual').trim() || 'manual';
     const account = this.getAccountById(accountId);
 
