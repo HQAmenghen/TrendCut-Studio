@@ -33,7 +33,7 @@ const FIELD_LABELS = {
   douyin: {
     enabled: '启用',
     displayName: '账号备注',
-    sauAccountName: 'SAU 账号名',
+    sauAccountName: '登录账号别名',
     clientKey: '客户端 Key',
     clientSecret: '客户端密钥',
     accessToken: '访问令牌',
@@ -42,7 +42,7 @@ const FIELD_LABELS = {
   xiaohongshu: {
     enabled: '启用',
     displayName: '账号备注',
-    sauAccountName: 'SAU 账号名',
+    sauAccountName: '登录账号别名',
     appId: '应用 ID',
     appSecret: '应用密钥',
     accessToken: '访问令牌',
