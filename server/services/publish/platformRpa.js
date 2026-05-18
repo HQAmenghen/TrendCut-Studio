@@ -353,10 +353,19 @@ function createPlatformRpaService(deps) {
     };
   }
 
+  function normalizeRememberedLoginStatus(status) {
+    const normalized = String(status || '').trim();
+    if (normalized === 'need_scan') return 'need_login';
+    if (['already_open', 'opened', 'opening', 'logged_in', 'login_ready', 'success'].includes(normalized)) {
+      return 'logged_in';
+    }
+    return normalized || 'unknown';
+  }
+
   function rememberPlatformLoginStatus(platformKey, account, response) {
     const accountName = getSauAccountName(platformKey, account);
     const cacheKey = `${platformKey}:${String(account?.id || accountName || '').trim()}`;
-    const status = response?.status === 'need_scan' ? 'need_login' : (response?.status || 'unknown');
+    const status = normalizeRememberedLoginStatus(response?.status);
     platformLoginStatusCache.set(cacheKey, {
       status,
       lastCheckedAt: new Date().toISOString(),
@@ -614,13 +623,28 @@ function createPlatformRpaService(deps) {
         return;
       }
       if (existing && action === 'open_manager') {
+        if (existing.latestResponse) {
+          const latestResponse = { ...existing.latestResponse };
+          if (latestResponse.status === 'opened') {
+            latestResponse.status = 'already_open';
+            latestResponse.message = latestResponse.message || `${definition.label}管理窗口已经打开`;
+          }
+          resolve({
+            ...latestResponse,
+            success: latestResponse.success !== false,
+            platform: normalizedPlatform,
+            accountId: account.id,
+            accountLabel: latestResponse.accountLabel || account.displayName || getSauAccountName(normalizedPlatform, platformConfig)
+          });
+          return;
+        }
         resolve({
           success: true,
-          status: 'already_open',
+          status: 'opening',
           platform: normalizedPlatform,
           accountId: account.id,
           accountLabel: account.displayName || getSauAccountName(normalizedPlatform, platformConfig),
-          message: `${definition.label}管理窗口已经打开`
+          message: `${definition.label}管理窗口正在打开`
         });
         return;
       }
@@ -679,6 +703,21 @@ function createPlatformRpaService(deps) {
             if (currentSession) currentSession.latestResponse = response;
             rememberPlatformLoginStatus(normalizedPlatform, account, response);
             resolveOnce(response);
+            continue;
+          }
+          if (action === 'open_manager' && ['checking_login', 'login_ready', 'opening'].includes(parsed.state)) {
+            const response = {
+              success: true,
+              status: parsed.state === 'login_ready' ? 'logged_in' : parsed.state,
+              platform: normalizedPlatform,
+              accountId: account.id,
+              accountLabel: account.displayName || parsed.extra?.accountLabel || definition.label,
+              sauAccountName: getSauAccountName(normalizedPlatform, platformConfig),
+              message: parsed.message || `${definition.label}内容管理窗口正在准备`
+            };
+            const currentSession = sessionMap.get(sessionKey);
+            if (currentSession) currentSession.latestResponse = response;
+            rememberPlatformLoginStatus(normalizedPlatform, account, response);
             continue;
           }
           if (settleOn.has(parsed.state)) {

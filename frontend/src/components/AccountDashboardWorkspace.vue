@@ -181,10 +181,12 @@
     <div
       v-if="pc.qrCodeData.value.show"
       class="qr-modal-backdrop"
-      @click.self="pc.closeQrCodeModal"
+      @click.self="closeQrCodeModal"
     >
       <div class="qr-modal-content">
-        <h4 class="qr-modal-title">{{ pc.qrCodeData.value.accountLabel || '平台' }}登录</h4>
+        <h4 class="qr-modal-title">
+          {{ pc.qrCodeData.value.accountLabel || '平台' }}{{ isContentManagerModal ? '内容管理' : '登录' }}
+        </h4>
         <div class="qr-state-box">
           <div v-if="pc.qrCodeData.value.status === 'loading'">
             {{ pc.qrCodeData.value.message || '正在打开浏览器...' }}
@@ -199,7 +201,7 @@
             <div>{{ pc.qrCodeData.value.message || '请扫描二维码登录' }}</div>
           </template>
           <template v-else-if="pc.qrCodeData.value.status === 'logged_in'">
-            <strong>登录成功</strong>
+            <strong>{{ isContentManagerModal ? '内容管理已打开' : '登录成功' }}</strong>
             <div>{{ pc.qrCodeData.value.message || '登录态已恢复' }}</div>
           </template>
           <template v-else-if="pc.qrCodeData.value.status === 'error'">
@@ -208,7 +210,9 @@
           </template>
         </div>
         <div class="qr-modal-actions">
-          <button type="button" class="ghost-btn" @click="pc.closeQrCodeModal">关闭</button>
+          <button type="button" class="ghost-btn" @click="closeQrCodeModal">
+            {{ isContentManagerModal ? '关闭弹窗，浏览器保持打开' : '关闭' }}
+          </button>
         </div>
       </div>
     </div>
@@ -216,7 +220,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive } from 'vue';
+import { ref, computed, onMounted, onUnmounted, reactive } from 'vue';
 import { usePublishCenter } from '../composables/usePublishCenter';
 
 const pc = usePublishCenter();
@@ -237,6 +241,7 @@ const actionMessage = ref('');
 const accounts = ref([]);
 const activeFilter = ref('all');
 const contentManagerActionLabels = ref({});
+let contentManagerPollTimer = null;
 const summary = reactive({
   totalAccounts: 0,
   loggedInAccounts: 0,
@@ -260,6 +265,8 @@ const filteredAccounts = computed(() => {
   if (activeFilter.value === 'error') return accounts.value.filter(a => getAccountStatus(a) === 'error');
   return accounts.value;
 });
+
+const isContentManagerModal = computed(() => pc.qrCodeData.value.source === 'platform-content-manager');
 
 async function loadDashboard() {
   loading.value = true;
@@ -381,20 +388,121 @@ function updateLocalAccountLoginStatus(account, result) {
   }
 }
 
-async function checkLoginBeforeOpening(account) {
-  if (account.platform !== 'wechatChannels') {
-    const result = await checkPlatformAccountLogin(account.platform, account.accountId);
-    updateLocalAccountLoginStatus(account, result || { status: 'unknown' });
-    return result || {};
+function normalizeQrImage(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw.startsWith('data:image/') ? raw : `data:image/png;base64,${raw}`;
+}
+
+function stopContentManagerPolling() {
+  if (contentManagerPollTimer) {
+    window.clearInterval(contentManagerPollTimer);
+    contentManagerPollTimer = null;
   }
-  const response = await fetch(`/api/login-status/check/${encodeURIComponent(account.accountId)}`, {
+}
+
+function closeQrCodeModal() {
+  stopContentManagerPolling();
+  pc.closeQrCodeModal();
+}
+
+function getContentManagerUrl(account) {
+  const accountId = account.accountId;
+  return account.platform === 'wechatChannels'
+    ? `/api/publish/wechat/content-manager/${encodeURIComponent(accountId)}`
+    : `/api/publish/platforms/${encodeURIComponent(account.platform)}/accounts/${encodeURIComponent(accountId)}/content-manager`;
+}
+
+async function requestContentManager(account) {
+  const response = await fetch(getContentManagerUrl(account), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
   });
-  const data = await readJsonResponse(response, '登录检测失败，请稍后重试');
-  const result = data.result || {};
-  updateLocalAccountLoginStatus(account, result);
-  return result;
+  return readJsonResponse(response, '打开内容管理页失败，请确认后端服务已重启并加载最新代码', {
+    allowFailurePayload: true
+  });
+}
+
+function showContentManagerLoginModal(account, data) {
+  const actionKey = statusKey(account);
+  pc.qrCodeData.value = {
+    show: true,
+    accountId: actionKey,
+    accountLabel: data.accountLabel || account.displayName || account.platformLabel || account.accountId,
+    source: 'platform-content-manager',
+    base64: normalizeQrImage(data.qrCodeBase64),
+    qrCodePath: data.qrCodePath || '',
+    status: 'need_scan',
+    error: '',
+    message: data.message || '请扫码登录，登录后内容管理窗口会继续打开'
+  };
+}
+
+function showContentManagerOpenedModal(account, data) {
+  const actionKey = statusKey(account);
+  pc.qrCodeData.value = {
+    show: true,
+    accountId: actionKey,
+    accountLabel: data.accountLabel || account.displayName || account.platformLabel || account.accountId,
+    source: 'platform-content-manager',
+    base64: '',
+    qrCodePath: '',
+    status: 'logged_in',
+    error: '',
+    message: data.message || '内容管理页已打开，浏览器会保持打开'
+  };
+}
+
+function applyContentManagerStatus(account, data) {
+  const status = data.status || (data.success ? 'opened' : 'error');
+  if (['need_scan', 'need_login'].includes(status)) {
+    updateLocalAccountLoginStatus(account, {
+      ...data,
+      status: 'need_login'
+    });
+    if (data.qrCodeBase64 || data.qrCodePath || status === 'need_scan') {
+      showContentManagerLoginModal(account, data);
+      return 'need_scan';
+    }
+    return 'need_login';
+  }
+  if (['already_open', 'opened', 'opened_unconfirmed', 'opening', 'logged_in'].includes(status)) {
+    updateLocalAccountLoginStatus(account, {
+      ...data,
+      status: 'logged_in'
+    });
+    if (['already_open', 'opened', 'opened_unconfirmed'].includes(status)) {
+      showContentManagerOpenedModal(account, data);
+    }
+    return status;
+  }
+  if (data.success === false) {
+    return 'error';
+  }
+  return status;
+}
+
+function startContentManagerPolling(account) {
+  const actionKey = statusKey(account);
+  stopContentManagerPolling();
+  contentManagerPollTimer = window.setInterval(async () => {
+    if (!pc.qrCodeData.value.show || pc.qrCodeData.value.accountId !== actionKey || !isContentManagerModal.value) {
+      stopContentManagerPolling();
+      return;
+    }
+    try {
+      const data = await requestContentManager(account);
+      const status = applyContentManagerStatus(account, data);
+      if (['already_open', 'opened', 'opened_unconfirmed', 'error'].includes(status)) {
+        stopContentManagerPolling();
+      }
+    } catch (err) {
+      pc.qrCodeData.value.status = 'error';
+      pc.qrCodeData.value.error = err.message || '内容管理登录状态查询失败';
+      pc.qrCodeData.value.message = '';
+      stopContentManagerPolling();
+    }
+  }, 4000);
 }
 
 async function handleOpenContentManager(account) {
@@ -404,38 +512,35 @@ async function handleOpenContentManager(account) {
   error.value = '';
   actionMessage.value = '';
   try {
-    setContentManagerActionLabel(actionKey, '检测登录');
-    const loginResult = await checkLoginBeforeOpening(account);
-    if (loginResult.status !== 'logged_in') {
+    setContentManagerActionLabel(actionKey, '打开中');
+    const data = await requestContentManager(account);
+    const status = applyContentManagerStatus(account, data);
+    if (status === 'need_scan') {
       errorTitle.value = '需要登录';
-      error.value = loginResult.error || '该账号当前未登录，已打开登录检测窗口。请先扫码登录，完成后再点击内容管理。';
+      error.value = data.message || '该账号当前未登录，请在弹窗中扫码登录，登录后内容管理窗口会继续打开。';
+      if (account.platform !== 'wechatChannels') {
+        startContentManagerPolling(account);
+      }
       return;
     }
-
-    setContentManagerActionLabel(actionKey, '打开中');
-    const url = account.platform === 'wechatChannels'
-      ? `/api/publish/wechat/content-manager/${encodeURIComponent(accountId)}`
-      : `/api/publish/platforms/${encodeURIComponent(account.platform)}/accounts/${encodeURIComponent(accountId)}/content-manager`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    const data = await readJsonResponse(response, '打开内容管理页失败，请确认后端服务已重启并加载最新代码', {
-      allowFailurePayload: true
-    });
-    if (data.status === 'need_login') {
+    if (status === 'need_login') {
       errorTitle.value = '需要登录';
-      error.value = data.message || '该账号登录态已失效，请先完成登录检测后再打开内容管理。';
+      error.value = data.message || data.error || '该账号登录态已失效，请先完成登录检测后再打开内容管理。';
+      if (account.platform === 'wechatChannels') {
+        await pc.testWechatLogin(accountId);
+      }
       return;
     }
     if (!data.success) {
       throw new Error(data.error || data.details || '打开内容管理页失败');
     }
-    actionMessage.value = data.status === 'already_open'
+    actionMessage.value = status === 'already_open'
       ? '内容管理页已经在独立浏览器窗口中打开。如果没有看到，请查看任务栏中的平台浏览器窗口。'
-      : '内容管理页已在对应账号的独立浏览器窗口中打开。';
+      : status === 'opening'
+        ? '内容管理页正在对应账号的独立浏览器窗口中打开。'
+        : '内容管理页已在对应账号的独立浏览器窗口中打开。';
   } catch (err) {
-    if (err.payload?.status === 'need_login') {
+    if (['need_login', 'need_scan'].includes(err.payload?.status)) {
       errorTitle.value = '需要登录';
       error.value = err.payload.message || err.payload.error || '该账号登录态已失效，请先完成登录检测后再打开内容管理。';
     } else {
@@ -497,6 +602,10 @@ function goToPublishCenter() {
 
 onMounted(() => {
   loadDashboard();
+});
+
+onUnmounted(() => {
+  stopContentManagerPolling();
 });
 </script>
 

@@ -312,6 +312,58 @@ export function usePublishCenter() {
     };
   };
 
+  const normalizeQrImage = (value) => {
+    const rawBase64 = String(value || '').trim();
+    return rawBase64 && !rawBase64.startsWith('data:image/')
+      ? `data:image/png;base64,${rawBase64}`
+      : rawBase64;
+  };
+
+  const applyPlatformAccountLoginResponse = (platformKey, accountId, payload = {}, options = {}) => {
+    const statusKey = `${platformKey}:${accountId}`;
+    const status = payload.status === 'need_scan' ? 'need_login' : (payload.status || 'unknown');
+    const result = {
+      ...payload,
+      status,
+      lastCheckedAt: new Date().toISOString()
+    };
+    accountLoginStatus.value = {
+      ...accountLoginStatus.value,
+      [statusKey]: result
+    };
+    if (payload.status === 'need_scan') {
+      qrCodeData.value = {
+        show: true,
+        accountId: statusKey,
+        accountLabel: payload.accountLabel || accountId,
+        source: options.source || 'platform-account-login',
+        base64: normalizeQrImage(payload.qrCodeBase64),
+        qrCodePath: payload.qrCodePath || '',
+        status: 'need_scan',
+        error: '',
+        message: payload.message || '请扫描二维码登录'
+      };
+    } else if (payload.status === 'logged_in' && !options.silentLoggedIn) {
+      qrCodeData.value = {
+        show: true,
+        accountId: statusKey,
+        accountLabel: payload.accountLabel || accountId,
+        source: options.source || 'platform-account-login',
+        base64: '',
+        qrCodePath: '',
+        status: 'logged_in',
+        error: '',
+        message: payload.message || '登录态可用'
+      };
+      window.setTimeout(() => {
+        if (qrCodeData.value.accountId === statusKey && qrCodeData.value.status === 'logged_in') {
+          qrCodeData.value.show = false;
+        }
+      }, 1800);
+    }
+    return result;
+  };
+
   const pollWechatLoginStatus = (accountId) => {
     stopWechatLoginPolling();
     qrLoginPollTimer = window.setInterval(async () => {
@@ -1448,6 +1500,7 @@ export function usePublishCenter() {
     accountLoginStatus,
     checkingLoginAccounts,
     checkingBatchLogin,
+    applyPlatformAccountLoginResponse,
     loadAllLoginStatus: async () => {
       try {
         const res = await axios.get('/api/login-status/all');
@@ -1487,29 +1540,8 @@ export function usePublishCenter() {
         stopWechatLoginPolling();
         const res = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
         if (res.data?.success) {
-          const status = res.data.status === 'need_scan' ? 'need_login' : res.data.status;
-          const result = {
-            ...res.data,
-            status,
-            lastCheckedAt: new Date().toISOString()
-          };
-          accountLoginStatus.value = {
-            ...accountLoginStatus.value,
-            [statusKey]: result
-          };
+          const result = applyPlatformAccountLoginResponse(platformKey, accountId, res.data);
           if (res.data.status === 'need_scan') {
-            const rawBase64 = String(res.data.qrCodeBase64 || '').trim();
-            qrCodeData.value = {
-              show: true,
-              accountId: statusKey,
-              accountLabel: res.data.accountLabel || accountId,
-              source: 'platform-account-login',
-              base64: rawBase64 && !rawBase64.startsWith('data:image/') ? `data:image/png;base64,${rawBase64}` : rawBase64,
-              qrCodePath: res.data.qrCodePath || '',
-              status: 'need_scan',
-              error: '',
-              message: res.data.message || '请扫描二维码登录'
-            };
             qrLoginPollTimer = window.setInterval(async () => {
               if (!qrCodeData.value.show || qrCodeData.value.accountId !== statusKey) {
                 stopWechatLoginPolling();
@@ -1518,15 +1550,7 @@ export function usePublishCenter() {
               try {
                 const pollRes = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
                 if (!pollRes.data?.success) return;
-                const pollStatus = pollRes.data.status === 'need_scan' ? 'need_login' : pollRes.data.status;
-                accountLoginStatus.value = {
-                  ...accountLoginStatus.value,
-                  [statusKey]: {
-                    ...pollRes.data,
-                    status: pollStatus,
-                    lastCheckedAt: new Date().toISOString()
-                  }
-                };
+                applyPlatformAccountLoginResponse(platformKey, accountId, pollRes.data, { silentLoggedIn: true });
                 if (pollRes.data.status === 'logged_in') {
                   qrCodeData.value = {
                     show: true,
@@ -1548,23 +1572,6 @@ export function usePublishCenter() {
                 }
               } catch (_err) {}
             }, 4000);
-          } else if (res.data.status === 'logged_in') {
-            qrCodeData.value = {
-              show: true,
-              accountId: statusKey,
-              accountLabel: res.data.accountLabel || accountId,
-              source: 'platform-account-login',
-              base64: '',
-              qrCodePath: '',
-              status: 'logged_in',
-              error: '',
-              message: res.data.message || '登录态可用'
-            };
-            window.setTimeout(() => {
-              if (qrCodeData.value.accountId === statusKey && qrCodeData.value.status === 'logged_in') {
-                qrCodeData.value.show = false;
-              }
-            }, 1800);
           }
           return result;
         }

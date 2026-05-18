@@ -239,6 +239,57 @@ describe('platform RPA service', () => {
     });
   });
 
+  test('reuses platform content manager session status while login is pending', async () => {
+    const sauDir = path.join(tempRoot, 'social-auto-upload');
+    const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
+    const payloadDir = path.join(tempRoot, 'payloads');
+    fs.mkdirSync(sauDir, { recursive: true });
+    fs.writeFileSync(adapterScript, 'print("ok")');
+
+    let onStdout = null;
+    const runPythonScriptCancellable = jest.fn((_script, _args, options) => {
+      onStdout = options.onStdout;
+      return {
+        process: {},
+        promise: new Promise(() => {}),
+        cancel: jest.fn()
+      };
+    });
+    const service = createService({
+      socialAutoUploadDir: sauDir,
+      socialAutoUploadAdapterScript: adapterScript,
+      platformRpaTaskDir: payloadDir,
+      runPythonScriptCancellable
+    });
+
+    const firstOpen = service.openPlatformContentManager('douyin', 'dy_sau');
+    onStdout('STATUS|need_login|social-auto-upload|请扫码|{"percent":20,"qrCodeBase64":"data:image/png;base64,abc","qrCodePath":"C:/tmp/qr.png"}\n');
+    await expect(firstOpen).resolves.toMatchObject({
+      success: true,
+      status: 'need_scan',
+      qrCodeBase64: 'data:image/png;base64,abc'
+    });
+
+    await expect(service.openPlatformContentManager('douyin', 'dy_sau')).resolves.toMatchObject({
+      success: true,
+      status: 'need_scan',
+      qrCodeBase64: 'data:image/png;base64,abc'
+    });
+
+    onStdout('STATUS|opening|social-auto-upload|正在打开抖音创作中心|{"percent":50}\n');
+    await expect(service.openPlatformContentManager('douyin', 'dy_sau')).resolves.toMatchObject({
+      success: true,
+      status: 'opening'
+    });
+
+    onStdout('STATUS|opened|social-auto-upload|抖音创作中心已打开|{"percent":100}\n');
+    await expect(service.openPlatformContentManager('douyin', 'dy_sau')).resolves.toMatchObject({
+      success: true,
+      status: 'already_open'
+    });
+    expect(service.checkPlatformLoginStatus('douyin', { id: 'dy_sau', sauAccountName: 'dy_sau' }).status).toBe('logged_in');
+  });
+
   test('discovers external social-auto-upload directory and venv python from USERPROFILE when vendor is absent', async () => {
     const previousCwd = process.cwd();
     const previousUserProfile = process.env.USERPROFILE;

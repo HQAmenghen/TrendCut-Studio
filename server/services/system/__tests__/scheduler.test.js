@@ -8,12 +8,20 @@ describe('system scheduler autopilot safeguards', () => {
   let consoleWarnSpy;
   let consoleErrorSpy;
   let reviewConfig;
+  let mockEnvValues;
+  let originalLoginCheckEnabled;
+  let originalLoginCheckIntervalMinutes;
 
   beforeEach(() => {
     jest.resetModules();
     jest.useFakeTimers().setSystemTime(new Date('2026-04-27T00:30:00.000Z'));
 
     scheduledTasks = [];
+    mockEnvValues = {};
+    originalLoginCheckEnabled = process.env.LOGIN_CHECK_ENABLED;
+    originalLoginCheckIntervalMinutes = process.env.LOGIN_CHECK_INTERVAL_MINUTES;
+    delete process.env.LOGIN_CHECK_ENABLED;
+    delete process.env.LOGIN_CHECK_INTERVAL_MINUTES;
     reviewConfig = {
       enabled: false,
       require_manual_confirm: false
@@ -29,6 +37,13 @@ describe('system scheduler autopilot safeguards', () => {
     jest.doMock('../../../core/cleanup', () => ({
       getCleanupConfig: jest.fn(() => ({ enabled: false })),
       runCleanup: jest.fn()
+    }));
+
+    jest.doMock('../../../../scripts/utils/env', () => ({
+      readProjectEnv: jest.fn(() => ({
+        envPath: 'C:\\mock\\.env',
+        values: mockEnvValues
+      }))
     }));
 
     jest.doMock('../../review/store', () => ({
@@ -49,8 +64,19 @@ describe('system scheduler autopilot safeguards', () => {
     consoleLogSpy.mockRestore();
     consoleWarnSpy.mockRestore();
     consoleErrorSpy.mockRestore();
+    if (originalLoginCheckEnabled === undefined) {
+      delete process.env.LOGIN_CHECK_ENABLED;
+    } else {
+      process.env.LOGIN_CHECK_ENABLED = originalLoginCheckEnabled;
+    }
+    if (originalLoginCheckIntervalMinutes === undefined) {
+      delete process.env.LOGIN_CHECK_INTERVAL_MINUTES;
+    } else {
+      process.env.LOGIN_CHECK_INTERVAL_MINUTES = originalLoginCheckIntervalMinutes;
+    }
     jest.dontMock('node-cron');
     jest.dontMock('../../../core/cleanup');
+    jest.dontMock('../../../../scripts/utils/env');
     jest.dontMock('../../review/store');
   });
 
@@ -579,6 +605,7 @@ describe('system scheduler autopilot safeguards', () => {
 
   test('runs scheduled login checks without sending Feishu alerts', async () => {
     const { startScheduler } = require('../scheduler');
+    mockEnvValues.LOGIN_CHECK_INTERVAL_MINUTES = '30';
     const loginStatusService = {
       checkAllAccounts: jest.fn(async () => ({
         checked: 1,
@@ -597,12 +624,53 @@ describe('system scheduler autopilot safeguards', () => {
       feishuService
     });
 
-    const loginCheckTask = scheduledTasks.find((task) => task.expression !== '* * * * *');
+    const loginCheckTask = scheduledTasks[scheduledTasks.length - 1];
     expect(loginCheckTask).toBeTruthy();
+    expect(loginCheckTask.expression).toBe('* * * * *');
 
+    await loginCheckTask.callback();
+    expect(loginStatusService.checkAllAccounts).not.toHaveBeenCalled();
+
+    jest.setSystemTime(new Date('2026-04-27T01:00:00.000Z'));
     await loginCheckTask.callback();
 
     expect(loginStatusService.checkAllAccounts).toHaveBeenCalledWith({ notifyFeishu: false });
     expect(feishuService.sendText).not.toHaveBeenCalled();
+  });
+
+  test('honors login check intervals above the cron minute field range', async () => {
+    const { startScheduler } = require('../scheduler');
+    mockEnvValues.LOGIN_CHECK_INTERVAL_MINUTES = '600';
+    const loginStatusService = {
+      checkAllAccounts: jest.fn(async () => ({
+        checked: 1,
+        logged_in: 1,
+        need_login: 0,
+        error: 0,
+        results: [{ accountId: 'wechat_a', accountLabel: 'Account A', status: 'logged_in' }]
+      }))
+    };
+
+    startScheduler({
+      loginStatusService
+    });
+
+    const loginCheckTask = scheduledTasks[scheduledTasks.length - 1];
+    expect(loginCheckTask.expression).toBe('* * * * *');
+
+    await loginCheckTask.callback();
+    expect(loginStatusService.checkAllAccounts).not.toHaveBeenCalled();
+
+    jest.setSystemTime(new Date('2026-04-27T10:29:00.000Z'));
+    await loginCheckTask.callback();
+    expect(loginStatusService.checkAllAccounts).not.toHaveBeenCalled();
+
+    jest.setSystemTime(new Date('2026-04-27T10:30:00.000Z'));
+    await loginCheckTask.callback();
+    expect(loginStatusService.checkAllAccounts).toHaveBeenCalledTimes(1);
+
+    jest.setSystemTime(new Date('2026-04-27T11:30:00.000Z'));
+    await loginCheckTask.callback();
+    expect(loginStatusService.checkAllAccounts).toHaveBeenCalledTimes(1);
   });
 });

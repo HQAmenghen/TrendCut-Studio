@@ -9,6 +9,33 @@ const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.lo
 const DEFAULT_XAI_PARTITION_ID = 'crypto';
 const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu'];
 const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
+const DEFAULT_LOGIN_CHECK_INTERVAL_MINUTES = 30;
+const LOGIN_CHECK_CRON_EXPRESSION = '* * * * *';
+const LOGIN_CHECK_MS_PER_MINUTE = 60 * 1000;
+
+function normalizePositiveInteger(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readLoginCheckScheduleConfig(baseDir) {
+  const { values } = readProjectEnv(baseDir);
+  const checkInterval = normalizePositiveInteger(
+    values.LOGIN_CHECK_INTERVAL_MINUTES ?? process.env.LOGIN_CHECK_INTERVAL_MINUTES,
+    DEFAULT_LOGIN_CHECK_INTERVAL_MINUTES
+  );
+  const loginCheckEnabled = (values.LOGIN_CHECK_ENABLED ?? process.env.LOGIN_CHECK_ENABLED) !== 'false';
+
+  return {
+    checkInterval,
+    loginCheckEnabled
+  };
+}
+
+function isLoginCheckDue(state, nowMs, checkInterval) {
+  const intervalMs = checkInterval * LOGIN_CHECK_MS_PER_MINUTE;
+  return nowMs - state.lastStartedAt >= intervalMs;
+}
 
 function normalizeXaiPartitionId(value, fallback = DEFAULT_XAI_PARTITION_ID) {
   const raw = String(value || '').trim().toLowerCase();
@@ -1271,20 +1298,43 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
 
   // 登录状态定时检测
   if (loginStatusService) {
-    const { values } = readProjectEnv(path.join(__dirname, '../../..'));
-    const checkInterval = parseInt(values.LOGIN_CHECK_INTERVAL_MINUTES ?? process.env.LOGIN_CHECK_INTERVAL_MINUTES, 10) || 30;
-    const loginCheckEnabled = (values.LOGIN_CHECK_ENABLED ?? process.env.LOGIN_CHECK_ENABLED) !== 'false';
-    const cronExpression = `*/${checkInterval} * * * *`; // 每N分钟执行一次
+    const schedulerBaseDir = path.join(__dirname, '../../..');
+    const initialLoginCheckConfig = readLoginCheckScheduleConfig(schedulerBaseDir);
+    const loginCheckState = {
+      lastStartedAt: Date.now(),
+      running: false
+    };
 
     logInfo('[Scheduler] 启动登录状态定时检测', {
-      interval: `${checkInterval} 分钟`,
-      cronExpression,
-      enabled: loginCheckEnabled
+      interval: `${initialLoginCheckConfig.checkInterval} 分钟`,
+      cronExpression: LOGIN_CHECK_CRON_EXPRESSION,
+      scheduleMode: 'elapsed_interval_gate',
+      enabled: initialLoginCheckConfig.loginCheckEnabled
     });
 
-    cron.schedule(cronExpression, async () => {
+    cron.schedule(LOGIN_CHECK_CRON_EXPRESSION, async () => {
+      const { checkInterval, loginCheckEnabled } = readLoginCheckScheduleConfig(schedulerBaseDir);
+      if (!loginCheckEnabled) {
+        return;
+      }
+
+      if (loginCheckState.running) {
+        logWarn('[Scheduler -> 登录检测] 上一次检测尚未结束，跳过本轮');
+        return;
+      }
+
+      const nowMs = Date.now();
+      if (!isLoginCheckDue(loginCheckState, nowMs, checkInterval)) {
+        return;
+      }
+
+      loginCheckState.lastStartedAt = nowMs;
+      loginCheckState.running = true;
+
       try {
-        logInfo('[Scheduler -> 登录检测] 开始定时检测登录状态');
+        logInfo('[Scheduler -> 登录检测] 开始定时检测登录状态', {
+          interval: `${checkInterval} 分钟`
+        });
         const summary = await loginStatusService.checkAllAccounts({ notifyFeishu: false });
 
         logInfo('[Scheduler -> 登录检测] 检测完成', {
@@ -1297,10 +1347,11 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
         // 登录检查只更新本地状态缓存和二维码信息，不自动推送飞书。
       } catch (err) {
         logError('[Scheduler -> 登录检测] 定时检测失败', err);
+      } finally {
+        loginCheckState.running = false;
       }
     }, {
-      timezone: SCHEDULER_TIME_ZONE,
-      scheduled: loginCheckEnabled
+      timezone: SCHEDULER_TIME_ZONE
     });
   }
 
