@@ -52,11 +52,11 @@ def run_guarded(main_fn, *, error_code: str, error_message: str, error_stage: st
         return 0
     except Exception as exc:
         emit_error(
-            error_code,
-            error_message,
-            stage=error_stage,
-            details=str(exc),
-            hint=hint,
+            getattr(exc, "code", error_code),
+            getattr(exc, "message", error_message),
+            stage=getattr(exc, "stage", error_stage),
+            details=getattr(exc, "details", str(exc)),
+            hint=getattr(exc, "hint", hint),
         )
         traceback.print_exc()
         return 1

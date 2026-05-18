@@ -50,6 +50,8 @@ function createVerticalQueueService(deps) {
   let verticalActiveCount = 0;
   let verticalJobConcurrency = 2;
   const verticalQueueLogPath = path.join(baseDir, 'data', 'logs', 'vertical_queue.log');
+  const REFERENCE_AUTHORITY_ALIGNMENT_FAILED = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
+  const ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS = 2;
 
   function isPublicHttpUrl(value) {
     try {
@@ -111,6 +113,11 @@ function createVerticalQueueService(deps) {
 
   function hasUsableSubtitleContent(subtitles) {
     return Array.isArray(subtitles) && subtitles.some((item) => getSubtitleText(item));
+  }
+
+  function isReferenceAuthorityAlignmentFailure(error) {
+    return String(error?.code || '').trim() === REFERENCE_AUTHORITY_ALIGNMENT_FAILED ||
+      String(error?.protocol?.code || '').trim() === REFERENCE_AUTHORITY_ALIGNMENT_FAILED;
   }
 
   function pickString(...values) {
@@ -544,19 +551,44 @@ function createVerticalQueueService(deps) {
       asrArgs.push('--refine-subtitles');
     }
 
-    const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
-      cwd: jobDir,
-      onSpawn: (proc) => { job.currentProc = proc; },
-      onStdout: pipeProcessLogs('ASR'),
-      onStderr: pipeProcessLogs('ASR', true),
-      onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
-    });
-    job.currentCancelHandle = asrHandle.cancel;
-    try {
-      await asrHandle.promise;
-    } finally {
-      job.currentProc = null;
-      job.currentCancelHandle = null;
+    const maxAsrAttempts = referenceSubtitlesPath ? ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS : 1;
+    for (let attempt = 1; attempt <= maxAsrAttempts; attempt += 1) {
+      if (attempt > 1) {
+        updateStage(
+          'transcribe',
+          {
+            status: 'transcribing',
+            progress: 35,
+            message: `参考字幕严格校验未通过，正在重新 ASR 打轴（第 ${attempt}/${maxAsrAttempts} 次）...`
+          },
+          `参考字幕严格校验未通过，重试 ASR 阶段 ${attempt}/${maxAsrAttempts}`
+        );
+      }
+      const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
+        cwd: jobDir,
+        onSpawn: (proc) => { job.currentProc = proc; },
+        onStdout: pipeProcessLogs(`ASR${attempt > 1 ? ` retry ${attempt}` : ''}`),
+        onStderr: pipeProcessLogs(`ASR${attempt > 1 ? ` retry ${attempt}` : ''}`, true),
+        onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
+      });
+      job.currentCancelHandle = asrHandle.cancel;
+      try {
+        await asrHandle.promise;
+        break;
+      } catch (error) {
+        if (
+          attempt < maxAsrAttempts &&
+          isReferenceAuthorityAlignmentFailure(error) &&
+          !job.cancelRequested
+        ) {
+          appendLog(job, `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`);
+          continue;
+        }
+        throw error;
+      } finally {
+        job.currentProc = null;
+        job.currentCancelHandle = null;
+      }
     }
 
     // 尝试读取任务协议输出（可选，回退到文件假设）

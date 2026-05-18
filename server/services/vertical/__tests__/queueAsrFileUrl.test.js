@@ -356,4 +356,94 @@ describe('vertical queue ASR file URL handoff', () => {
     expect(fs.existsSync(path.join(verticalPublicDir, job.id, 'vertical_output.mp4'))).toBe(false);
     expect(job.message).toContain('有效口播字幕');
   });
+
+  test('retries ASR when strict reference authority alignment fails once', async () => {
+    const calls = [];
+    const projectsDir = path.join(tempRoot, 'projects');
+    const materialDir = path.join(projectsDir, 'material_1778543460029_582511b3');
+    fs.mkdirSync(materialDir, { recursive: true });
+    fs.writeFileSync(path.join(materialDir, 'execution_plan.json'), JSON.stringify([
+      {
+        start_time: 0,
+        end_time: 5.2,
+        subtitle_text: '这意味着比特币正被认真考虑作为国家层面的价值储存工具'
+      }
+    ]));
+
+    const runPythonScript = jest.fn(async () => '测试标题');
+    const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
+      calls.push({ scriptPath, args });
+      const asrAttempt = calls.filter((call) => call.scriptPath.endsWith('run_asr.py')).length;
+      const promise = Promise.resolve().then(() => {
+        if (scriptPath.endsWith('run_asr.py')) {
+          if (asrAttempt === 1) {
+            const err = new Error('参考文本字幕时间轴未通过严格校验');
+            err.code = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
+            err.stage = 'subtitle_reference_authority';
+            err.details = '参考文本权威分配结果未通过原文校验';
+            throw err;
+          }
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([
+            { time: [0, 5.2], zh: '这意味着比特币正被认真考虑作为国家层面的价值储存工具' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'audio.json'), JSON.stringify([
+            { start: 0, end: 5.2, text: '这意味着比特币正被认真考虑作为国家层面的价值储存工具' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'speaker_scene.json'), JSON.stringify({ timeline: [] }));
+        }
+        if (scriptPath.endsWith('make_vertical_video.py')) {
+          const outputPath = args[args.indexOf('--output') + 1];
+          fs.writeFileSync(outputPath, 'vertical video');
+        }
+      });
+      return {
+        promise,
+        cancel: jest.fn()
+      };
+    });
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      projectsDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_reference_retry',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript,
+      spawnScriptCancellable,
+      writeJsonFile: (filePath, payload) => {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+      },
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata: jest.fn(),
+      taskStore: null,
+      triggerAutoReview: null
+    });
+
+    const originalVideoPath = path.join(tempRoot, 'avatar-output.mp4');
+    fs.writeFileSync(originalVideoPath, 'source video');
+    const job = service.enqueue({
+      sourceType: 'material_driven_avatar',
+      title: '测试任务',
+      videoUrl: 'http://localhost:3001/projects/material_1778543460029_582511b3/output_final.mp4',
+      renderOptions: {
+        originalVideoPath
+      }
+    });
+
+    await waitFor(() => job.status === 'completed');
+
+    const asrCalls = calls.filter((call) => call.scriptPath.endsWith('run_asr.py'));
+    expect(asrCalls).toHaveLength(2);
+    expect(asrCalls[0].args).toContain('--reference-text-authority');
+    expect(calls.some((call) => call.scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
+  });
 });

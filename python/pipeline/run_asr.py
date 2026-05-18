@@ -895,7 +895,7 @@ def split_text_by_clause_boundaries(text):
     pieces = []
     start = 0
     for index, char in enumerate(sample):
-        should_break = char in "。！？!?；;、" or (char in "，," and not is_numeric_separator(sample, index))
+        should_break = char in "。！？!?；;、：:" or (char in "，," and not is_numeric_separator(sample, index))
         if not should_break:
             continue
         piece = sample[start:index + 1].strip()
@@ -2121,6 +2121,33 @@ REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS = 8.0
 REFERENCE_AUTHORITY_MAX_INTERNAL_GAP_SECONDS = 0.65
 
 
+class ReferenceAuthorityAlignmentError(RuntimeError):
+    """Raised when reference-text-authority subtitles cannot be safely verified."""
+
+    code = "REFERENCE_AUTHORITY_ALIGNMENT_FAILED"
+    stage = "subtitle_reference_authority"
+    message = "参考文本字幕时间轴未通过严格校验"
+    hint = "系统会重试 ASR 与参考文本分配；如果持续失败，请检查口播稿是否对应最终成片音频。"
+
+    def __init__(self, details):
+        super().__init__(details)
+        self.details = str(details or self.message)
+
+
+def append_reference_authority_debug_event(event):
+    debug_path = Path("reference_authority_debug.json")
+    try:
+        existing = json.loads(debug_path.read_text(encoding="utf-8")) if debug_path.exists() else []
+        if not isinstance(existing, list):
+            existing = []
+    except Exception:
+        existing = []
+    payload = dict(event or {})
+    payload["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    existing.append(payload)
+    debug_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def visible_len_between(text, start_index, end_index):
     return len(visible_text(str(text or "")[max(0, start_index):max(0, end_index)]))
 
@@ -2258,6 +2285,106 @@ def update_reference_atom_time(atom, asr_entries, piece_spans):
     return atom
 
 
+REFERENCE_ATOM_SPLIT_BEFORE_CHARS = "([{（【《“‘\"'"
+REFERENCE_ATOM_SPLIT_AFTER_CHARS = ")]}）】》”’\"'，,、：:；;。.!?！？"
+
+
+def is_latin_word_char(char):
+    return bool(re.match(r"[A-Za-z0-9$%+._'-]", str(char or "")))
+
+
+def reference_atom_boundary_priority(sample, index):
+    if not (0 < index < len(sample)):
+        return None
+    previous_char = sample[index - 1]
+    current_char = sample[index]
+    if previous_char in "。.!?！？；;":
+        return 0
+    if previous_char in "，,、：:":
+        return 1
+    if current_char in REFERENCE_ATOM_SPLIT_BEFORE_CHARS:
+        return 2
+    if previous_char in REFERENCE_ATOM_SPLIT_AFTER_CHARS:
+        return 2
+    if previous_char.isspace() or current_char.isspace():
+        return 3
+    if (has_cjk(previous_char) and re.match(r"[$A-Za-z0-9]", current_char)) or (
+        is_latin_word_char(previous_char) and has_cjk(current_char)
+    ):
+        return 4
+    return None
+
+
+def fallback_reference_atom_split_index(sample, max_visible_chars):
+    _visible, indices = visible_text_with_indices(sample)
+    if len(indices) <= max_visible_chars:
+        return len(sample)
+    split_index = indices[max_visible_chars]
+    while (
+        split_index > 1
+        and split_index < len(sample)
+        and is_latin_word_char(sample[split_index - 1])
+        and is_latin_word_char(sample[split_index])
+    ):
+        split_index -= 1
+    if split_index <= 0:
+        split_index = indices[max_visible_chars]
+    return split_index
+
+
+def find_reference_atom_split_index(sample, max_visible_chars):
+    if readable_visible_len(sample) <= max_visible_chars:
+        return len(sample)
+
+    minimum_left = max(READABLE_MIN_VISIBLE_CHARS, min(max_visible_chars - 2, int(max_visible_chars * 0.38)))
+    candidates = []
+    for index in range(1, len(sample)):
+        left = sample[:index].strip()
+        right = sample[index:].strip()
+        if not left or not right:
+            continue
+        left_len = readable_visible_len(left)
+        if left_len <= 0 or left_len > max_visible_chars:
+            continue
+        priority = reference_atom_boundary_priority(sample, index)
+        if priority is None:
+            continue
+        candidates.append((left_len >= minimum_left, priority, abs(max_visible_chars - left_len), -left_len, index))
+
+    preferred = [candidate for candidate in candidates if candidate[0]]
+    if preferred:
+        preferred.sort(key=lambda item: (item[1], item[2], item[3]))
+        return preferred[0][4]
+    if candidates:
+        candidates.sort(key=lambda item: (item[1], item[2], item[3]))
+        return candidates[0][4]
+    return fallback_reference_atom_split_index(sample, max_visible_chars)
+
+
+def split_long_reference_atom_piece(piece, max_visible_chars):
+    sample = str(piece or "").strip()
+    if not sample:
+        return []
+
+    output = []
+    remaining = sample
+    while readable_visible_len(remaining) > max_visible_chars:
+        split_index = find_reference_atom_split_index(remaining, max_visible_chars)
+        if split_index <= 0 or split_index >= len(remaining):
+            output.extend(split_long_text_piece(remaining, max_visible_chars))
+            return output
+        current = remaining[:split_index].strip()
+        if not current:
+            output.extend(split_long_text_piece(remaining, max_visible_chars))
+            return output
+        output.append(current)
+        remaining = remaining[split_index:].strip()
+
+    if remaining:
+        output.append(remaining)
+    return output
+
+
 def split_reference_text_for_readable_atoms(text, max_visible_chars=READABLE_ATOM_TARGET_VISIBLE_CHARS):
     sample = str(text or "").strip()
     if not sample:
@@ -2283,6 +2410,12 @@ def split_reference_text_for_readable_atoms(text, max_visible_chars=READABLE_ATO
             continue
         current = ""
         for chunk in split_text_by_clause_boundaries(piece):
+            if readable_visible_len(chunk) > max_visible_chars:
+                if current:
+                    atoms.append(current)
+                    current = ""
+                atoms.extend(split_long_reference_atom_piece(chunk, max_visible_chars))
+                continue
             candidate = join_subtitle_text(current, chunk) if current else chunk
             if current and readable_visible_len(candidate) > max_visible_chars:
                 atoms.append(current)
@@ -2439,49 +2572,58 @@ def parse_reference_atom_group_span(item):
     return start, end
 
 
-def validate_reference_authority_llm_atom_groups(reference, atoms, results, split_config=None):
+def validate_reference_authority_llm_atom_groups(reference, atoms, results, split_config=None, return_reason=False):
     split_config = resolve_split_config(split_config)
     ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    allowed_ranges = {
+        (item["start_atom_index"], item["end_atom_index"])
+        for item in build_allowed_reference_atom_ranges(reference, atoms, split_config)
+    }
+    def reject(reason):
+        return ([], reason) if return_reason else []
+
     if not reference or not atoms or not ordered_items:
-        return []
+        return reject("missing_reference_atoms_or_results")
     if not any(parse_reference_atom_group_span(item) is not None for item in ordered_items):
-        return []
+        return reject("missing_atom_group_span")
 
     output = []
     next_atom_index = 0
     for item in ordered_items:
         span = parse_reference_atom_group_span(item)
         if span is None:
-            return []
+            return reject(f"invalid_atom_span_at_output_{len(output)}")
         start_atom_index, end_atom_index = span
         if not (0 <= start_atom_index <= end_atom_index < len(atoms)):
-            return []
+            return reject(f"atom_span_out_of_range:{start_atom_index}-{end_atom_index}")
         if start_atom_index != next_atom_index:
-            return []
+            return reject(f"atom_span_not_contiguous:expected_{next_atom_index}_got_{start_atom_index}")
+        if allowed_ranges and (start_atom_index, end_atom_index) not in allowed_ranges:
+            return reject(f"atom_span_not_allowed:{start_atom_index}-{end_atom_index}")
         next_atom_index = end_atom_index + 1
 
         start_atom = atoms[start_atom_index]
         end_atom = atoms[end_atom_index]
         text = apply_domain_corrections(reference[start_atom["start_pos"]:end_atom["end_pos"]].strip())
         if not visible_text(text):
-            return []
+            return reject(f"empty_text_for_atom_span:{start_atom_index}-{end_atom_index}")
         candidate_text = str(item.get("text") or item.get("zh") or "").strip()
         if candidate_text and visible_text(candidate_text) != visible_text(text):
-            return []
+            return reject(f"text_not_exact_reference_copy_for_atom_span:{start_atom_index}-{end_atom_index}")
         if readable_visible_len(text) > combined_readable_limit(text, ""):
-            return []
+            return reject(f"text_too_long_for_atom_span:{start_atom_index}-{end_atom_index}")
         start_time = start_atom["time"][0]
         end_time = end_atom["time"][1]
         if end_time <= start_time:
-            return []
+            return reject(f"invalid_time_for_atom_span:{start_atom_index}-{end_atom_index}")
         duration = end_time - start_time
         max_duration = max(split_config["max_chunk_duration"] + 1.2, REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS)
         if start_atom_index != end_atom_index and duration > max_duration:
-            return []
+            return reject(f"duration_too_long_for_atom_span:{start_atom_index}-{end_atom_index}")
         if duration + 0.03 < minimum_display_duration_for_text(text):
-            return []
+            return reject(f"duration_too_short_for_atom_span:{start_atom_index}-{end_atom_index}")
         if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", text):
-            return []
+            return reject(f"leading_punctuation_for_atom_span:{start_atom_index}-{end_atom_index}")
         output.append({
             "time": [start_time, end_time],
             "zh": text,
@@ -2489,11 +2631,11 @@ def validate_reference_authority_llm_atom_groups(reference, atoms, results, spli
         })
 
     if next_atom_index != len(atoms):
-        return []
+        return reject(f"atom_coverage_incomplete:expected_{next_atom_index}_of_{len(atoms)}")
     joined = "".join(item["zh"] for item in output)
     if visible_text(joined) != visible_text(reference):
-        return []
-    return output
+        return reject("joined_text_does_not_equal_reference")
+    return (output, "") if return_reason else output
 
 
 def validate_reference_authority_llm_groups(asr_entries, reference_text, results, split_config=None):
@@ -2588,11 +2730,14 @@ def validate_reference_authority_llm_groups(asr_entries, reference_text, results
     return output
 
 
-def validate_reference_authority_llm_results(asr_entries, reference_text, results, split_config=None):
+def validate_reference_authority_llm_results(asr_entries, reference_text, results, split_config=None, require_atom_groups=False):
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if require_atom_groups and not any(parse_reference_atom_group_span(item) is not None for item in ordered_items):
+        return []
+
     grouped = validate_reference_authority_llm_groups(asr_entries, reference_text, results, split_config)
     if grouped:
         return grouped
-    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
     if any(parse_reference_authority_group_span(item) is not None for item in ordered_items):
         return []
 
@@ -2666,6 +2811,35 @@ def validate_reference_authority_llm_results(asr_entries, reference_text, result
     if len(asr_entries) > 1 and len(output) < min_expected:
         return []
     return output
+
+
+def diagnose_reference_authority_llm_results(asr_entries, reference_text, results, split_config=None, require_atom_groups=False):
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if not isinstance(results, list):
+        return "llm_output_is_not_json_array"
+    if not ordered_items:
+        return "llm_output_has_no_objects"
+    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    atoms = build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config) if piece_spans else []
+    if require_atom_groups:
+        if not atoms:
+            return "reference_atoms_unavailable"
+        if not any(parse_reference_atom_group_span(item) is not None for item in ordered_items):
+            return "missing_atom_group_span"
+        _atom_entries, atom_reason = validate_reference_authority_llm_atom_groups(
+            reference,
+            atoms,
+            results,
+            split_config,
+            return_reason=True,
+        )
+        return atom_reason or "unknown_atom_group_validation_failure"
+    if any(parse_reference_authority_group_span(item) is not None for item in ordered_items):
+        grouped = validate_reference_authority_llm_groups(asr_entries, reference, results, split_config)
+        return "" if grouped else "asr_group_validation_failed"
+    return "index_assignment_validation_failed"
 
 
 def subtitle_boundary_candidates(entries, reference_entry=None):
@@ -2825,12 +2999,54 @@ def finalize_reference_authority_block(entries, source_entries, reference_entry=
     return close_short_reference_authority_gaps(block_entries)
 
 
-def align_reference_authority_with_llm(asr_entries, reference_text, source_language="", split_config=None):
+def reference_authority_retry_count():
+    try:
+        return max(1, int(os.getenv("REFERENCE_AUTHORITY_LLM_RETRIES", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+def reference_authority_has_readable_atoms(asr_entries, reference, split_config=None):
+    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    if not piece_spans:
+        return False
+    return bool(build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config))
+
+
+def build_allowed_reference_atom_ranges(reference, atoms, split_config=None):
+    split_config = resolve_split_config(split_config)
+    ranges = []
+    max_duration = max(split_config["max_chunk_duration"] + 1.2, REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS)
+    for start_index, start_atom in enumerate(atoms or []):
+        for end_index in range(start_index, len(atoms)):
+            end_atom = atoms[end_index]
+            text = apply_domain_corrections(reference[start_atom["start_pos"]:end_atom["end_pos"]].strip())
+            if not visible_text(text):
+                continue
+            if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", text):
+                continue
+            if readable_visible_len(text) > combined_readable_limit(text, ""):
+                break
+            start_time = start_atom["time"][0]
+            end_time = end_atom["time"][1]
+            if end_time <= start_time:
+                continue
+            duration = end_time - start_time
+            if duration > max_duration:
+                break
+            if duration + 0.03 < minimum_display_duration_for_text(text):
+                continue
+            ranges.append({
+                "start_atom_index": start_index,
+                "end_atom_index": end_index,
+            })
+    return ranges
+
+
+def build_reference_authority_prompt(asr_entries, reference_text, source_language="", split_config=None, retry_index=0, failure_reason=""):
     split_config = resolve_split_config(split_config)
     reference = apply_domain_corrections(str(reference_text or "").strip())
-    if len(asr_entries or []) <= 1 or not reference:
-        return []
-
     payload = {
         "source_language": source_language or "auto",
         "reference_text": reference,
@@ -2857,41 +3073,132 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
             }
             for atom in atoms
         ]
-    prompt = (
+        payload["allowed_atom_ranges"] = build_allowed_reference_atom_ranges(reference, atoms, split_config)
+    retry_instruction = ""
+    if retry_index > 0:
+        retry_instruction = (
+            f"这是第 {retry_index + 1} 次尝试。上一轮失败原因：{failure_reason or '结果未通过校验'}。"
+            "这次必须重新分组，不要重复上一轮输出。"
+        )
+
+    return (
         "你是字幕时间轴与阅读分组助手。任务是根据新的 ASR 句段，把 reference_text 切分成自然可读的显示字幕组。"
         "ASR 只用于判断句段边界、停顿和语义位置，最终字幕文本必须逐字复制 reference_text 中的连续原文。"
         "不要翻译、不要改写、不要补词、不要把 ASR 文本写进结果。"
         "不要按时长比例机械分配；要参考每条 asr_text 的语义、停顿和相邻句段。"
-        "优先使用 reference_atoms 分组：可以把相邻 atom 合并成一个显示字幕组，也可以让一个 atom 独立成组。"
+        "如果输入里有 reference_atoms，你必须只输出 start_atom_index/end_atom_index，不要输出 start_index/end_index/index。"
+        "如果输入里有 allowed_atom_ranges，你的每一项必须逐项复制其中一个对象；可以选择单个 atom，也可以选择相邻 atom 合并，"
+        "但所有输出必须顺序覆盖全部 atom，不能跳过、重复、乱序，也不能使用 allowed_atom_ranges 之外的范围。"
         "每个显示字幕组应尽量在 30 个可见字符以内，避免以标点开头，避免把固定短语拆开。"
         "输出 JSON 数组；如果输入有 reference_atoms，每项包含 start_atom_index、end_atom_index，可选 text。"
         "start_atom_index/end_atom_index 必须覆盖连续 atom，所有组依次覆盖全部 atom，不能跳过、重复或乱序。"
         "如果没有 reference_atoms，才使用 start_index、end_index 和 text；text 必须是 reference_text 中按顺序出现的连续子串。"
         "所有组拼接后应覆盖完整 reference_text。只输出 JSON，不要 markdown。\n\n"
+        f"{retry_instruction}\n"
         f"输入：{json.dumps(payload, ensure_ascii=False)}"
     )
 
-    try:
-        emit_stage("subtitle_reference_authority", "正在根据新 ASR 句段分配参考口播稿字幕")
-        provider = get_text_llm_provider()
-        client = create_llm_client(provider=provider)
-        model = get_text_model_for_provider(provider)
-        response = generate_content(
-            client,
-            model=model,
-            contents=prompt,
-            response_mime_type="application/json",
-            provider=provider
-        )
-        results = parse_json_array_from_text(getattr(response, "text", response))
-    except Exception as err:
-        print(f"   ⚠️ 参考文本权威分配失败，使用保守规则兜底: {err}")
+
+def align_reference_authority_with_llm(asr_entries, reference_text, source_language="", split_config=None, strict=False):
+    split_config = resolve_split_config(split_config)
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    if len(asr_entries or []) <= 1 or not reference:
         return []
 
-    validated = validate_reference_authority_llm_results(asr_entries, reference, results, split_config)
-    if not validated:
-        print("   ⚠️ 参考文本权威分配结果未通过原文校验，使用保守规则兜底。")
-    return validated
+    max_attempts = reference_authority_retry_count() if strict else 1
+    provider = None
+    client = None
+    model = None
+    last_error = ""
+    require_atom_groups = strict and reference_authority_has_readable_atoms(asr_entries, reference, split_config)
+    for attempt in range(max_attempts):
+        attempt_error = ""
+        try:
+            emit_stage(
+                "subtitle_reference_authority",
+                f"正在根据新 ASR 句段分配参考口播稿字幕（第 {attempt + 1}/{max_attempts} 次）"
+            )
+            if client is None:
+                provider = get_text_llm_provider()
+                client = create_llm_client(provider=provider)
+                model = get_text_model_for_provider(provider)
+            prompt = build_reference_authority_prompt(
+                asr_entries,
+                reference,
+                source_language=source_language,
+                split_config=split_config,
+                retry_index=attempt,
+                failure_reason=last_error,
+            )
+            response = generate_content(
+                client,
+                model=model,
+                contents=prompt,
+                response_mime_type="application/json",
+                provider=provider,
+            )
+            results = parse_json_array_from_text(getattr(response, "text", response))
+            if require_atom_groups and not any(
+                parse_reference_atom_group_span(item) is not None
+                for item in (results if isinstance(results, list) else [])
+                if isinstance(item, dict)
+            ):
+                validated = []
+                attempt_error = "模型未按 reference_atoms 返回分组"
+            else:
+                validated = validate_reference_authority_llm_results(
+                    asr_entries,
+                    reference,
+                    results,
+                    split_config,
+                    require_atom_groups=require_atom_groups,
+                )
+                if not validated:
+                    attempt_error = diagnose_reference_authority_llm_results(
+                        asr_entries,
+                        reference,
+                        results,
+                        split_config,
+                        require_atom_groups=require_atom_groups,
+                    )
+            if not validated:
+                append_reference_authority_debug_event({
+                    "attempt": attempt + 1,
+                    "max_attempts": max_attempts,
+                    "reason": attempt_error or "unknown_validation_failure",
+                    "require_atom_groups": require_atom_groups,
+                    "reference_text": reference,
+                    "asr_segments": [
+                        {
+                            "index": index,
+                            "time": list(subtitle_time_range(entry) or []),
+                            "asr_text": get_subtitle_primary_text(entry),
+                        }
+                        for index, entry in enumerate(asr_entries)
+                    ],
+                    "llm_results": results,
+                })
+            if validated:
+                if attempt > 0:
+                    print(f"   ✅ 参考文本权威分配重试成功: 第 {attempt + 1} 次")
+                return validated
+            last_error = attempt_error or "参考文本权威分配结果未通过原文校验"
+            print(f"   ⚠️ {last_error}，准备重试。" if attempt + 1 < max_attempts else f"   ⚠️ {last_error}。")
+        except Exception as err:
+            last_error = str(err)
+            if attempt + 1 < max_attempts:
+                print(f"   ⚠️ 参考文本权威分配失败，准备重试: {err}")
+                time.sleep(min(1.5, 0.4 * (attempt + 1)))
+                continue
+            if strict:
+                raise ReferenceAuthorityAlignmentError(f"参考文本权威分配失败: {err}") from err
+            print(f"   ⚠️ 参考文本权威分配失败，使用保守规则兜底: {err}")
+            return []
+
+    if strict:
+        raise ReferenceAuthorityAlignmentError(last_error or "参考文本权威分配未通过严格校验")
+    print("   ⚠️ 参考文本权威分配结果未通过原文校验，使用保守规则兜底。")
+    return []
 
 
 def asr_entry_text_matches_reference(entry, reference_text):
@@ -2944,10 +3251,38 @@ def collect_asr_entries_for_reference(asr_entries, reference_entry, used_indices
             selected.append((cursor, entry))
             cursor += 1
 
+    while len(selected) > 1:
+        _index, entry = selected[0]
+        text = get_subtitle_primary_text(entry)
+        if asr_entry_text_matches_reference(entry, reference_text):
+            break
+        if readable_visible_len(text) > 2 and subtitle_duration(entry) > 0.8:
+            break
+        selected.pop(0)
+
+    while len(selected) > 1:
+        _index, entry = selected[-1]
+        text = get_subtitle_primary_text(entry)
+        if asr_entry_text_matches_reference(entry, reference_text):
+            break
+        if next_reference_text and asr_entry_text_matches_reference(entry, next_reference_text):
+            selected.pop()
+            continue
+        if readable_visible_len(text) > 2 and subtitle_duration(entry) > 0.8:
+            break
+        selected.pop()
+
     return selected
 
 
-def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, split_config=None, source_language="", use_llm=True):
+def build_reference_authority_subtitles(
+    asr_subtitles,
+    reference_subtitles,
+    split_config=None,
+    source_language="",
+    use_llm=True,
+    strict=False,
+):
     """Use ASR sentence timing while keeping reference subtitles as the only text authority."""
 
     if not reference_subtitles:
@@ -2955,7 +3290,11 @@ def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, spli
 
     asr_entries = normalize_final_subtitles(asr_subtitles)
     if not asr_entries:
+        if strict:
+            raise ReferenceAuthorityAlignmentError("参考文本权威模式未获得可验证 ASR 句段")
         return normalize_final_subtitles(reference_subtitles)
+    if strict and not use_llm and len(asr_entries) > 1:
+        raise ReferenceAuthorityAlignmentError("严格参考文本权威模式需要通过 LLM 分配验证")
 
     output = []
     used_indices = set()
@@ -2992,6 +3331,7 @@ def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, spli
                     reference_text,
                     source_language=source_language,
                     split_config=split_config,
+                    strict=strict,
                 )
                 if llm_entries:
                     block_entries = clamp_reference_authority_timing(
@@ -3008,6 +3348,8 @@ def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, spli
                     ))
                     used_indices.update(selected_indices)
                     continue
+                if strict:
+                    raise ReferenceAuthorityAlignmentError("参考文本权威分配未返回可验证结果")
             fallback_entries = build_reference_authority_entries(
                 selected_entries,
                 reference_chunks,
@@ -3030,6 +3372,10 @@ def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, spli
             continue
 
         ref_time = subtitle_time_range(reference_entry)
+        if strict:
+            raise ReferenceAuthorityAlignmentError(
+                f"参考字幕段 {reference_index + 1} 未匹配到可验证 ASR 句段"
+            )
         if ref_time:
             block_entries = build_reference_authority_entries(
                 [{"time": [ref_time[0], ref_time[1]], "zh": reference_text, "text": reference_text}],
@@ -3044,12 +3390,16 @@ def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, spli
             ))
 
     if not output:
+        if strict:
+            raise ReferenceAuthorityAlignmentError("参考文本权威模式未生成可验证字幕")
         return normalize_final_subtitles(reference_subtitles)
 
     output = merge_reference_continuations(output, reference_subtitles)
     timing_issues = severe_subtitle_timing_quality_issues(output)
     if timing_issues:
         issue_summary = ", ".join(f"{index}:{reason}" for index, reason, _text in timing_issues[:3])
+        if strict:
+            raise ReferenceAuthorityAlignmentError(f"参考文本权威字幕时间轴质量异常: {issue_summary}")
         if use_llm:
             print(f"   ⚠️ 参考文本权威字幕时间轴质量异常，改用确定性分配: {issue_summary}")
             return build_reference_authority_subtitles(
@@ -3058,6 +3408,7 @@ def build_reference_authority_subtitles(asr_subtitles, reference_subtitles, spli
                 split_config=split_config,
                 source_language=source_language,
                 use_llm=False,
+                strict=False,
             )
         print(f"   ⚠️ 确定性参考字幕时间轴仍异常，回退参考段时间轴: {issue_summary}")
         return normalize_final_subtitles(reference_subtitles)
@@ -3827,8 +4178,7 @@ def main():
     if not raw_segments:
         print("Whisper 未能识别出任何有效文本。")
         if args.reference_text_authority and reference_subtitles:
-            print("   -> 未获得 ASR 句段，已回退使用参考字幕时间轴与文本。")
-            final_subtitles = normalize_final_subtitles(reference_subtitles)
+            raise ReferenceAuthorityAlignmentError("参考文本权威模式未获得 ASR 句段，拒绝使用参考字幕时间轴兜底")
         else:
             final_subtitles = []
     else:
@@ -3840,6 +4190,7 @@ def main():
                 reference_subtitles,
                 split_config,
                 source_language=detected_language,
+                strict=True,
             )
         elif reference_subtitles:
             try:
