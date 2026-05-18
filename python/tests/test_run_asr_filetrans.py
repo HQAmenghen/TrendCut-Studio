@@ -1391,23 +1391,36 @@ class QwenFiletransAsrTest(unittest.TestCase):
             }
         ]
 
-        responses = [
-            json.dumps([
+        invalid_response = json.dumps([
                 {"start_index": 0, "end_index": 0, "text": "这意味着比特币正被认真"},
                 {"start_index": 1, "end_index": 1, "text": "考虑作为国家层面的价值储存工具"},
-            ], ensure_ascii=False),
-            json.dumps([
-                {"start_atom_index": 0, "end_atom_index": 0},
-            ], ensure_ascii=False),
-        ]
+        ], ensure_ascii=False)
 
         class FakeResponse:
             def __init__(self, text):
                 self.text = text
 
+        attempts = []
+
+        def fake_generate_content(*_args, **kwargs):
+            attempts.append(kwargs["contents"])
+            if len(attempts) == 1:
+                return FakeResponse(invalid_response)
+            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            atoms = payload.get("reference_atoms") or []
+            allowed = {
+                (item["start_atom_index"], item["end_atom_index"])
+                for item in payload.get("allowed_atom_ranges") or []
+            }
+            full_range = (0, len(atoms) - 1)
+            self.assertIn(full_range, allowed)
+            return FakeResponse(json.dumps([
+                {"start_atom_index": full_range[0], "end_atom_index": full_range[1]},
+            ], ensure_ascii=False))
+
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "2"}), \
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
-                patch("pipeline.run_asr.generate_content", side_effect=[FakeResponse(text) for text in responses]) as generate_content, \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content) as generate_content, \
                 patch("pipeline.run_asr.emit_stage"):
             authoritative = run_asr.build_reference_authority_subtitles(
                 subtitles,
@@ -1450,9 +1463,27 @@ class QwenFiletransAsrTest(unittest.TestCase):
             self.assertNotIn("产。", asr_texts)
             atoms = payload.get("reference_atoms") or []
             self.assertTrue(atoms)
+            allowed = {
+                (item["start_atom_index"], item["end_atom_index"])
+                for item in payload.get("allowed_atom_ranges") or []
+            }
+            choices = []
+            index = 0
+            while index < len(atoms):
+                candidates = sorted(
+                    [item for item in allowed if item[0] == index],
+                    key=lambda item: (item[1] - item[0], item[1]),
+                    reverse=True,
+                )
+                self.assertTrue(candidates)
+                start_atom_index, end_atom_index = candidates[0]
+                choices.append({
+                    "start_atom_index": start_atom_index,
+                    "end_atom_index": end_atom_index,
+                })
+                index = end_atom_index + 1
             return FakeResponse(json.dumps([
-                {"start_atom_index": atom["atom_index"], "end_atom_index": atom["atom_index"]}
-                for atom in atoms
+                item for item in choices
             ], ensure_ascii=False))
 
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
@@ -1543,6 +1574,62 @@ class QwenFiletransAsrTest(unittest.TestCase):
 
         self.assertTrue(captured_payloads)
         self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+
+    def test_strict_reference_text_authority_removes_repeated_previous_tail_at_block_start(self):
+        subtitles = [
+            {"time": [18.8, 19.36], "zh": "基础设施。", "text": "基础设施。"},
+            {"time": [19.76, 22.64], "zh": "更关键的是，全球前五的支付商中有一家", "text": "更关键的是，全球前五的支付商中有一家"},
+            {"time": [22.64, 24.64], "zh": "决定把整个支付系统迁移到区块链。", "text": "决定把整个支付系统迁移到区块链。"},
+            {"time": [24.96, 27.84], "zh": "加密基础设施现在能一秒钟把一分钱转到", "text": "加密基础设施现在能一秒钟把一分钱转到"},
+            {"time": [27.84, 28.64], "zh": "世界任何角落。", "text": "世界任何角落。"},
+        ]
+        reference = [
+            {
+                "time": [18.37, 27.8],
+                "zh": "更关键的是，全球前五的支付商中有一家决定把整个支付系统迁移到区块链。加密基础设施现在能一秒钟把一分钱转到世界任何角落",
+            }
+        ]
+        captured_payloads = []
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+
+        def fake_generate_content(*_args, **kwargs):
+            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            captured_payloads.append(payload)
+            asr_texts = [item["asr_text"] for item in payload["asr_segments"]]
+            self.assertNotEqual(asr_texts[0], "基础设施。")
+            atoms = payload.get("reference_atoms") or []
+            self.assertTrue(atoms)
+            self.assertTrue(all(run_asr.readable_visible_len(atom["text"]) <= 24 for atom in atoms))
+            allowed = {
+                (item["start_atom_index"], item["end_atom_index"])
+                for item in payload.get("allowed_atom_ranges") or []
+            }
+            self.assertIn((0, 1), allowed)
+            self.assertIn((2, 3), allowed)
+            return FakeResponse(json.dumps([
+                {"start_atom_index": 0, "end_atom_index": 1},
+                {"start_atom_index": 2, "end_atom_index": 3},
+            ], ensure_ascii=False))
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertTrue(captured_payloads)
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertEqual(authoritative[0]["time"][0], 19.76)
         self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
 
     def test_strict_reference_text_authority_rejects_unvalidated_fallback_split(self):

@@ -1736,7 +1736,13 @@ def build_reference_authority_entries(asr_entries, reference_chunks, reference_e
     return output
 
 
-def clamp_reference_authority_timing(entries, reference_entry, previous_end=None, tolerance_seconds=0.35):
+def clamp_reference_authority_timing(
+    entries,
+    reference_entry,
+    previous_end=None,
+    tolerance_seconds=0.35,
+    prefer_asr_timing=False,
+):
     if not entries:
         return entries
 
@@ -1752,18 +1758,20 @@ def clamp_reference_authority_timing(entries, reference_entry, previous_end=None
         min_start = ref_start
         if previous_end is not None:
             min_start = max(min_start, float(previous_end))
-        should_clamp_start = (
-            previous_end is not None
-            or first_start < min_start
-            or first_start - min_start > tolerance_seconds
-        )
+        should_clamp_start = first_start < min_start
+        if not prefer_asr_timing:
+            should_clamp_start = (
+                previous_end is not None
+                or should_clamp_start
+                or first_start - min_start > tolerance_seconds
+            )
         if should_clamp_start and first_start != min_start and first_end > min_start:
             clamped[0]["time"] = [round(min_start, 2), first_end]
 
     last_time = subtitle_time_range(clamped[-1])
     if last_time:
         last_start, last_end = last_time
-        if ref_end - last_end > tolerance_seconds and ref_end > last_start:
+        if not prefer_asr_timing and ref_end - last_end > tolerance_seconds and ref_end > last_start:
             clamped[-1]["time"] = [last_start, round(ref_end, 2)]
         elif last_end > ref_end and ref_end > last_start:
             clamped[-1]["time"] = [last_start, round(ref_end, 2)]
@@ -2427,11 +2435,19 @@ def split_reference_text_for_readable_atoms(text, max_visible_chars=READABLE_ATO
 
     balanced = []
     for atom in atoms:
-        if balanced and readable_visible_len(atom) <= READABLE_MIN_VISIBLE_CHARS:
+        if (
+            balanced
+            and readable_visible_len(atom) <= READABLE_MIN_VISIBLE_CHARS
+            and readable_visible_len(join_subtitle_text(balanced[-1], atom)) <= max_visible_chars
+        ):
             balanced[-1] = join_subtitle_text(balanced[-1], atom)
         else:
             balanced.append(atom)
-    if len(balanced) > 1 and readable_visible_len(balanced[0]) <= READABLE_MIN_VISIBLE_CHARS:
+    if (
+        len(balanced) > 1
+        and readable_visible_len(balanced[0]) <= READABLE_MIN_VISIBLE_CHARS
+        and readable_visible_len(join_subtitle_text(balanced[0], balanced[1])) <= max_visible_chars
+    ):
         balanced[1] = join_subtitle_text(balanced[0], balanced[1])
         balanced = balanced[1:]
     return [atom for atom in balanced if visible_text(atom)]
@@ -3218,6 +3234,20 @@ def asr_entry_text_matches_reference(entry, reference_text):
     return False
 
 
+def asr_entry_text_matches_reference_prefix(entry, reference_text):
+    asr_visible = visible_text(get_subtitle_primary_text(entry)).lower()
+    reference_visible = visible_text(reference_text).lower()
+    if len(asr_visible) < 2 or not reference_visible:
+        return False
+    if reference_visible.startswith(asr_visible):
+        return True
+    prefix_len = common_prefix_length(asr_visible, reference_visible)
+    required = min(len(asr_visible), 6)
+    if len(asr_visible) <= 4:
+        required = len(asr_visible)
+    return prefix_len >= max(2, required)
+
+
 def collect_asr_entries_for_reference(asr_entries, reference_entry, used_indices, next_reference_entry=None):
     ref_time = subtitle_time_range(reference_entry)
     if not ref_time:
@@ -3254,9 +3284,21 @@ def collect_asr_entries_for_reference(asr_entries, reference_entry, used_indices
     while len(selected) > 1:
         _index, entry = selected[0]
         text = get_subtitle_primary_text(entry)
-        if asr_entry_text_matches_reference(entry, reference_text):
+        if asr_entry_text_matches_reference_prefix(entry, reference_text):
             break
-        if readable_visible_len(text) > 2 and subtitle_duration(entry) > 0.8:
+        if has_cjk(reference_text) and is_english_like(text) and not has_cjk(text):
+            break
+        if (
+            asr_entry_text_matches_reference(entry, reference_text)
+            and readable_visible_len(text) > 8
+            and subtitle_duration(entry) > 1.1
+        ):
+            break
+        if (
+            not asr_entry_text_matches_reference(entry, reference_text)
+            and readable_visible_len(text) > 8
+            and subtitle_duration(entry) > 1.1
+        ):
             break
         selected.pop(0)
 
@@ -3338,6 +3380,7 @@ def build_reference_authority_subtitles(
                         llm_entries,
                         reference_entry,
                         previous_end=subtitle_time_range(output[-1])[1] if output else None,
+                        prefer_asr_timing=strict,
                     )
                     output.extend(finalize_reference_authority_block(
                         block_entries,

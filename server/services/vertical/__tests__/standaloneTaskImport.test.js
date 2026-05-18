@@ -317,6 +317,76 @@ describe('standalone vertical task import', () => {
     ]);
   });
 
+  test('retries standalone ASR when strict reference authority alignment fails once', async () => {
+    const inputVideoPath = path.join(runtimeDir, 'upload.mp4');
+    fs.writeFileSync(inputVideoPath, 'task video');
+    const referencePayload = [
+      { time: [0, 2.4], zh: '更关键的是，机构采用已经落地。' }
+    ];
+    let asrAttempts = 0;
+    const runPythonScript = jest.fn(async (scriptPath, args, options = {}) => {
+      if (scriptPath.endsWith('run_asr.py')) {
+        asrAttempts += 1;
+        if (asrAttempts === 1) {
+          const err = new Error('参考文本字幕时间轴未通过严格校验');
+          err.code = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
+          err.stage = 'subtitle_reference_authority';
+          err.details = 'atom_span_not_contiguous:expected_0_got_1';
+          throw err;
+        }
+        const subtitlesPath = path.join(options.cwd || runtimeDir, 'subtitles.json');
+        const audioPath = path.join(options.cwd || runtimeDir, 'audio.json');
+        const subtitles = referencePayload.map((item) => ({ ...item, text: item.zh }));
+        fs.writeFileSync(audioPath, JSON.stringify(subtitles, null, 2));
+        fs.writeFileSync(subtitlesPath, JSON.stringify(subtitles, null, 2));
+        return;
+      }
+
+      if (scriptPath.endsWith('make_vertical_video.py')) {
+        const outputPath = args[args.indexOf('--output') + 1];
+        fs.writeFileSync(outputPath, 'vertical video');
+      }
+    });
+
+    const handler = createStandaloneHandler({
+      sendError: (res, options) => res.status(options.status || 500).json(options),
+      baseDir: tempRoot,
+      pipelineDir,
+      projectsDir,
+      upload: { fields: () => [] },
+      getProgressClient: () => null,
+      sendProgressEvent: jest.fn(),
+      createRuntimeJobDir: () => runtimeDir,
+      generateHotTitle: jest.fn(async () => 'fallback title'),
+      writeJsonFile: (filePath, payload) => writeJson(filePath, payload),
+      writeMediaMetadata: (filePath, payload) => writeJson(`${filePath}.meta.json`, payload),
+      readJsonIfExists: (filePath, fallback) => {
+        if (!fs.existsSync(filePath)) return fallback;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      },
+      runPythonScript
+    });
+    const req = {
+      body: {
+        clientId: 'client-1',
+        renderOptions: '{}',
+        useASR: 'true',
+        subtitlesPayload: JSON.stringify(referencePayload)
+      },
+      files: {
+        video: [{ path: inputVideoPath }]
+      }
+    };
+    const res = createResponse();
+
+    await handler.handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    const asrCalls = runPythonScript.mock.calls.filter(([scriptPath]) => scriptPath.endsWith('run_asr.py'));
+    expect(asrCalls).toHaveLength(2);
+    expect(runPythonScript.mock.calls.some(([scriptPath]) => scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
+  });
+
   test('returns task import validation errors with client status', async () => {
     const handler = createStandaloneHandler({
       sendError: (res, options) => res.status(options.status || 500).json(options),

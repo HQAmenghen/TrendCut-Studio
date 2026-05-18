@@ -7,6 +7,14 @@ const {
   normalizeExecutionPlanSubtitles
 } = require('./taskImport');
 
+const REFERENCE_AUTHORITY_ALIGNMENT_FAILED = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
+const ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS = 2;
+
+function isReferenceAuthorityAlignmentFailure(error) {
+  return String(error?.code || '').trim() === REFERENCE_AUTHORITY_ALIGNMENT_FAILED ||
+    String(error?.protocol?.code || '').trim() === REFERENCE_AUTHORITY_ALIGNMENT_FAILED;
+}
+
 function resolveImportedTaskAsrInput(taskImport) {
   if (!taskImport?.taskPath) return '';
   const candidates = [
@@ -139,19 +147,42 @@ async function refreshImportedAvatarSubtitles(options = {}) {
     asrArgs.push('--reference-subtitles-json', referencePath, '--reference-text-authority');
   }
 
-  await runPythonScript(runAsrScript, asrArgs, {
-    cwd: taskImport.taskPath,
-    onStdout: (chunk) => {
-      const lastLine = chunk.toString().trim().split('\n').pop();
-      if (sse && lastLine) {
-        sendProgressEvent(sse, { type: 'status', msg: lastLine });
-      }
-    },
-    onStderr: (chunk) => {
-      const errStr = chunk.toString();
-      console.error(`[imported_avatar_asr stderr]: ${errStr}`);
+  const maxAsrAttempts = referencePath ? ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS : 1;
+  for (let attempt = 1; attempt <= maxAsrAttempts; attempt += 1) {
+    if (attempt > 1 && sse) {
+      sendProgressEvent(sse, {
+        type: 'status',
+        msg: `参考字幕严格校验未通过，正在重新 ASR 打轴（第 ${attempt}/${maxAsrAttempts} 次）...`
+      });
     }
-  });
+    try {
+      await runPythonScript(runAsrScript, asrArgs, {
+        cwd: taskImport.taskPath,
+        onStdout: (chunk) => {
+          const lastLine = chunk.toString().trim().split('\n').pop();
+          if (sse && lastLine) {
+            sendProgressEvent(sse, { type: 'status', msg: lastLine });
+          }
+        },
+        onStderr: (chunk) => {
+          const errStr = chunk.toString();
+          console.error(`[imported_avatar_asr stderr]: ${errStr}`);
+        }
+      });
+      break;
+    } catch (error) {
+      if (attempt < maxAsrAttempts && isReferenceAuthorityAlignmentFailure(error)) {
+        if (sse) {
+          sendProgressEvent(sse, {
+            type: 'status',
+            msg: `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`
+          });
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
 
   const refreshedTaskImport = resolveMaterialTaskImport({ projectsDir, taskDir: taskImport.outputDir });
   if (refreshedTaskImport?.subtitles?.length) {
@@ -300,17 +331,41 @@ function createStandaloneHandler(deps) {
         if (fs.existsSync(referenceSubsJsonPath)) {
           asrArgs.push('--reference-subtitles-json', referenceSubsJsonPath, '--reference-text-authority');
         }
-        await runPythonScript(runAsrScript, asrArgs, {
-          cwd: taskDir,
-          onStdout: (chunk) => {
-            const lastLine = chunk.toString().trim().split('\n').pop();
-            if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
-          },
-          onStderr: (chunk) => {
-            const errStr = chunk.toString();
-            console.error(`[run_asr.py stderr]: ${errStr}`);
+        const hasReferenceSubtitles = fs.existsSync(referenceSubsJsonPath);
+        const maxAsrAttempts = hasReferenceSubtitles ? ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS : 1;
+        for (let attempt = 1; attempt <= maxAsrAttempts; attempt += 1) {
+          if (attempt > 1 && sse) {
+            sendProgressEvent(sse, {
+              type: 'status',
+              msg: `参考字幕严格校验未通过，正在重新 ASR 打轴（第 ${attempt}/${maxAsrAttempts} 次）...`
+            });
           }
-        });
+          try {
+            await runPythonScript(runAsrScript, asrArgs, {
+              cwd: taskDir,
+              onStdout: (chunk) => {
+                const lastLine = chunk.toString().trim().split('\n').pop();
+                if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
+              },
+              onStderr: (chunk) => {
+                const errStr = chunk.toString();
+                console.error(`[run_asr.py stderr]: ${errStr}`);
+              }
+            });
+            break;
+          } catch (error) {
+            if (attempt < maxAsrAttempts && isReferenceAuthorityAlignmentFailure(error)) {
+              if (sse) {
+                sendProgressEvent(sse, {
+                  type: 'status',
+                  msg: `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`
+                });
+              }
+              continue;
+            }
+            throw error;
+          }
+        }
       };
 
       if (req.body.subtitlesPayload && shouldUseASR) {
