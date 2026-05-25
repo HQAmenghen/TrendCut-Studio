@@ -4,7 +4,7 @@
       <div class="command-main">
         <div class="eyebrow">
           <Activity class="icon-sm" aria-hidden="true" />
-          自动生产驾驶舱
+          全自动生产
         </div>
         <div class="command-title-row">
           <h2>{{ statusTitle }}</h2>
@@ -13,13 +13,16 @@
             {{ statusLabel }}
           </span>
         </div>
+
         <div class="source-line">
           <FileVideo class="icon-sm" aria-hidden="true" />
           <span>{{ sourceLabel }}</span>
         </div>
+
         <div class="progress-rail" aria-label="自动生产进度">
           <span :style="{ width: progressWidth }"></span>
         </div>
+
         <div class="run-meta">
           <span><Gauge class="icon-sm" aria-hidden="true" />{{ progressLabel }}</span>
           <span><Layers class="icon-sm" aria-hidden="true" />{{ currentStepLabel }}</span>
@@ -29,17 +32,18 @@
       </div>
 
       <div class="launch-pad">
-        <label class="source-picker" :class="{ disabled: isBusy }">
+        <label class="source-picker" :class="{ disabled: sourceLocked }">
           <Upload class="icon" aria-hidden="true" />
           <span>{{ fileLabel }}</span>
           <input
             type="file"
             accept="video/mp4,video/*"
             hidden
-            :disabled="isBusy"
+            :disabled="sourceLocked"
             @change="handleFileSelect"
           />
         </label>
+
         <button
           v-if="!jobId"
           type="button"
@@ -54,10 +58,11 @@
           v-else-if="finalVideoUrl"
           type="button"
           class="primary-action"
-          @click="$emit('to-publish')"
+          :disabled="publishCreating"
+          @click="$emit('create-publish-job')"
         >
           <Send class="icon" aria-hidden="true" />
-          转入发布
+          {{ publishCreating ? '正在创建发布任务' : '生成发布任务' }}
         </button>
         <button
           v-else
@@ -69,24 +74,53 @@
           <Play class="icon" aria-hidden="true" />
           继续当前任务
         </button>
+
         <div class="action-row">
-          <button type="button" class="tool-button" @click="$emit('change-module', 'xaiTop10')">
+          <button type="button" class="tool-button" :disabled="xaiLoading" @click="$emit('run-xai')">
             <Search class="icon-sm" aria-hidden="true" />
-            热点素材
+            {{ xaiLoading ? '抓取中' : '抓热点' }}
           </button>
           <button type="button" class="tool-button" @click="$emit('refresh')">
             <RefreshCw class="icon-sm" aria-hidden="true" />
-            刷新状态
+            刷新
           </button>
-          <button type="button" class="tool-button" @click="$emit('change-module', 'materialDriven')">
-            <Settings2 class="icon-sm" aria-hidden="true" />
-            高级编排
+          <button type="button" class="tool-button" :disabled="!jobId" @click="resetWorkflow">
+            <RotateCcw class="icon-sm" aria-hidden="true" />
+            新任务
           </button>
         </div>
       </div>
     </section>
 
-    <div class="dashboard-grid">
+    <div class="cockpit-layout">
+      <section class="ops-panel intake-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="panel-kicker">Source</span>
+            <h3>素材接入</h3>
+          </div>
+          <span class="state-chip" :class="{ on: Boolean(selectedFile || materialUrl) }">
+            {{ selectedFile || materialUrl ? '已接入' : '待接入' }}
+          </span>
+        </div>
+
+        <div class="hot-list">
+          <button
+            v-for="item in hotItems"
+            :key="itemKey(item)"
+            type="button"
+            class="hot-row"
+            :disabled="sourceLocked"
+            @click="useHotItem(item)"
+          >
+            <span>{{ item.rank || '-' }}</span>
+            <strong>{{ hotTitle(item) }}</strong>
+            <em>{{ item.views_display || item.hot_score || activePartitionLabel }}</em>
+          </button>
+          <div v-if="!hotItems.length" class="empty-row">暂无热点素材</div>
+        </div>
+      </section>
+
       <section class="ops-panel pipeline-panel">
         <div class="panel-heading">
           <div>
@@ -125,7 +159,7 @@
         <div class="panel-heading">
           <div>
             <span class="panel-kicker">Output</span>
-            <h3>成片与下一步</h3>
+            <h3>成片交付</h3>
           </div>
           <CheckCircle2 v-if="finalVideoUrl" class="panel-mark ready" aria-hidden="true" />
           <AlertTriangle v-else-if="errorText" class="panel-mark danger" aria-hidden="true" />
@@ -133,16 +167,16 @@
 
         <div class="output-summary">
           <div class="output-metric">
-            <span>成片状态</span>
+            <span>成片</span>
             <strong>{{ finalVideoUrl ? '已生成' : jobId ? '生产中' : '待生产' }}</strong>
           </div>
           <div class="output-metric">
-            <span>脚本段落</span>
-            <strong>{{ scriptUnitCount }}</strong>
+            <span>发布任务</span>
+            <strong>{{ publishStats.jobCount }}</strong>
           </div>
           <div class="output-metric">
-            <span>输出目录</span>
-            <strong>{{ outputPath || '自动生成' }}</strong>
+            <span>竖屏队列</span>
+            <strong>{{ verticalQueueLabel }}</strong>
           </div>
         </div>
 
@@ -165,13 +199,13 @@
             <ExternalLink class="icon-sm" aria-hidden="true" />
             查看成片
           </a>
-          <button type="button" class="tool-button" :disabled="!finalVideoUrl" @click="$emit('to-vertical')">
+          <button type="button" class="tool-button" :disabled="!finalVideoUrl || verticalLoading" @click="$emit('make-vertical')">
             <Scissors class="icon-sm" aria-hidden="true" />
-            竖屏精修
+            {{ verticalLoading ? '生成中' : '生成竖屏版' }}
           </button>
-          <button type="button" class="tool-button" :disabled="!finalVideoUrl" @click="$emit('to-publish')">
+          <button type="button" class="tool-button" :disabled="!hasPublishJobs" @click="$emit('run-publish-draft')">
             <Rocket class="icon-sm" aria-hidden="true" />
-            发布准备
+            启动发布草稿
           </button>
         </div>
       </section>
@@ -180,7 +214,7 @@
         <div class="panel-heading">
           <div>
             <span class="panel-kicker">Auto-Pilot</span>
-            <h3>无人值守分发</h3>
+            <h3>无人值守发布</h3>
           </div>
           <span class="state-chip" :class="{ on: autoPilotEnabled }">
             {{ autoPilotEnabled ? '已开启' : '未开启' }}
@@ -214,11 +248,32 @@
         </div>
       </section>
 
+      <section class="ops-panel publish-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="panel-kicker">Delivery</span>
+            <h3>发布队列</h3>
+          </div>
+          <ClipboardList class="panel-mark" aria-hidden="true" />
+        </div>
+
+        <div class="plan-list">
+          <div v-for="job in publishJobs" :key="job.id" class="plan-row">
+            <div>
+              <strong>{{ job.asset?.label || job.asset?.compactLabel || job.title || job.id }}</strong>
+              <span>{{ formatTime(job.scheduledAt) }}</span>
+            </div>
+            <span>{{ getPublishJobLabel(job) }}</span>
+          </div>
+          <div v-if="!publishJobs.length" class="empty-row">暂无发布任务</div>
+        </div>
+      </section>
+
       <section class="ops-panel health-panel">
         <div class="panel-heading">
           <div>
             <span class="panel-kicker">Health</span>
-            <h3>运行健康度</h3>
+            <h3>系统健康</h3>
           </div>
           <ShieldCheck class="panel-mark" aria-hidden="true" />
         </div>
@@ -238,11 +293,34 @@
         </div>
       </section>
 
+      <section class="ops-panel account-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="panel-kicker">Accounts</span>
+            <h3>账号状态</h3>
+          </div>
+          <Users class="panel-mark" aria-hidden="true" />
+        </div>
+
+        <div class="account-list">
+          <div v-for="account in accountCards" :key="account.key" class="account-row">
+            <div>
+              <strong>{{ account.label }}</strong>
+              <span>{{ account.platformLabel }}</span>
+            </div>
+            <button type="button" class="mini-button" @click="$emit('check-login', account)">
+              {{ account.statusLabel }}
+            </button>
+          </div>
+          <div v-if="!accountCards.length" class="empty-row">暂无账号配置</div>
+        </div>
+      </section>
+
       <section class="ops-panel activity-panel">
         <div class="panel-heading">
           <div>
             <span class="panel-kicker">Activity</span>
-            <h3>最近运行记录</h3>
+            <h3>最近运行</h3>
           </div>
           <ClipboardList class="panel-mark" aria-hidden="true" />
         </div>
@@ -255,32 +333,6 @@
           <div v-if="!visibleLogs.length" class="empty-row">暂无运行记录</div>
         </div>
       </section>
-
-      <section class="ops-panel shortcuts-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="panel-kicker">Workspaces</span>
-            <h3>高级工作区</h3>
-          </div>
-        </div>
-
-        <div class="shortcut-list">
-          <button
-            v-for="item in shortcuts"
-            :key="item.key"
-            type="button"
-            class="shortcut-row"
-            @click="$emit('change-module', item.key)"
-          >
-            <component :is="item.icon" class="icon" aria-hidden="true" />
-            <span>
-              <strong>{{ item.label }}</strong>
-              <em>{{ item.meta }}</em>
-            </span>
-            <ArrowRight class="icon-sm" aria-hidden="true" />
-          </button>
-        </div>
-      </section>
     </div>
   </section>
 </template>
@@ -290,7 +342,6 @@ import { computed, ref } from 'vue';
 import {
   Activity,
   AlertTriangle,
-  ArrowRight,
   CheckCircle2,
   ClipboardList,
   Clock,
@@ -306,9 +357,9 @@ import {
   Scissors,
   Search,
   Send,
-  Settings2,
   ShieldCheck,
-  Upload
+  Upload,
+  Users
 } from 'lucide-vue-next';
 
 const props = defineProps({
@@ -319,32 +370,29 @@ const props = defineProps({
 });
 
 const emit = defineEmits([
-  'change-module',
   'start-automation',
   'continue-workflow',
   'retry-step',
-  'to-publish',
-  'to-vertical',
-  'refresh'
+  'reset-workflow',
+  'use-xai-material',
+  'refresh',
+  'run-xai',
+  'create-publish-job',
+  'run-publish-draft',
+  'make-vertical',
+  'check-login'
 ]);
 
 const selectedFile = ref(null);
 
 const steps = [
-  { id: 1, title: '接入素材', desc: '本地素材或热点素材' },
-  { id: 2, title: '理解内容', desc: 'ASR、OCR、重点提取' },
-  { id: 3, title: '匹配镜头', desc: '切片、评分、候选镜头' },
-  { id: 4, title: '生成计划', desc: '脚本与剪辑计划' },
-  { id: 5, title: '口播成稿', desc: '整段数字人口播稿' },
+  { id: 1, title: '接入素材', desc: '本地文件或热点素材' },
+  { id: 2, title: '理解内容', desc: '识别重点与可用片段' },
+  { id: 3, title: '匹配镜头', desc: '挑选候选画面' },
+  { id: 4, title: '生成计划', desc: '脚本与剪辑安排' },
+  { id: 5, title: '口播成稿', desc: '数字人口播文案' },
   { id: 6, title: '数字人生成', desc: '声音与形象驱动' },
   { id: 7, title: '渲染导出', desc: '字幕、合成、成片' }
-];
-
-const shortcuts = [
-  { key: 'materialDriven', label: '素材生产线', meta: '脚本、镜头、数字人参数', icon: Settings2 },
-  { key: 'xaiTop10', label: '热点榜单', meta: '抓榜、筛选、送入生产', icon: Search },
-  { key: 'publishCenter', label: '发布中心', meta: '托管计划与平台任务', icon: Send },
-  { key: 'standalone', label: '竖屏后期', meta: '单条精修与批量队列', icon: Scissors }
 ];
 
 const readValue = (source, key, fallback = '') => {
@@ -353,6 +401,11 @@ const readValue = (source, key, fallback = '') => {
     return raw.value ?? fallback;
   }
   return raw ?? fallback;
+};
+
+const readFunction = (source, key) => {
+  const fn = source?.[key];
+  return typeof fn === 'function' ? fn : null;
 };
 
 const jobId = computed(() => readValue(props.materialDriven, 'jobId', ''));
@@ -367,7 +420,7 @@ const materialSourceLabel = computed(() => String(readValue(props.materialDriven
 const activeDurationLabel = computed(() => String(readValue(props.materialDriven, 'activeDurationLabel', '') || '').trim());
 const lastDurationLabel = computed(() => String(readValue(props.materialDriven, 'lastDurationLabel', '') || '').trim());
 const scriptUnits = computed(() => readValue(props.materialDriven, 'scriptUnits', []));
-const recentLogs = computed(() => readValue(props.materialDriven, 'recentLogs', []));
+const materialLogs = computed(() => readValue(props.materialDriven, 'recentLogs', []));
 const gen = computed(() => readValue(props.materialDriven, 'gen', {}));
 const uploading = computed(() => Boolean(readValue(props.materialDriven, 'uploading', false)));
 const rebuildingPlan = computed(() => Boolean(readValue(props.materialDriven, 'rebuildingPlan', false)));
@@ -379,19 +432,36 @@ const publishStats = computed(() => readValue(props.publishCenter, 'stats', {
   enabledPlatformCount: 0
 }));
 const publishConfig = computed(() => readValue(props.publishCenter, 'config', {}));
+const publishCreating = computed(() => Boolean(readValue(props.publishCenter, 'creating', false)));
+const publishJobs = computed(() => readValue(props.publishCenter, 'jobs', []).filter((job) => !job.archived).slice(0, 4));
+const publishLogs = computed(() => readValue(props.publishCenter, 'recentLogs', []));
+const autoPilotPlans = computed(() => readValue(props.publishCenter, 'autoPilotJobs', []).slice(0, 4));
 const selfCheckSummary = computed(() => readValue(props.publishCenter, 'selfCheckSummary', {
   status: 'unknown',
   okCount: 0,
   warnCount: 0,
   failCount: 0
 }));
-const selfCheckHighlights = computed(() => readValue(props.publishCenter, 'selfCheckHighlights', []));
-const autoPilotPlans = computed(() => readValue(props.publishCenter, 'autoPilotJobs', []).slice(0, 4));
+const selfCheckHighlights = computed(() => readValue(props.publishCenter, 'selfCheckHighlights', []).slice(0, 3));
+const platformDefs = computed(() => readValue(props.publishCenter, 'platformDefs', []));
+const accountLoginStatus = computed(() => readValue(props.publishCenter, 'accountLoginStatus', {}));
+
+const xaiItems = computed(() => readValue(props.xai, 'items', []));
+const hotItems = computed(() => xaiItems.value.slice(0, 5));
+const xaiLoading = computed(() => Boolean(readValue(props.xai, 'loading', false)));
+const activePartitionLabel = computed(() => String(readValue(props.xai, 'activePartitionLabel', '默认分区')));
+const xaiLogs = computed(() => readValue(props.xai, 'recentLogs', []));
+
+const verticalLoading = computed(() => Boolean(readValue(props.standalone, 'loading', false)));
+const verticalQueue = computed(() => readValue(props.standalone, 'queueStatus', null));
+const verticalLogs = computed(() => readValue(props.standalone, 'recentLogs', []));
 
 const isBusy = computed(() => uploading.value || rebuildingPlan.value || rerenderingVideo.value);
+const sourceLocked = computed(() => Boolean(isBusy.value || jobId.value));
 const scriptUnitCount = computed(() => Array.isArray(scriptUnits.value) ? scriptUnits.value.length : 0);
 const autoPilotEnabled = computed(() => Boolean(publishConfig.value?.global?.autoPilotEnabled));
 const hasRecoverableFailure = computed(() => Boolean(jobId.value && errorText.value && currentStep.value));
+const hasPublishJobs = computed(() => publishJobs.value.length > 0);
 
 const statusState = computed(() => {
   if (errorText.value) return 'danger';
@@ -411,7 +481,7 @@ const statusTitle = computed(() => {
 
 const statusLabel = computed(() => ({
   danger: '需处理',
-  ready: '可发布',
+  ready: '可交付',
   running: '生产中',
   staged: '待启动',
   idle: '待接入'
@@ -436,7 +506,7 @@ const currentStepLabel = computed(() => {
   if (step) return step.title;
   return statusText.value || '等待启动';
 });
-const publishReadinessLabel = computed(() => finalVideoUrl.value ? '发布就绪' : '等待成片');
+const publishReadinessLabel = computed(() => finalVideoUrl.value ? '可创建发布任务' : '等待成片');
 
 const sourceLabel = computed(() => {
   if (selectedFile.value) return selectedFile.value.name;
@@ -446,6 +516,7 @@ const sourceLabel = computed(() => {
 });
 
 const fileLabel = computed(() => {
+  if (jobId.value && !selectedFile.value && !materialUrl.value) return '任务已锁定素材';
   if (selectedFile.value) return selectedFile.value.name;
   if (materialUrl.value) return '已接入热点素材';
   return '选择本地素材';
@@ -454,7 +525,7 @@ const fileLabel = computed(() => {
 const canStart = computed(() => Boolean(!isBusy.value && !jobId.value && (selectedFile.value || materialUrl.value)));
 const startActionLabel = computed(() => {
   if (isBusy.value) return '正在接入素材';
-  if (selectedFile.value || materialUrl.value) return '开始自动生产';
+  if (selectedFile.value || materialUrl.value) return '一键自动生产';
   return '先选择素材';
 });
 
@@ -466,17 +537,62 @@ const selfCheckLabel = computed(() => {
   return '待检测';
 });
 
+const verticalQueueLabel = computed(() => {
+  const running = Number(verticalQueue.value?.running || 0);
+  const queued = Number(verticalQueue.value?.queued || 0);
+  if (running || queued) return `${running}/${queued}`;
+  return '空闲';
+});
+
+const accountCards = computed(() => {
+  const defs = Array.isArray(platformDefs.value) ? platformDefs.value : [];
+  const platformLabel = (key) => defs.find((item) => item.key === key)?.label || key;
+  const sources = [
+    ['wechatChannels', readValue(props.publishCenter, 'wechatAccounts', [])],
+    ['douyin', readValue(props.publishCenter, 'douyinAccounts', [])],
+    ['xiaohongshu', readValue(props.publishCenter, 'xiaohongshuAccounts', [])],
+    ['x', readValue(props.publishCenter, 'xAccounts', [])]
+  ];
+  return sources.flatMap(([platformKey, accounts]) => (Array.isArray(accounts) ? accounts : []).map((account) => {
+    const accountId = account.id || account.accountId || account.sauAccountName || account.finderUserName || '';
+    const statusKey = `${platformKey}:${accountId}`;
+    const status = accountLoginStatus.value?.[statusKey] || accountLoginStatus.value?.[accountId] || {};
+    return {
+      key: statusKey,
+      platformKey,
+      accountId,
+      platformLabel: platformLabel(platformKey),
+      label: account.displayName || account.sauAccountName || account.helperAccount || account.finderUserName || accountId || '未命名账号',
+      statusLabel: getAccountStatusLabel(status.status)
+    };
+  })).filter((item) => item.accountId).slice(0, 6);
+});
+
 const visibleLogs = computed(() => {
-  const logs = Array.isArray(recentLogs.value) ? recentLogs.value : [];
-  return logs.slice(-6).reverse().map((item, index) => ({
-    id: `${item.time || index}_${item.message || index}`,
-    time: item.time || '--:--:--',
-    message: String(item.message || item || '').trim()
+  const merged = [
+    ...normalizeLogs(materialLogs.value, '生产'),
+    ...normalizeLogs(publishLogs.value, '发布'),
+    ...normalizeLogs(verticalLogs.value, '竖屏'),
+    ...normalizeLogs(xaiLogs.value, '热点')
+  ];
+  return merged.slice(-8).reverse().map((item, index) => ({
+    id: `${item.time}_${item.message}_${index}`,
+    ...item
   }));
 });
 
 const handleFileSelect = (event) => {
   selectedFile.value = event.target.files?.[0] || null;
+};
+
+const useHotItem = (item) => {
+  selectedFile.value = null;
+  emit('use-xai-material', item);
+};
+
+const resetWorkflow = () => {
+  selectedFile.value = null;
+  emit('reset-workflow');
 };
 
 const emitStart = () => {
@@ -504,6 +620,43 @@ const getStepStateLabel = (stepId) => {
   if (errorText.value && currentStep.value === stepId) return '失败';
   if (currentStep.value === stepId) return '执行中';
   return '待执行';
+};
+
+const itemKey = (item) => String(item?.post_id || item?.id || item?.rank || item?.video_url || Math.random());
+
+const hotTitle = (item) => {
+  const title = String(item?.author_summary_zh || item?.title || item?.post_title || item?.author_summary || '').trim();
+  return title || '未命名热点';
+};
+
+const getPublishJobLabel = (job) => {
+  const fn = readFunction(props.publishCenter, 'getJobStatusLabel');
+  return fn ? fn(job) : String(job?.status || '待处理');
+};
+
+const getAccountStatusLabel = (status) => {
+  if (status === 'logged_in') return '已登录';
+  if (status === 'checking' || status === 'checking_login') return '检测中';
+  if (status === 'need_scan' || status === 'need_login') return '需登录';
+  if (status === 'error') return '异常';
+  return '检查';
+};
+
+const normalizeLogs = (logs, source) => {
+  if (!Array.isArray(logs)) return [];
+  return logs.map((item, index) => {
+    if (typeof item === 'string') {
+      const matched = item.match(/^\[([^\]]+)\]\s*(.*)$/);
+      return {
+        time: matched?.[1] || source,
+        message: matched?.[2] || item
+      };
+    }
+    return {
+      time: item.time || source || '--',
+      message: String(item.message || item.text || item || index).trim()
+    };
+  }).filter((item) => item.message);
 };
 
 const formatTime = (value) => {
@@ -548,7 +701,7 @@ const formatTime = (value) => {
 .danger-button,
 .status-badge,
 .state-chip,
-.shortcut-row {
+.mini-button {
   display: inline-flex;
   align-items: center;
 }
@@ -670,7 +823,8 @@ h3 {
 .source-picker,
 .primary-action,
 .tool-button,
-.danger-button {
+.danger-button,
+.mini-button {
   justify-content: center;
   gap: 8px;
   min-height: 40px;
@@ -702,6 +856,7 @@ h3 {
 }
 
 .primary-action {
+  min-height: 46px;
   background: var(--brand-a);
   border-color: var(--brand-a);
   color: #04110f;
@@ -710,7 +865,8 @@ h3 {
 .tool-button:hover,
 .source-picker:hover,
 .danger-button:hover,
-.shortcut-row:hover {
+.mini-button:hover,
+.hot-row:hover {
   border-color: var(--line-strong);
   color: var(--strong-text);
 }
@@ -729,9 +885,10 @@ h3 {
   border-color: rgba(239, 68, 68, 0.32);
 }
 
-.dashboard-grid {
+.cockpit-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+  grid-auto-flow: dense;
   gap: 16px;
 }
 
@@ -743,6 +900,7 @@ h3 {
   box-shadow: var(--shadow);
 }
 
+.intake-panel,
 .pipeline-panel,
 .activity-panel {
   grid-column: 1;
@@ -750,9 +908,14 @@ h3 {
 
 .output-panel,
 .autopilot-panel,
+.publish-panel,
 .health-panel,
-.shortcuts-panel {
+.account-panel {
   grid-column: 2;
+}
+
+.output-panel {
+  grid-row: 1;
 }
 
 .panel-heading {
@@ -785,34 +948,41 @@ h3 {
   color: var(--danger);
 }
 
+.hot-list,
 .step-list,
 .plan-list,
 .issue-list,
 .log-list,
-.shortcut-list {
+.account-list {
   display: grid;
   gap: 8px;
 }
 
+.hot-row,
 .step-row,
 .plan-row,
 .issue-row,
 .log-row,
-.shortcut-row {
+.account-row {
   display: grid;
   gap: 10px;
   align-items: center;
-  min-height: 48px;
+  min-height: 46px;
   border: 1px solid var(--line-soft);
   border-radius: 7px;
   background: var(--panel-soft);
   padding: 10px;
 }
 
-.step-row {
-  grid-template-columns: 32px minmax(0, 1fr) 70px;
+.hot-row {
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  width: 100%;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
 }
 
+.hot-row span,
 .step-index {
   display: inline-flex;
   align-items: center;
@@ -826,35 +996,45 @@ h3 {
   font-weight: 900;
 }
 
-.step-copy,
-.plan-row div,
-.issue-row,
-.shortcut-row span {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
+.hot-row strong,
 .step-copy strong,
 .plan-row strong,
 .issue-row strong,
-.shortcut-row strong,
+.account-row strong,
 .output-metric strong,
 .log-row strong {
+  min-width: 0;
+  overflow: hidden;
   color: var(--strong-text);
   font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+.hot-row em,
 .step-copy span,
 .plan-row span,
 .issue-row span,
-.shortcut-row em,
+.account-row span,
 .output-metric span,
 .health-score span,
 .log-row span {
   color: var(--muted);
   font-size: 12px;
   font-style: normal;
+}
+
+.step-row {
+  grid-template-columns: 32px minmax(0, 1fr) 70px;
+}
+
+.step-copy,
+.plan-row div,
+.issue-row,
+.account-row div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .step-state {
@@ -898,13 +1078,6 @@ h3 {
   padding: 10px;
 }
 
-.output-metric strong,
-.compact-stats strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .compact-stats span {
   color: var(--muted);
   font-size: 12px;
@@ -943,7 +1116,8 @@ h3 {
   line-height: 1.5;
 }
 
-.plan-row {
+.plan-row,
+.account-row {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
@@ -986,6 +1160,12 @@ h3 {
   background: var(--danger);
 }
 
+.mini-button {
+  min-height: 32px;
+  padding: 6px 10px;
+  color: var(--brand-a);
+}
+
 .issue-row,
 .log-row {
   min-height: 42px;
@@ -993,12 +1173,6 @@ h3 {
 
 .log-row {
   grid-template-columns: 70px minmax(0, 1fr);
-}
-
-.shortcut-row {
-  grid-template-columns: 22px minmax(0, 1fr) 16px;
-  width: 100%;
-  text-align: left;
 }
 
 .empty-row {
@@ -1022,9 +1196,9 @@ h3 {
   flex: none;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 980px) {
   .command-strip,
-  .dashboard-grid {
+  .cockpit-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1035,13 +1209,19 @@ h3 {
     padding-top: 16px;
   }
 
+  .intake-panel,
   .pipeline-panel,
   .activity-panel,
   .output-panel,
   .autopilot-panel,
+  .publish-panel,
   .health-panel,
-  .shortcuts-panel {
+  .account-panel {
     grid-column: 1;
+  }
+
+  .output-panel {
+    grid-row: auto;
   }
 }
 
@@ -1061,6 +1241,14 @@ h3 {
   .output-summary,
   .compact-stats {
     grid-template-columns: 1fr;
+  }
+
+  .hot-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .hot-row em {
+    grid-column: 2;
   }
 
   .step-row {

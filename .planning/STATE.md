@@ -5,7 +5,7 @@ milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
 last_updated: "2026-05-08T06:04:00Z"
-last_activity: 2026-05-25 — Completed quick task: 将前端默认体验改造为自动生产驾驶舱
+last_activity: 2026-05-25 — Completed quick task: 将多页面 UI 收敛为傻瓜化自动生产驾驶舱
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-25 — Completed quick task: 将前端默认体验改造为自动生产驾驶舱
+Last activity: 2026-05-25 — Completed quick task: 将多页面 UI 收敛为傻瓜化自动生产驾驶舱
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -115,6 +115,7 @@ None yet.
 | 2026-05-19 | 本地自测版 V0 agent API 与 MCP server 接入 | `.planning/quick/260519-fgb-v0-agent-api-mcp-server/260519-fgb-SUMMARY.md` |
 | 2026-05-20 | 在竖屏后期合成流程中增加可选自定义片尾视频拼接 | `.planning/quick/260520-gah-vertical-outro-append/260520-gah-SUMMARY.md` |
 | 2026-05-25 | 将前端默认体验改造为自动生产驾驶舱 | `.planning/quick/260525-ui-automation-dashboard/SUMMARY.md` |
+| 2026-05-25 | 将多页面 UI 收敛为傻瓜化自动生产驾驶舱 | `.planning/quick/260525-idb-ui/260525-idb-SUMMARY.md` |
 
 ## Session Continuity
 
