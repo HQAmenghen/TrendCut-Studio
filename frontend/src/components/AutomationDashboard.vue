@@ -118,6 +118,18 @@
           </button>
         </div>
 
+        <div v-if="xaiPartitions.length" class="partition-tabs">
+          <button
+            v-for="partition in xaiPartitions"
+            :key="partition.id"
+            type="button"
+            :class="{ active: partition.id === activePartitionId }"
+            @click="selectHotPartition(partition.id)"
+          >
+            {{ partition.label || partition.id }}
+          </button>
+        </div>
+
         <div class="hot-list picker-list">
           <button
             v-for="item in xaiItems"
@@ -132,7 +144,8 @@
             <em>{{ item.views_display || item.hot_score || activePartitionLabel }}</em>
           </button>
           <div v-if="!xaiItems.length" class="empty-row picker-empty">
-            <strong>当前还没有可选热门素材</strong>
+            <strong>当前 {{ activePartitionLabel }} 分区没有可用素材</strong>
+            <span>可以切换上方分区，或重新抓取当前分区。</span>
             <button type="button" class="primary-action" :disabled="xaiLoading" @click="$emit('run-xai')">
               <Search class="icon-sm" aria-hidden="true" />
               {{ xaiLoading ? '正在抓取' : '立即抓取热门榜单' }}
@@ -180,7 +193,11 @@
             <em>{{ item.views_display || item.hot_score || activePartitionLabel }}</em>
           </button>
           <div v-if="!hotItems.length" class="empty-row picker-empty">
-            <strong>暂无热门榜单</strong>
+            <strong>当前 {{ activePartitionLabel }} 分区暂无素材</strong>
+            <button type="button" class="tool-button" @click="openSourcePicker">
+              <Search class="icon-sm" aria-hidden="true" />
+              切换榜单分区
+            </button>
             <button type="button" class="tool-button" :disabled="xaiLoading" @click="$emit('run-xai')">
               <Search class="icon-sm" aria-hidden="true" />
               {{ xaiLoading ? '抓取中' : '抓取热门榜单' }}
@@ -518,6 +535,8 @@ const accountLoginStatus = computed(() => readValue(props.publishCenter, 'accoun
 const xaiItems = computed(() => readValue(props.xai, 'items', []));
 const hotItems = computed(() => xaiItems.value.slice(0, 5));
 const xaiLoading = computed(() => Boolean(readValue(props.xai, 'loading', false)));
+const xaiPartitions = computed(() => readValue(props.xai, 'partitions', []));
+const activePartitionId = computed(() => String(readValue(props.xai, 'activePartitionId', '')));
 const activePartitionLabel = computed(() => String(readValue(props.xai, 'activePartitionLabel', '默认分区')));
 const xaiLogs = computed(() => readValue(props.xai, 'recentLogs', []));
 
@@ -677,6 +696,12 @@ const openSourcePicker = () => {
 
 const closeSourcePicker = () => {
   sourcePickerOpen.value = false;
+};
+
+const selectHotPartition = async (partitionId) => {
+  const selectPartition = readFunction(props.xai, 'selectPartition');
+  if (!selectPartition) return;
+  await selectPartition(partitionId);
 };
 
 const emitStart = () => {
@@ -1038,6 +1063,30 @@ h3 {
 
 .modal-upload {
   justify-self: stretch;
+}
+
+.partition-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.partition-tabs button {
+  min-height: 34px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.partition-tabs button.active {
+  border-color: rgba(20, 184, 166, 0.36);
+  background: var(--brand-soft);
+  color: var(--brand-a);
 }
 
 .cockpit-layout {
