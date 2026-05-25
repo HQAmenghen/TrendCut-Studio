@@ -426,7 +426,7 @@ async function refreshList() {
             path: asset.path,
             url: asset.url,
             assetId: asset.id,
-            displayName: asset.compactLabel || asset.displayLabel || asset.label || '未命名视频',
+            displayName: asset?.metadata?.title || asset.compactLabel || asset.displayLabel || asset.label || '未命名视频',
             size: asset.sizeBytes || 0,
             mtime: asset.updatedAt || '',
             sourceType: asset.sourceType || '',

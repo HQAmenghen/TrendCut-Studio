@@ -8,6 +8,9 @@ services:
     ports:
       - "3001:3001"
     environment:
+      HOST: ${HOST:-0.0.0.0}
+      AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
+      AGENT_ENABLE_REAL_PUBLISH: ${AGENT_ENABLE_REAL_PUBLISH:-false}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-pro}

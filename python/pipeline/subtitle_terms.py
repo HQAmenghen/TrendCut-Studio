@@ -971,6 +971,28 @@ def to_simplified_chinese(text: str) -> str:
     return normalized.translate(TRADITIONAL_CHAR_MAP)
 
 
+CHINESE_DECIMAL_MILLION_PATTERN = re.compile(
+    r"(?<![\d.])(\d+)\s*[.．]\s*([0-9])\s*百万(?!亿)(美元|美金|元)?"
+)
+
+
+def normalize_chinese_numeric_display(text: str) -> str:
+    """Convert hybrid Chinese numeric display like 1.5百万美元 to 150万美元."""
+
+    sample = str(text or "")
+    if not sample:
+        return sample
+
+    def replace_decimal_million(match):
+        whole = int(match.group(1))
+        decimal_digit = int(match.group(2))
+        suffix = match.group(3) or ""
+        ten_thousands = whole * 100 + decimal_digit * 10
+        return f"{ten_thousands}万{suffix}"
+
+    return CHINESE_DECIMAL_MILLION_PATTERN.sub(replace_decimal_million, sample)
+
+
 def has_traditional_chinese(text: str) -> bool:
     sample = str(text or "")
     if not sample:

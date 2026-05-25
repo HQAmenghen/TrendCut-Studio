@@ -15,6 +15,22 @@ function isReferenceAuthorityAlignmentFailure(error) {
     String(error?.protocol?.code || '').trim() === REFERENCE_AUTHORITY_ALIGNMENT_FAILED;
 }
 
+function withoutReferenceAuthorityArgs(args) {
+  const next = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--reference-text-authority') {
+      continue;
+    }
+    if (arg === '--reference-subtitles-json') {
+      index += 1;
+      continue;
+    }
+    next.push(arg);
+  }
+  return next;
+}
+
 function resolveImportedTaskAsrInput(taskImport) {
   if (!taskImport?.taskPath) return '';
   const candidates = [
@@ -148,6 +164,7 @@ async function refreshImportedAvatarSubtitles(options = {}) {
   }
 
   const maxAsrAttempts = referencePath ? ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS : 1;
+  let referenceAuthorityFailed = null;
   for (let attempt = 1; attempt <= maxAsrAttempts; attempt += 1) {
     if (attempt > 1 && sse) {
       sendProgressEvent(sse, {
@@ -169,19 +186,46 @@ async function refreshImportedAvatarSubtitles(options = {}) {
           console.error(`[imported_avatar_asr stderr]: ${errStr}`);
         }
       });
+      referenceAuthorityFailed = null;
       break;
     } catch (error) {
-      if (attempt < maxAsrAttempts && isReferenceAuthorityAlignmentFailure(error)) {
-        if (sse) {
-          sendProgressEvent(sse, {
-            type: 'status',
-            msg: `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`
-          });
+      if (isReferenceAuthorityAlignmentFailure(error)) {
+        referenceAuthorityFailed = error;
+        if (attempt < maxAsrAttempts) {
+          if (sse) {
+            sendProgressEvent(sse, {
+              type: 'status',
+              msg: `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`
+            });
+          }
+          continue;
         }
-        continue;
+        break;
       }
       throw error;
     }
+  }
+
+  if (referenceAuthorityFailed) {
+    if (sse) {
+      sendProgressEvent(sse, {
+        type: 'status',
+        msg: `参考字幕严格校验持续失败，改用普通 ASR 字幕继续：${referenceAuthorityFailed.details || referenceAuthorityFailed.message}`
+      });
+    }
+    await runPythonScript(runAsrScript, withoutReferenceAuthorityArgs(asrArgs), {
+      cwd: taskImport.taskPath,
+      onStdout: (chunk) => {
+        const lastLine = chunk.toString().trim().split('\n').pop();
+        if (sse && lastLine) {
+          sendProgressEvent(sse, { type: 'status', msg: lastLine });
+        }
+      },
+      onStderr: (chunk) => {
+        const errStr = chunk.toString();
+        console.error(`[imported_avatar_asr fallback stderr]: ${errStr}`);
+      }
+    });
   }
 
   const refreshedTaskImport = resolveMaterialTaskImport({ projectsDir, taskDir: taskImport.outputDir });
@@ -208,7 +252,7 @@ function createStandaloneHandler(deps) {
     runPythonScript
   } = deps;
 
-  const middleware = upload.fields([{ name: 'video' }, { name: 'srt' }]);
+  const middleware = upload.fields([{ name: 'video' }, { name: 'srt' }, { name: 'outro' }]);
 
   const listMaterialTasks = (_req, res) => {
     try {
@@ -315,6 +359,13 @@ function createStandaloneHandler(deps) {
       }
       console.log(`[Standalone] 视频已就位: ${inputVideoPath}`);
 
+      const outroPath = path.join(taskDir, 'standalone_outro.mp4');
+      const hasOutro = Boolean(req.files?.outro?.[0]);
+      if (hasOutro) {
+        fs.renameSync(req.files.outro[0].path, outroPath);
+        console.log(`[Standalone] 片尾视频已就位: ${outroPath}`);
+      }
+
       const contentJsonPath = path.join(taskDir, 'content.json');
       const subsJsonPath = path.join(taskDir, 'subtitles.json');
       const referenceSubsJsonPath = path.join(taskDir, 'reference_subtitles.json');
@@ -333,6 +384,7 @@ function createStandaloneHandler(deps) {
         }
         const hasReferenceSubtitles = fs.existsSync(referenceSubsJsonPath);
         const maxAsrAttempts = hasReferenceSubtitles ? ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS : 1;
+        let referenceAuthorityFailed = null;
         for (let attempt = 1; attempt <= maxAsrAttempts; attempt += 1) {
           if (attempt > 1 && sse) {
             sendProgressEvent(sse, {
@@ -352,19 +404,43 @@ function createStandaloneHandler(deps) {
                 console.error(`[run_asr.py stderr]: ${errStr}`);
               }
             });
+            referenceAuthorityFailed = null;
             break;
           } catch (error) {
-            if (attempt < maxAsrAttempts && isReferenceAuthorityAlignmentFailure(error)) {
-              if (sse) {
-                sendProgressEvent(sse, {
-                  type: 'status',
-                  msg: `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`
-                });
+            if (isReferenceAuthorityAlignmentFailure(error)) {
+              referenceAuthorityFailed = error;
+              if (attempt < maxAsrAttempts) {
+                if (sse) {
+                  sendProgressEvent(sse, {
+                    type: 'status',
+                    msg: `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`
+                  });
+                }
+                continue;
               }
-              continue;
+              break;
             }
             throw error;
           }
+        }
+        if (referenceAuthorityFailed) {
+          if (sse) {
+            sendProgressEvent(sse, {
+              type: 'status',
+              msg: `参考字幕严格校验持续失败，改用普通 ASR 字幕继续：${referenceAuthorityFailed.details || referenceAuthorityFailed.message}`
+            });
+          }
+          await runPythonScript(runAsrScript, withoutReferenceAuthorityArgs(asrArgs), {
+            cwd: taskDir,
+            onStdout: (chunk) => {
+              const lastLine = chunk.toString().trim().split('\n').pop();
+              if (sse && lastLine) sendProgressEvent(sse, { type: 'status', msg: lastLine });
+            },
+            onStderr: (chunk) => {
+              const errStr = chunk.toString();
+              console.error(`[run_asr.py fallback stderr]: ${errStr}`);
+            }
+          });
         }
       };
 
@@ -440,6 +516,10 @@ function createStandaloneHandler(deps) {
         '--english-min-size', String(resolvedRenderOptions.englishMinSize || 30),
         '--english-max-lines', String(resolvedRenderOptions.englishMaxLines || 2)
       ];
+      if (hasOutro) {
+        makeVerticalArgs.push('--outro', outroPath);
+        if (sse) sendProgressEvent(sse, { type: 'status', msg: '检测到自定义片尾，竖屏渲染完成后会自动拼接。' });
+      }
       await runPythonScript(makeVerticalScript, makeVerticalArgs, {
         cwd: taskDir,
         onStderr: (chunk) => console.error(`[standalone_vertical stderr]: ${chunk}`)
@@ -452,6 +532,7 @@ function createStandaloneHandler(deps) {
         taskDir,
         sourceTaskDir: taskImport?.outputDir || '',
         subtitleSource: taskImport?.subtitleSource || '',
+        outroSource: hasOutro ? req.files.outro[0].originalname || 'uploaded_outro' : '',
         title: finalTitle,
         subtitles: readJsonIfExists(subsJsonPath, []),
         updatedAt: new Date().toISOString()
@@ -471,7 +552,7 @@ function createStandaloneHandler(deps) {
         stage: error.stage || 'standalone.pipeline',
         error: '单条竖屏生成失败',
         details: error.details || error.message,
-        hint: error.hint || '请检查 ASR、SRT 转换、标题生成或竖屏渲染脚本日志'
+        hint: error.hint || '请检查 ASR、SRT 转换、标题生成、片尾视频或竖屏渲染脚本日志'
       });
     }
   };

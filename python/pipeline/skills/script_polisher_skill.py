@@ -132,6 +132,8 @@ class ScriptPolisherSkill(BaseSkill):
             + self.rewriter._detect_ai_cliche_phrases(script_units)
             + self._detect_banned_templates(script_units)
         )
+        source_account_mentions = self.rewriter._find_source_account_mentions(script_units, source_focus)
+        parenthetical_glosses = self.rewriter._detect_parenthetical_glosses(script_units)
         source_repair_required = self.rewriter._needs_source_repair(source_focus, coverage)
 
         if unit_count < 3 or unit_count > 4:
@@ -147,6 +149,10 @@ class ScriptPolisherSkill(BaseSkill):
             errors.append(f"出现输入材料外的疑似跑题词: {out_of_scope_terms}")
         if style_violations:
             errors.append(f"出现禁用模板或 AI 套话: {style_violations}")
+        if source_account_mentions:
+            errors.append(f"口播误包含监控来源账号: {source_account_mentions}")
+        if parenthetical_glosses:
+            errors.append(f"口播包含括号英文注释或翻译夹注: {parenthetical_glosses}")
 
         diagnostics = {
             "char_count": char_count,
@@ -155,6 +161,8 @@ class ScriptPolisherSkill(BaseSkill):
             "source_repair_required": source_repair_required,
             "out_of_scope_terms": out_of_scope_terms,
             "style_violations": style_violations,
+            "source_account_mentions": source_account_mentions,
+            "parenthetical_glosses": parenthetical_glosses,
         }
         return not errors, errors, diagnostics
 
@@ -172,8 +180,8 @@ class ScriptPolisherSkill(BaseSkill):
         return self.PROMPT.format(
             min_chars=min_chars,
             max_chars=max_chars,
-            source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
-            source_focus_json=json.dumps(source_focus, ensure_ascii=False, indent=2),
+            source_post_json=json.dumps(self.rewriter._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
+            source_focus_json=json.dumps(self.rewriter._source_focus_for_prompt(source_focus), ensure_ascii=False, indent=2),
             outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
             audio_json=json.dumps(audio_snippets, ensure_ascii=False, indent=2),
             segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),

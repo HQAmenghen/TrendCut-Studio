@@ -357,6 +357,107 @@ describe('vertical queue ASR file URL handoff', () => {
     expect(job.message).toContain('有效口播字幕');
   });
 
+  test('preserves existing public metadata title during subtitle regeneration rerender', async () => {
+    const calls = [];
+    const runPythonScript = jest.fn(async () => '不应重新生成标题');
+    const writeMediaMetadata = jest.fn();
+    const existingPublicMeta = {
+      title: '原审核中心标题',
+      suggestedTitle: '原审核中心标题',
+      aiReview: {
+        reviewId: 'review_previous',
+        status: 'failed'
+      }
+    };
+    const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
+      calls.push({ scriptPath, args });
+      const promise = Promise.resolve().then(() => {
+        if (scriptPath.endsWith('run_asr.py')) {
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([
+            { time: [0, 1.2], zh: '修复后的字幕' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'audio.json'), JSON.stringify([
+            { start: 0, end: 1.2, text: '修复后的字幕' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'speaker_scene.json'), JSON.stringify({ timeline: [] }));
+        }
+        if (scriptPath.endsWith('make_vertical_video.py')) {
+          const outputPath = args[args.indexOf('--output') + 1];
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([
+            { time: [0, 2.4], zh: '渲染后延长的字幕' }
+          ]));
+          fs.writeFileSync(outputPath, 'vertical video');
+        }
+      });
+      return {
+        promise,
+        cancel: jest.fn()
+      };
+    });
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_regen_title',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript,
+      spawnScriptCancellable,
+      writeJsonFile: (filePath, payload) => {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+      },
+      readMediaMetadata: () => existingPublicMeta,
+      writeMediaMetadata,
+      taskStore: null,
+      triggerAutoReview: null
+    });
+
+    const originalVideoPath = path.join(tempRoot, 'source.mp4');
+    fs.writeFileSync(originalVideoPath, 'source video');
+    const job = service.enqueue({
+      title: '',
+      summary: '帖子摘要',
+      videoUrl: 'https://cdn.example.com/source.mp4',
+      renderOptions: {
+        isRegeneration: true,
+        originalVideoPath,
+        repairFocus: ['subtitle']
+      }
+    });
+
+    await waitFor(() => job.status === 'completed');
+
+    expect(runPythonScript).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(path.join(verticalQueueRoot, job.id, 'content.json'), 'utf8'))).toEqual({
+      title: '原审核中心标题'
+    });
+    expect(writeMediaMetadata).toHaveBeenCalledWith(
+      path.join(verticalPublicDir, job.id, 'vertical_output.mp4'),
+      expect.objectContaining({
+        title: '原审核中心标题',
+        suggestedTitle: '原审核中心标题',
+        subtitles: [
+          expect.objectContaining({
+            time: [0, 2.4],
+            zh: '渲染后延长的字幕'
+          })
+        ],
+        regeneration: expect.objectContaining({
+          status: 'completed'
+        })
+      })
+    );
+    expect(calls.some((call) => call.scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
+  });
+
   test('retries ASR when strict reference authority alignment fails once', async () => {
     const calls = [];
     const projectsDir = path.join(tempRoot, 'projects');
@@ -445,5 +546,184 @@ describe('vertical queue ASR file URL handoff', () => {
     expect(asrCalls).toHaveLength(2);
     expect(asrCalls[0].args).toContain('--reference-text-authority');
     expect(calls.some((call) => call.scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
+  });
+
+  test('falls back to normal ASR when strict reference authority keeps failing', async () => {
+    const calls = [];
+    const writeMediaMetadata = jest.fn();
+    const projectsDir = path.join(tempRoot, 'projects');
+    const materialDir = path.join(projectsDir, 'material_1778543460029_582511b3');
+    fs.mkdirSync(materialDir, { recursive: true });
+    fs.writeFileSync(path.join(materialDir, 'execution_plan.json'), JSON.stringify([
+      {
+        start_time: 0,
+        end_time: 5.2,
+        subtitle_text: '这意味着比特币正被认真考虑作为国家层面的价值储存工具'
+      }
+    ]));
+
+    const runPythonScript = jest.fn(async () => '测试标题');
+    const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
+      calls.push({ scriptPath, args });
+      const asrAttempt = calls.filter((call) => call.scriptPath.endsWith('run_asr.py')).length;
+      const promise = Promise.resolve().then(() => {
+        if (scriptPath.endsWith('run_asr.py')) {
+          if (asrAttempt <= 2) {
+            const err = new Error('参考文本字幕时间轴未通过严格校验');
+            err.code = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
+            err.stage = 'subtitle_reference_authority';
+            err.details = 'atom_span_not_contiguous:expected_0_got_1';
+            throw err;
+          }
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([
+            { time: [0, 5.2], zh: '普通 ASR 字幕继续成片' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'audio.json'), JSON.stringify([
+            { start: 0, end: 5.2, text: '普通 ASR 字幕继续成片' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'speaker_scene.json'), JSON.stringify({ timeline: [] }));
+        }
+        if (scriptPath.endsWith('make_vertical_video.py')) {
+          const outputPath = args[args.indexOf('--output') + 1];
+          fs.writeFileSync(outputPath, 'vertical video');
+        }
+      });
+      return {
+        promise,
+        cancel: jest.fn()
+      };
+    });
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      projectsDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_reference_fallback',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript,
+      spawnScriptCancellable,
+      writeJsonFile: (filePath, payload) => {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+      },
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata,
+      taskStore: null,
+      triggerAutoReview: null
+    });
+
+    const originalVideoPath = path.join(tempRoot, 'avatar-output.mp4');
+    fs.writeFileSync(originalVideoPath, 'source video');
+    const job = service.enqueue({
+      sourceType: 'material_driven_avatar',
+      title: '测试任务',
+      videoUrl: 'http://localhost:3001/projects/material_1778543460029_582511b3/output_final.mp4',
+      renderOptions: {
+        originalVideoPath
+      }
+    });
+
+    await waitFor(() => job.status === 'completed');
+
+    const asrCalls = calls.filter((call) => call.scriptPath.endsWith('run_asr.py'));
+    expect(asrCalls).toHaveLength(3);
+    expect(asrCalls[0].args).toContain('--reference-text-authority');
+    expect(asrCalls[1].args).toContain('--reference-text-authority');
+    expect(asrCalls[2].args).not.toContain('--reference-text-authority');
+    expect(asrCalls[2].args).not.toContain('--reference-subtitles-json');
+    expect(calls.some((call) => call.scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
+    expect(writeMediaMetadata).toHaveBeenCalledWith(
+      path.join(verticalPublicDir, job.id, 'vertical_output.mp4'),
+      expect.objectContaining({
+        referenceSubtitleFallbackUsed: true
+      })
+    );
+  });
+
+  test('uses local fallback title when hot title generation fails', async () => {
+    const calls = [];
+    const runPythonScript = jest.fn(async () => {
+      throw new Error('自动标题生成失败: Error code: 402');
+    });
+    const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
+      calls.push({ scriptPath, args });
+      const promise = Promise.resolve().then(() => {
+        if (scriptPath.endsWith('run_asr.py')) {
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([
+            { time: [0, 2.4], zh: '本地兜底标题来自字幕' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'audio.json'), JSON.stringify([
+            { start: 0, end: 2.4, text: '本地兜底标题来自字幕' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'speaker_scene.json'), JSON.stringify({ timeline: [] }));
+        }
+        if (scriptPath.endsWith('make_vertical_video.py')) {
+          const outputPath = args[args.indexOf('--output') + 1];
+          fs.writeFileSync(outputPath, 'vertical video');
+        }
+      });
+      return {
+        promise,
+        cancel: jest.fn()
+      };
+    });
+    const writeMediaMetadata = jest.fn();
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_title_fallback',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '本地兜底标题',
+      runPythonScript,
+      spawnScriptCancellable,
+      writeJsonFile: (filePath, payload) => {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+      },
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata,
+      taskStore: null,
+      triggerAutoReview: null
+    });
+
+    const originalVideoPath = path.join(tempRoot, 'source.mp4');
+    fs.writeFileSync(originalVideoPath, 'source video');
+    const job = service.enqueue({
+      videoUrl: 'https://cdn.example.com/source.mp4',
+      renderOptions: {
+        originalVideoPath
+      }
+    });
+
+    await waitFor(() => job.status === 'completed');
+
+    expect(runPythonScript).toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(path.join(verticalQueueRoot, job.id, 'content.json'), 'utf8'))).toEqual({
+      title: '本地兜底标题'
+    });
+    expect(job.title).toBe('本地兜底标题');
+    expect(writeMediaMetadata).toHaveBeenCalledWith(
+      path.join(verticalPublicDir, job.id, 'vertical_output.mp4'),
+      expect.objectContaining({
+        title: '本地兜底标题',
+        suggestedTitle: '本地兜底标题'
+      })
+    );
   });
 });

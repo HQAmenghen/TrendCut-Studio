@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { runPythonScript } = require('../../core/python');
 const { createAvatarRenderer, resolveAvatarRenderProvider } = require('../pipeline/avatarRenderer');
 const { buildRunningHubRunUrl, DEFAULT_RUNNINGHUB_BASE_URL, resolveRunningHubApiKey } = require('../pipeline/runningHub');
 const { QWEN_TTS_REFERENCE_AUDIO_LIMIT_SECONDS, prepareReferenceAudio } = require('./avatarAudio');
@@ -15,6 +16,12 @@ const { firstExistingFile, nowIso } = require('./utils');
 
 const QWEN_TTS_METADATA_FILE = 'avatar_qwen3tts.json';
 const AVATAR_RENDER_STATE_FILE = 'avatar_render_state.json';
+const NARRATION_SPEECH_TEXT_FILE = 'narration_speech.txt';
+const NARRATION_SPEECH_METADATA_FILE = 'narration_speech.json';
+const SPEECH_NARRATION_SCRIPT = path.join(__dirname, '../../../python/pipeline/normalize_speech_narration.py');
+const SPEECH_NARRATION_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_AVATAR_DOWNLOAD_RETRIES = 6;
+const DEFAULT_AVATAR_DOWNLOAD_RETRY_DELAY_MS = 3000;
 
 function readAvatarConfigFromBody(body = {}) {
   return {
@@ -160,6 +167,80 @@ function writeQwenTtsMetadata({ outputDir, narrationSignature, referenceAudioPat
   });
 }
 
+function resolvePositiveIntegerEnv(name, fallback) {
+  const value = String(process.env[name] || '').trim();
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeLlmSpeechChanges(changes) {
+  if (!Array.isArray(changes)) return [];
+  return changes
+    .map((item) => ({
+      kind: 'llm',
+      raw: String(item?.raw || '').trim(),
+      reading: String(item?.reading || '').trim(),
+      reason: String(item?.reason || '').trim()
+    }))
+    .filter((item) => item.raw && item.reading && item.raw !== item.reading);
+}
+
+function readSpeechNarrationProtocolResult(payload = {}) {
+  return payload?.protocol?.result || {};
+}
+
+async function generateDeepSeekSpeechNarration({ sourceText, fallbackText, outputDir, runPython = runPythonScript }) {
+  const payload = await runPython(SPEECH_NARRATION_SCRIPT, [
+    '--source-text',
+    sourceText,
+    '--fallback-text',
+    fallbackText
+  ], {
+    cwd: outputDir,
+    timeout: Number(process.env.SPEECH_NARRATION_LLM_TIMEOUT_MS || SPEECH_NARRATION_TIMEOUT_MS)
+  });
+  const result = readSpeechNarrationProtocolResult(payload);
+  const speechText = String(result.speechText || '').trim();
+  if (!speechText) {
+    throw new Error('DeepSeek 未返回可用口播专用稿');
+  }
+  return {
+    speechText,
+    provider: String(result.provider || 'deepseek'),
+    model: String(result.model || process.env.DEEPSEEK_SPEECH_MODEL || process.env.DEEPSEEK_TEXT_MODEL || ''),
+    normalizations: normalizeLlmSpeechChanges(result.changes)
+  };
+}
+
+function writeNarrationSpeechArtifacts({ outputDir, sourceText, preparedNarrationText }) {
+  const speechTextPath = path.join(outputDir, NARRATION_SPEECH_TEXT_FILE);
+  const metadataPath = path.join(outputDir, NARRATION_SPEECH_METADATA_FILE);
+  fs.writeFileSync(speechTextPath, preparedNarrationText.speechText, 'utf8');
+  writeJsonFile(metadataPath, {
+    version: 1,
+    source: preparedNarrationText.source || 'rule_based_numeric_normalizer',
+    provider: preparedNarrationText.provider || '',
+    model: preparedNarrationText.model || '',
+    displayText: preparedNarrationText.validationText,
+    speechText: preparedNarrationText.speechText,
+    changed: preparedNarrationText.speechTextChanged,
+    normalizations: preparedNarrationText.speechNormalizations || [],
+    sourceTextSignature: hashText(sourceText),
+    speechTextSignature: hashText(preparedNarrationText.speechText),
+    updatedAt: nowIso()
+  });
+  return {
+    speechTextPath,
+    metadataPath
+  };
+}
+
 function getAvatarRenderStatePath(outputDir) {
   return path.join(outputDir, AVATAR_RENDER_STATE_FILE);
 }
@@ -214,12 +295,67 @@ function hasUsableAimanVideo(outputDir) {
   return Boolean(getUsableFileStat(path.join(outputDir, 'aiman.mp4')));
 }
 
+async function downloadAvatarVideoWithRetry({
+  downloadFile,
+  videoUrl,
+  aimanPath,
+  task,
+  provider,
+  renderResult,
+  renderResumeKey,
+  targetLabel,
+  maxRetries = resolvePositiveIntegerEnv('AVATAR_DOWNLOAD_RETRIES', DEFAULT_AVATAR_DOWNLOAD_RETRIES),
+  retryDelayMs = resolvePositiveIntegerEnv('AVATAR_DOWNLOAD_RETRY_DELAY_MS', DEFAULT_AVATAR_DOWNLOAD_RETRY_DELAY_MS)
+}) {
+  let lastError = null;
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  };
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      await downloadFile(videoUrl, aimanPath, {
+        timeout: 180000,
+        headers
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      try {
+        if (fs.existsSync(aimanPath)) fs.unlinkSync(aimanPath);
+      } catch (_err) {}
+      const message = error?.code || error?.message || String(error);
+      if (attempt < maxRetries) {
+        addTaskLog(task, `数字人视频下载失败，准备重试 ${attempt}/${maxRetries}: ${message}`, 'warning');
+        await wait(retryDelayMs * attempt);
+      }
+    }
+  }
+
+  if (provider === 'runninghub') {
+    writeAvatarRenderState(task.outputPath, {
+      provider: 'runninghub',
+      status: 'download_interrupted',
+      resumeKey: renderResumeKey,
+      taskId: renderResult.taskId,
+      videoUrl,
+      remoteAudioName: renderResult.remoteAudioName || '',
+      remoteImageName: renderResult.remoteImageName || '',
+      nodeInfoList: renderResult.nodeInfoList || [],
+      targetLabel,
+      error: lastError?.message || String(lastError)
+    });
+  }
+  throw new Error(`数字人视频下载失败（已重试${maxRetries}次）: ${lastError?.code || lastError?.message || lastError}`);
+}
+
 function createAvatarGenerationService({
   paths,
   persistTaskStateSnapshot = () => {},
   rendererFactory = createAvatarRenderer,
   synthesizeSpeech = synthesizeQwenTtsSpeech,
   prepareReferenceAudioFn = prepareReferenceAudio,
+  generateSpeechNarration = generateDeepSeekSpeechNarration,
   readWorkflowFile = readWorkflow,
   downloadFile = downloadToFile
 } = {}) {
@@ -234,9 +370,54 @@ function createAvatarGenerationService({
         if (fromFile) narrationText = fromFile;
       }
     } catch (_err) {}
-    const preparedNarrationText = prepareNarrationTextForAvatarWorkflow(narrationText);
-    if (!preparedNarrationText.isUsable) {
+    const rulePreparedNarrationText = prepareNarrationTextForAvatarWorkflow(narrationText);
+    if (!rulePreparedNarrationText.isUsable) {
       throw new Error('缺少可用口播文案（narration.json / genText）');
+    }
+    let preparedNarrationText = {
+      ...rulePreparedNarrationText,
+      source: 'rule_based_numeric_normalizer'
+    };
+    try {
+      const llmSpeech = await generateSpeechNarration({
+        sourceText: rulePreparedNarrationText.validationText,
+        fallbackText: rulePreparedNarrationText.speechText,
+        outputDir: task.outputPath
+      });
+      preparedNarrationText = {
+        ...rulePreparedNarrationText,
+        speechText: llmSpeech.speechText,
+        speechNormalizations: llmSpeech.normalizations,
+        speechTextChanged: rulePreparedNarrationText.validationText !== llmSpeech.speechText,
+        source: 'deepseek_speech_normalizer',
+        provider: llmSpeech.provider,
+        model: llmSpeech.model
+      };
+      addTaskLog(
+        task,
+        `DeepSeek 已生成口播专用稿: ${llmSpeech.model || 'default'}，转换 ${llmSpeech.normalizations.length} 处`,
+        'success'
+      );
+    } catch (error) {
+      addTaskLog(
+        task,
+        `DeepSeek 口播专用稿生成失败，已回退规则稿: ${error?.message || error}`,
+        'warning'
+      );
+    }
+    const speechArtifacts = writeNarrationSpeechArtifacts({
+      outputDir: task.outputPath,
+      sourceText: narrationText,
+      preparedNarrationText
+    });
+    if (preparedNarrationText.speechTextChanged) {
+      addTaskLog(
+        task,
+        `已生成口播专用稿: ${path.basename(speechArtifacts.speechTextPath)}，数字/单位转换 ${preparedNarrationText.speechNormalizations.length} 处`,
+        'info'
+      );
+    } else {
+      addTaskLog(task, `已生成口播专用稿: ${path.basename(speechArtifacts.speechTextPath)}`, 'info');
     }
 
     const audioPresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'audio');
@@ -482,7 +663,16 @@ function createAvatarGenerationService({
     const videoUrl = renderResult.videoUrl;
     addTaskLog(task, `${providerLabel} 渲染完成，开始下载数字人视频`, 'info');
     const aimanPath = path.join(task.outputPath, 'aiman.mp4');
-    await downloadFile(videoUrl, aimanPath);
+    await downloadAvatarVideoWithRetry({
+      downloadFile,
+      videoUrl,
+      aimanPath,
+      task,
+      provider: renderResult.provider,
+      renderResult,
+      renderResumeKey,
+      targetLabel
+    });
 
     if (renderResult.provider === 'runninghub') {
       writeAvatarRenderState(task.outputPath, {
@@ -509,8 +699,12 @@ function createAvatarGenerationService({
 
 module.exports = {
   AVATAR_RENDER_STATE_FILE,
+  NARRATION_SPEECH_METADATA_FILE,
+  NARRATION_SPEECH_TEXT_FILE,
   QWEN_TTS_METADATA_FILE,
   createAvatarGenerationService,
+  downloadAvatarVideoWithRetry,
+  generateDeepSeekSpeechNarration,
   getReusableQwenTtsSpeech,
   readAvatarRenderState,
   readAvatarConfigFromBody,

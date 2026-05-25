@@ -11,12 +11,56 @@ from typing import Any
 from openai import (
     APIConnectionError,
     APIError,
+    AuthenticationError,
     InternalServerError,
     OpenAI,
+    PermissionDeniedError,
     RateLimitError,
 )
 
 RETRYABLE_ERRORS = (APIConnectionError, InternalServerError, RateLimitError)
+RETRYABLE_ERROR_MARKERS = (
+    "server disconnected without sending a response",
+    "connection reset",
+    "connection aborted",
+    "remote end closed connection without response",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "502",
+    "503",
+    "504",
+)
+KEY_FAILOVER_ERRORS = (
+    AuthenticationError,
+    PermissionDeniedError,
+    RateLimitError,
+)
+DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS = 15 * 60
+DEFAULT_GENERATE_RETRIES = 5
+KEY_FAILOVER_ERROR_MARKERS = (
+    "401",
+    "402",
+    "403",
+    "429",
+    "access denied",
+    "api key",
+    "apikey",
+    "balance",
+    "billing",
+    "exceeded your current quota",
+    "forbidden",
+    "insufficient",
+    "insufficient_quota",
+    "invalid api key",
+    "payment required",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "unauthorized",
+    "余额不足",
+    "欠费",
+)
 
 
 class KeyRotator:
@@ -27,12 +71,25 @@ class KeyRotator:
         if not self.keys:
             raise ValueError("API Key 列表不能为空")
         self.cycle = itertools.cycle(self.keys)
+        self.disabled_until = {}
         self.lock = threading.Lock()
         self.count = len(self.keys)
 
     def next(self) -> str:
         with self.lock:
+            now = time.time()
+            for _ in range(self.count):
+                key = next(self.cycle)
+                if self.disabled_until.get(key, 0) <= now:
+                    return key
+            self.disabled_until.clear()
             return next(self.cycle)
+
+    def mark_unavailable(self, key: str, *, cooldown_seconds: int) -> None:
+        if self.count <= 1 or not key:
+            return
+        with self.lock:
+            self.disabled_until[key] = time.time() + max(1, int(cooldown_seconds or 1))
 
 
 class DeepSeekClient:
@@ -45,6 +102,13 @@ class DeepSeekClient:
     def api_key(self) -> str:
         """动态获取下一个 API Key"""
         return self.rotator.next()
+
+    @property
+    def key_count(self) -> int:
+        return self.rotator.count
+
+    def mark_key_unavailable(self, api_key: str) -> None:
+        self.rotator.mark_unavailable(api_key, cooldown_seconds=_key_failure_cooldown_seconds())
 
 
 def get_deepseek_api_keys() -> list[str]:
@@ -77,13 +141,86 @@ def create_deepseek_client() -> DeepSeekClient:
     return DeepSeekClient(api_keys=keys, base_url=base_url)
 
 
+def mask_api_key(api_key: str) -> str:
+    key = str(api_key or "").strip()
+    if len(key) >= 4:
+        return f"****{key[-4:]}"
+    return "****"
+
+
+def _key_failure_cooldown_seconds() -> int:
+    value = str(os.getenv("DEEPSEEK_KEY_FAILOVER_COOLDOWN_SECONDS") or "").strip()
+    if not value:
+        return DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        return DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS
+    return parsed if parsed > 0 else DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS
+
+
+def _env_int(name: str, default: int) -> int:
+    value = str(os.getenv(name) or "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _error_text(exc: Exception) -> str:
+    parts = [str(exc or "")]
+    status_code = getattr(exc, "status_code", None)
+    if status_code:
+        parts.append(str(status_code))
+    body = getattr(exc, "body", None)
+    if body:
+        parts.append(str(body))
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if status:
+            parts.append(str(status))
+        text = getattr(response, "text", None)
+        if text:
+            parts.append(str(text))
+    return " ".join(part for part in parts if part).lower()
+
+
+def _is_key_failover_error(exc: Exception) -> bool:
+    if isinstance(exc, KEY_FAILOVER_ERRORS):
+        return True
+    message = _error_text(exc)
+    return any(marker in message for marker in KEY_FAILOVER_ERROR_MARKERS)
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    message = _error_text(exc)
+    return (
+        isinstance(exc, RETRYABLE_ERRORS)
+        or _is_key_failover_error(exc)
+        or any(marker in message for marker in RETRYABLE_ERROR_MARKERS)
+    )
+
+
+def _resolve_attempts(retries: int | None, client: DeepSeekClient) -> int:
+    try:
+        requested = int(retries or 1)
+    except (TypeError, ValueError):
+        requested = 1
+    minimum = _env_int("DEEPSEEK_GENERATE_MIN_RETRIES", DEFAULT_GENERATE_RETRIES)
+    return max(1, requested, minimum, getattr(client, "key_count", 1))
+
+
 def generate_content(
     client: DeepSeekClient,
     *,
     model: str,
     contents: Any,
     response_mime_type: str | None = None,
-    retries: int = 3,
+    retries: int = DEFAULT_GENERATE_RETRIES,
     request_timeout: int | None = None,
 ) -> Any:
     """
@@ -132,7 +269,8 @@ def generate_content(
             self.text = text
 
     last_error = None
-    for attempt in range(max(1, retries)):
+    attempts = _resolve_attempts(retries, client)
+    for attempt in range(1, attempts + 1):
         api_key = client.api_key
         openai_client = OpenAI(
             api_key=api_key,
@@ -143,18 +281,30 @@ def generate_content(
             response = openai_client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
             return DummyResponse(content)
-        except RETRYABLE_ERRORS as e:
-            last_error = e
-            print(f"[deepseek_client] Request failed (attempt {attempt+1}/{retries}): {e}", file=sys.stderr)
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
-        except APIError as e:
-            # Non-retryable API Error
-            print(f"[deepseek_client] Non-retryable API Error: {e}", file=sys.stderr)
-            raise e
         except Exception as e:
-            print(f"[deepseek_client] Unexpected Error: {e}", file=sys.stderr)
-            raise e
+            last_error = e
+            key_failover = _is_key_failover_error(e)
+            if key_failover:
+                client.mark_key_unavailable(api_key)
+            should_retry = attempt < attempts and _is_retryable_error(e)
+            if not should_retry:
+                if isinstance(e, APIError):
+                    print(f"[deepseek_client] Non-retryable API Error: {e}", file=sys.stderr)
+                else:
+                    print(f"[deepseek_client] Unexpected Error: {e}", file=sys.stderr)
+                raise e
+            wait_seconds = 0 if key_failover and client.key_count > 1 else min(8, 2 ** (attempt - 1))
+            if key_failover and client.key_count > 1:
+                retry_label = "retrying with next configured key"
+            else:
+                retry_label = f"retrying in {wait_seconds}s"
+            print(
+                f"[deepseek_client] Request failed (attempt {attempt}/{attempts}, "
+                f"key={mask_api_key(api_key)}); {retry_label}: {e}",
+                file=sys.stderr,
+            )
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
 
     if last_error:
         raise last_error

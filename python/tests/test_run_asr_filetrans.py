@@ -1632,7 +1632,352 @@ class QwenFiletransAsrTest(unittest.TestCase):
         self.assertEqual(authoritative[0]["time"][0], 19.76)
         self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
 
-    def test_strict_reference_text_authority_rejects_unvalidated_fallback_split(self):
+    def test_reference_authority_atom_ranges_allow_tail_fragment_with_previous_sentence(self):
+        subtitles = [
+            {"time": [22.4, 25.28], "zh": "特币资产独特，政府需要以不同方式操", "text": "特币资产独特，政府需要以不同方式操"},
+            {"time": [25.28, 25.44], "zh": "作。", "text": "作。"},
+            {"time": [25.84, 26.48], "zh": "Harry John", "text": "Harry John"},
+            {"time": [26.48, 28.16], "zh": "带领团队推动跨部门流程，", "text": "带领团队推动跨部门流程，"},
+            {"time": [28.64, 29.76], "zh": "确保执行令落实。", "text": "确保执行令落实。"},
+            {"time": [30.24, 33.04], "zh": "公告一出，储备从政策文件走向实际", "text": "公告一出，储备从政策文件走向实际"},
+            {"time": [33.04, 33.28], "zh": "执行。", "text": "执行。"},
+        ]
+        reference = [
+            {
+                "time": [22.4, 33.28],
+                "zh": "比特币资产独特，政府需要以不同方式操作。Harry Jung 带领团队推动跨部门流程，确保执行令落实。公告一出，储备从政策文件走向实际执行",
+            }
+        ]
+
+        prompt = run_asr.build_reference_authority_prompt(
+            subtitles,
+            reference[0]["zh"],
+            source_language="zh",
+            split_config={"max_chunk_duration": 4.2, "max_visible_chars": 26},
+        )
+        payload = json.loads(prompt.split("输入：", 1)[1])
+        atoms = payload["reference_atoms"]
+        allowed = {
+            (item["start_atom_index"], item["end_atom_index"])
+            for item in payload["allowed_atom_ranges"]
+        }
+        self.assertEqual(atoms[0]["text"], "比特币资产独特，政府需要以不同方式操作。")
+        self.assertEqual(atoms[0]["time"], [22.4, 25.44])
+        self.assertEqual(atoms[1]["time"][0], 25.84)
+        self.assertIn((1, 2), allowed)
+        validated = run_asr.validate_reference_authority_llm_results(
+            subtitles,
+            reference[0]["zh"],
+            [
+                {"start_atom_index": 0, "end_atom_index": 0},
+                {"start_atom_index": 1, "end_atom_index": 2},
+                {"start_atom_index": 3, "end_atom_index": 3},
+            ],
+            {"max_chunk_duration": 4.2, "max_visible_chars": 26},
+            require_atom_groups=True,
+        )
+        self.assertEqual("".join(item["zh"] for item in validated), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(validated))
+
+    def test_strict_reference_text_authority_assigns_boundary_prefix_to_next_block(self):
+        subtitles = [
+            {"time": [0.0, 0.64], "zh": "Michael Saylor", "text": "Michael Saylor"},
+            {"time": [0.72, 3.6], "zh": "说，他要给亿人提供年化8%", "text": "说，他要给亿人提供年化8%"},
+            {"time": [3.84, 5.52], "zh": "收益、零波动的银行账户。", "text": "收益、零波动的银行账户。"},
+            {"time": [5.76, 7.2], "zh": "这听起来像天方夜谭，", "text": "这听起来像天方夜谭，"},
+            {"time": [7.44, 8.16], "zh": "但MicroStrategy", "text": "但MicroStrategy"},
+            {"time": [8.48, 10.96], "zh": "的掌舵人正在把这个愿景推到台前。", "text": "的掌舵人正在把这个愿景推到台前。"},
+            {"time": [11.2, 11.76], "zh": "Saylor", "text": "Saylor"},
+            {"time": [12.0, 13.4], "zh": "坦承这很难，", "text": "坦承这很难，"},
+            {"time": [13.4, 16.2], "zh": "就像建核反应堆换取免费电力。", "text": "就像建核反应堆换取免费电力。"},
+            {"time": [16.2, 18.8], "zh": "他的思路是，用比特币作储备，", "text": "他的思路是，用比特币作储备，"},
+            {"time": [18.8, 21.7], "zh": "通过金融工程把波动对冲掉，输出一个接近无风险的收益", "text": "通过金融工程把波动对冲掉，输出一个接近无风险的收益"},
+        ]
+        reference = [
+            {
+                "time": [0, 11.98],
+                "zh": "Michael Saylor 说，他要给十亿人提供年化8%收益、零波动的银行账户。这听起来像天方夜谭，但 MicroStrategy 的掌舵人正在把这个愿景推到台前",
+            },
+            {
+                "time": [11.98, 21.7],
+                "zh": "Saylor 坦承这很难，就像建核反应堆换取免费电力。他的思路是，用比特币作储备，通过金融工程把波动对冲掉，输出一个接近无风险的收益",
+            },
+        ]
+        captured_payloads = []
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+
+        def choose_allowed_partition(atom_count, allowed_ranges):
+            by_start = {}
+            for start, end in allowed_ranges:
+                by_start.setdefault(start, []).append(end)
+            memo = {}
+
+            def visit(start):
+                if start == atom_count:
+                    return []
+                if start in memo:
+                    return memo[start]
+                for end in sorted(by_start.get(start, []), reverse=True):
+                    tail = visit(end + 1)
+                    if tail is not None:
+                        memo[start] = [(start, end)] + tail
+                        return memo[start]
+                memo[start] = None
+                return None
+
+            return visit(0)
+
+        def fake_generate_content(*_args, **kwargs):
+            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            captured_payloads.append(payload)
+            atoms = payload.get("reference_atoms") or []
+            allowed_ranges = {
+                (item["start_atom_index"], item["end_atom_index"])
+                for item in payload.get("allowed_atom_ranges") or []
+            }
+            choices = choose_allowed_partition(len(atoms), allowed_ranges)
+            self.assertIsNotNone(choices)
+            return FakeResponse(json.dumps([
+                {"start_atom_index": start, "end_atom_index": end}
+                for start, end in choices
+            ], ensure_ascii=False))
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual(len(captured_payloads), 2)
+        self.assertNotEqual(captured_payloads[0]["asr_segments"][-1]["asr_text"], "Saylor")
+        self.assertEqual(captured_payloads[1]["asr_segments"][0]["asr_text"], "Saylor")
+        self.assertEqual(
+            run_asr.visible_text("".join(item["zh"] for item in authoritative)),
+            run_asr.visible_text("".join(item["zh"] for item in reference)),
+        )
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+
+    def test_reference_authority_boundary_prefix_rule_is_not_keyword_specific(self):
+        asr_entries = [
+            {"time": [0.0, 1.2], "zh": "第一段介绍背景", "text": "第一段介绍背景"},
+            {"time": [1.2, 2.4], "zh": "并说明核心原因。", "text": "并说明核心原因。"},
+            {"time": [2.64, 3.0], "zh": "第二点", "text": "第二点"},
+            {"time": [3.12, 4.4], "zh": "才是关键结论。", "text": "才是关键结论。"},
+        ]
+        reference = [
+            {"time": [0.0, 2.8], "zh": "第一段介绍背景，并说明核心原因。"},
+            {"time": [2.8, 4.4], "zh": "第二点才是关键结论。"},
+        ]
+
+        first = run_asr.collect_asr_entries_for_reference(asr_entries, reference[0], set(), reference[1])
+        used = {index for index, _entry in first}
+        second = run_asr.collect_asr_entries_for_reference(asr_entries, reference[1], used)
+
+        self.assertEqual([entry["zh"] for _index, entry in first], [
+            "第一段介绍背景",
+            "并说明核心原因。",
+        ])
+        self.assertEqual([entry["zh"] for _index, entry in second], [
+            "第二点",
+            "才是关键结论。",
+        ])
+
+    def test_strict_reference_text_authority_closes_continuous_block_gaps(self):
+        subtitles = [
+            {"time": [0.0, 4.0], "zh": "黄仁勋说，如果两个应届生候选人，一个精通 AI，", "text": "黄仁勋说，如果两个应届生候选人，一个精通 AI，"},
+            {"time": [4.0, 7.2], "zh": "一个完全不懂，他会毫不犹豫选那个 AI 专家。", "text": "一个完全不懂，他会毫不犹豫选那个 AI 专家。"},
+            {"time": [7.2, 11.3], "zh": "而且这条标准，不只看技术岗，财务、营销、客服、销售，全都一样", "text": "而且这条标准，不只看技术岗，财务、营销、客服、销售，全都一样"},
+            {"time": [12.96, 18.88], "zh": "他进一步建议，如果当前工作包含重复性任务，就应该去学用 AI 自动化它。", "text": "他进一步建议，如果当前工作包含重复性任务，就应该去学用 AI 自动化它。"},
+            {"time": [18.88, 22.24], "zh": "他还举了个例子：你可以直接问 AI 怎样提升我的工作技能，", "text": "他还举了个例子：你可以直接问 AI 怎样提升我的工作技能，"},
+            {"time": [22.24, 24.03], "zh": "它会给你一份详细的步骤计划", "text": "它会给你一份详细的步骤计划"},
+            {"time": [26.96, 28.56], "zh": "未来十年，AI 很可能像当年 Excel 一样，", "text": "未来十年，AI 很可能像当年 Excel 一样，"},
+            {"time": [28.56, 30.64], "zh": "成为职场基础技能。", "text": "成为职场基础技能。"},
+        ]
+        reference = [
+            {
+                "time": [0.0, 11.3],
+                "zh": "黄仁勋说，如果两个应届生候选人，一个精通AI，一个完全不懂，他会毫不犹豫选那个AI专家。而且这条标准，不只看技术岗，财务、营销、客服、销售，全都一样",
+            },
+            {
+                "time": [11.3, 24.03],
+                "zh": "他进一步建议，如果当前工作包含重复性任务，就应该去学用AI自动化它。他还举了个例子：你可以直接问AI“怎样提升我的工作技能”，它会给你一份详细的步骤计划",
+            },
+            {
+                "time": [24.03, 30.64],
+                "zh": "未来十年，AI很可能像当年Excel一样，成为职场基础技能。",
+            },
+        ]
+
+        def fake_generate_content(*_args, **kwargs):
+            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            atoms = payload.get("reference_atoms") or []
+            if not atoms:
+                asr_segments = payload.get("asr_segments") or []
+                pieces = run_asr.split_reference_text_by_asr_segments(payload.get("reference_text") or "", asr_segments)
+
+                class FallbackResponse:
+                    text = json.dumps([
+                        {"index": index, "text": piece}
+                        for index, piece in enumerate(pieces)
+                    ], ensure_ascii=False)
+
+                return FallbackResponse()
+
+            allowed = {
+                (item["start_atom_index"], item["end_atom_index"])
+                for item in payload.get("allowed_atom_ranges") or []
+            }
+            choices = []
+            index = 0
+            while index < len(atoms):
+                candidates = sorted(
+                    [item for item in allowed if item[0] == index],
+                    key=lambda item: (item[1] - item[0], item[1]),
+                    reverse=True,
+                )
+                self.assertTrue(candidates)
+                start_atom_index, end_atom_index = candidates[0]
+                choices.append({
+                    "start_atom_index": start_atom_index,
+                    "end_atom_index": end_atom_index,
+                })
+                index = end_atom_index + 1
+
+            class FakeResponse:
+                text = json.dumps(choices, ensure_ascii=False)
+
+            return FakeResponse()
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), "".join(item["zh"] for item in reference))
+        self.assertTrue(any(item["time"][0] == 11.3 for item in authoritative))
+        self.assertTrue(any(item["time"][0] == 24.03 for item in authoritative))
+        self.assertLessEqual(
+            max(next_item["time"][0] - item["time"][1] for item, next_item in zip(authoritative, authoritative[1:])),
+            0.03,
+        )
+
+    def test_reference_text_authority_keeps_numeric_equivalent_block_prefix(self):
+        subtitles = [
+            {"time": [24.72, 25.84], "zh": "未来10年，AI", "text": "未来10年，AI"},
+            {"time": [26.16, 26.88], "zh": "可能像当年Excel", "text": "可能像当年Excel"},
+            {"time": [26.96, 28.56], "zh": "一样，成为职场基础技能。", "text": "一样，成为职场基础技能。"},
+            {"time": [28.88, 30.24], "zh": "黄仁勋的表达很直白，", "text": "黄仁勋的表达很直白，"},
+        ]
+        reference = {
+            "time": [24.03, 37.12],
+            "zh": "未来十年，AI很可能像当年Excel一样，成为职场基础技能。黄仁勋的表达很直白：不会用AI的求职者，竞争力会明显落后。",
+        }
+
+        selected = run_asr.collect_asr_entries_for_reference(subtitles, reference, set())
+
+        self.assertTrue(selected)
+        self.assertEqual(selected[0][1]["zh"], "未来10年，AI")
+
+    def test_strict_reference_text_authority_accepts_character_position_groups(self):
+        subtitles = [
+            {"time": [24.8, 25.92], "zh": "未来10年，AI", "text": "未来10年，AI"},
+            {"time": [25.92, 26.96], "zh": "可能像当年Excel", "text": "可能像当年Excel"},
+            {"time": [26.96, 28.56], "zh": "一样，成为职场基础技能。", "text": "一样，成为职场基础技能。"},
+            {"time": [28.88, 30.24], "zh": "黄仁勋的表达很直白，", "text": "黄仁勋的表达很直白，"},
+            {"time": [30.64, 33.44], "zh": "不会用AI求职者竞争力会明显落后，", "text": "不会用AI求职者竞争力会明显落后，"},
+            {"time": [33.84, 35.68], "zh": "趁早把AI工具练成习惯，", "text": "趁早把AI工具练成习惯，"},
+            {"time": [35.92, 37.12], "zh": "是个人最值得做的事。", "text": "是个人最值得做的事。"},
+        ]
+        reference = [
+            {
+                "time": [24.03, 37.12],
+                "zh": "未来十年，AI 很可能像当年 Excel 一样，成为职场基础技能。黄仁勋的表达很直白：不会用 AI 的求职者，竞争力会明显落后。趁早把 AI 工具练成习惯，是个人最值得做的事",
+            }
+        ]
+
+        class FakeResponse:
+            text = json.dumps([
+                {"start_index": 0, "end_index": 24, "text": "未来十年，AI 很可能像当年 Excel 一样，"},
+                {"start_index": 24, "end_index": 33, "text": "成为职场基础技能。"},
+                {"start_index": 33, "end_index": 55, "text": "黄仁勋的表达很直白：不会用 AI 的求职者，"},
+                {"start_index": 55, "end_index": 64, "text": "竞争力会明显落后。"},
+                {"start_index": 64, "end_index": 87, "text": "趁早把 AI 工具练成习惯，是个人最值得做的事"},
+            ], ensure_ascii=False)
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertLessEqual(
+            max(next_item["time"][0] - item["time"][1] for item, next_item in zip(authoritative, authoritative[1:])),
+            0.03,
+        )
+
+    def test_strict_reference_text_authority_replays_reference_authority_recur_again(self):
+        subtitles = [
+            {"time": [36.32, 39.2], "zh": "当然AI编程目前还难以搞定全新的架构", "text": "当然AI编程目前还难以搞定全新的架构"},
+            {"time": [39.2, 41.36], "zh": "创新，更多是优化现有流程。", "text": "创新，更多是优化现有流程。"},
+            {"time": [41.92, 43.36], "zh": "但一旦10倍加速落地，", "text": "但一旦10倍加速落地，"},
+            {"time": [43.68, 46.64], "zh": "软件行业的交付节奏和团队协作方式都会被彻", "text": "软件行业的交付节奏和团队协作方式都会被彻"},
+            {"time": [46.64, 47.2], "zh": "底重塑。", "text": "底重塑。"},
+        ]
+        reference = [
+            {
+                "time": [36.32, 47.2],
+                "zh": "当然，AI 编程目前还难以搞定全新的架构创新，更多是优化现有流程。但一旦 10 倍加速落地，软件行业的交付节奏和团队协作方式都会被彻底重塑",
+            }
+        ]
+
+        class FakeResponse:
+            text = json.dumps([
+                {"start_index": 0, "end_index": 19, "text": "当然，AI 编程目前还难以搞定全新的架构"},
+                {"start_index": 20, "end_index": 32, "text": "创新，更多是优化现有流程。"},
+                {"start_index": 33, "end_index": 45, "text": "但一旦 10 倍加速落地，"},
+                {"start_index": 46, "end_index": 68, "text": "软件行业的交付节奏和团队协作方式都会被彻底重塑"},
+            ], ensure_ascii=False)
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+        self.assertGreaterEqual(len(authoritative), 3)
+
+    def test_strict_reference_text_authority_fails_soft_to_deterministic_split(self):
         subtitles = [
             {"time": [17.92, 20.32], "zh": "这意味着比特币正被认真", "text": "这意味着比特币正被认真"},
             {"time": [20.32, 23.42], "zh": "考虑作为国家层面的价值储存工具", "text": "考虑作为国家层面的价值储存工具"},
@@ -1654,14 +1999,78 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
                 patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
                 patch("pipeline.run_asr.emit_stage"):
-            with self.assertRaises(run_asr.ReferenceAuthorityAlignmentError):
-                run_asr.build_reference_authority_subtitles(
-                    subtitles,
-                    reference,
-                    {"max_visible_chars": 30},
-                    source_language="zh",
-                    strict=True,
-                )
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 30},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+
+    def test_strict_reference_text_authority_replays_reference_authority_stable_success(self):
+        subtitles = [
+            {
+                "time": [15.84, 17.44],
+                "zh": "但这只是让人们接受的套路。",
+                "text": "但这只是让人们接受的套路。",
+            },
+            {
+                "time": [17.76, 20.72],
+                "zh": "任何可停止、可审查的工具都与比特币",
+                "text": "任何可停止、可审查的工具都与比特币",
+            },
+            {
+                "time": [20.72, 22.24],
+                "zh": "主权使命背道而驰。",
+                "text": "主权使命背道而驰。",
+            },
+            {
+                "time": [22.72, 25.92],
+                "zh": "视频强调目标是让亿人都拥有金融主权。",
+                "text": "视频强调目标是让亿人都拥有金融主权。",
+            },
+        ]
+        reference = [
+            {
+                "time": [16.93, 27.47],
+                "zh": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+            }
+        ]
+
+        class FakeResponse:
+            text = json.dumps([
+                {"start_atom_index": 1, "end_atom_index": 1},
+                {"start_atom_index": 2, "end_atom_index": 2},
+            ], ensure_ascii=False)
+
+        fallback_events = []
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
+                patch("pipeline.run_asr.append_reference_authority_debug_event", side_effect=fallback_events.append), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_chunk_duration": 4.2, "max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+        self.assertTrue(any(
+            event.get("event_type") == "reference_authority_fallback"
+            and event.get("fallback_stage") in {
+                "deterministic_reference_authority_split",
+                "reference_subtitle_timing",
+            }
+            for event in fallback_events
+        ))
 
     def test_reference_text_authority_repairs_dangling_verb_object_breaks(self):
         subtitles = [

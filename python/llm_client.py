@@ -81,7 +81,7 @@ def generate_content(
     model: str,
     contents,
     response_mime_type: str | None = None,
-    retries: int = 3,
+    retries: int = 5,
     request_timeout: int | None = None,
     provider: str | None = None,
 ):

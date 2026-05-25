@@ -109,14 +109,29 @@ def resolve_account_file(runtime_dir: Path, platform: str, account_name: str) ->
 
 async def wait_for_manual_close(context, platform_label: str) -> None:
     emit("ready_for_manual_publish", f"{platform_label}已完成上传和填写，请人工确认发布页后关闭浏览器", 100)
-    while len(context.pages) > 0:
-        await asyncio.sleep(5)
+    while active_context_pages(context):
+        await asyncio.sleep(0.5)
 
 
 async def wait_for_manual_manage_close(context, platform_label: str) -> None:
     emit("opened", f"{platform_label}创作中心已打开，请在浏览器中操作；关闭浏览器后本次管理会话结束", 100)
-    while len(context.pages) > 0:
-        await asyncio.sleep(5)
+    while active_context_pages(context):
+        await asyncio.sleep(0.5)
+
+
+def active_context_pages(context) -> list:
+    try:
+        pages = list(context.pages)
+    except Exception:
+        return []
+    active = []
+    for page in pages:
+        try:
+            if not page.is_closed():
+                active.append(page)
+        except Exception:
+            continue
+    return active
 
 
 def normalize_tags(value) -> list[str]:

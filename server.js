@@ -53,6 +53,7 @@ const { createPublishHandlers } = require('./server/services/publish/handlers');
 const { createPublishAssetsService } = require('./server/services/publish/assets');
 const { createPublishStore } = require('./server/services/publish/store');
 const { createWechatRpaService } = require('./server/services/publish/wechatRpa');
+const { createXApiPublisher } = require('./server/services/publish/xApi');
 const { createAccountDashboardService } = require('./server/services/publish/accountDashboard');
 const { createSystemHandlers } = require('./server/services/system/handlers');
 const { createSelfCheckService } = require('./server/services/system/selfCheck');
@@ -62,7 +63,12 @@ const { startScheduler } = require('./server/services/system/scheduler');
 const { createReviewHandlers } = require('./server/services/review');
 const { registerReviewRoutes } = require('./server/routes/review');
 const { registerMaterialDrivenRoutes } = require('./server/routes/materialDriven');
+const { createMaterialDrivenTaskRegistry } = require('./server/services/materialDriven/taskRegistry');
+const { createAvatarGenerationService } = require('./server/services/materialDriven/avatarGeneration');
+const { createMaterialDrivenPipelineRunner } = require('./server/services/materialDriven/pipelineProcess');
 const { startMaterialDrivenFromUrl, getTaskStatus } = require('./server/services/materialDriven/autoStart');
+const { createAgentHandlers } = require('./server/services/agent/handlers');
+const { registerAgentRoutes } = require('./server/routes/agent');
 const { readReviewConfig } = require('./server/services/review/store');
 const { createFeishuService } = require('./server/services/notification/feishu');
 const { createLoginStatusService } = require('./server/services/notification/loginStatus');
@@ -75,8 +81,88 @@ loadProjectEnv(__dirname);
 
 const app = express();
 
+const SUPPORTED_LLM_PROVIDERS = new Set(['gemini', 'qwen', 'vertex', 'deepseek']);
+
+function normalizeLlmProvider(value, fallback = 'gemini') {
+    const provider = String(value || '').trim().toLowerCase();
+    return SUPPORTED_LLM_PROVIDERS.has(provider) ? provider : fallback;
+}
+
+function getConfiguredLlmProviders() {
+    const globalProvider = normalizeLlmProvider(process.env.LLM_PROVIDER, 'gemini');
+    const textProvider = normalizeLlmProvider(
+        process.env.TEXT_LLM_PROVIDER || process.env.SCRIPT_LLM_PROVIDER,
+        globalProvider
+    );
+    return Array.from(new Set([globalProvider, textProvider]));
+}
+
+function buildLlmEnvRequirements() {
+    const checks = [
+        {
+            key: 'LLM_PROVIDER',
+            label: '全局 LLM Provider',
+            level: 'warn',
+            exposeValue: true,
+            hint: '未配置时默认使用 gemini；当前支持 gemini / qwen / vertex / deepseek'
+        },
+        {
+            key: 'TEXT_LLM_PROVIDER',
+            label: '文本 LLM Provider',
+            level: 'warn',
+            exposeValue: true,
+            hint: '未配置时文本链路跟随 LLM_PROVIDER'
+        }
+    ];
+
+    for (const provider of getConfiguredLlmProviders()) {
+        if (provider === 'qwen') {
+            checks.push({
+                key: 'QWEN_API_KEY',
+                label: 'Qwen/DashScope API Key',
+                anyOf: ['QWEN_API_KEY', 'DASHSCOPE_API_KEY'],
+                level: 'warn',
+                hint: '当前 LLM provider 使用 qwen，请配置 QWEN_API_KEY 或 DASHSCOPE_API_KEY'
+            });
+        } else if (provider === 'deepseek') {
+            checks.push({
+                key: 'DEEPSEEK_API_KEY',
+                label: 'DeepSeek API Key',
+                level: 'warn',
+                hint: '当前文本 LLM provider 使用 deepseek，请配置 DEEPSEEK_API_KEY'
+            });
+        } else if (provider === 'vertex') {
+            checks.push({
+                key: 'VERTEX_AUTH',
+                label: 'Vertex AI 认证',
+                anyOf: ['VERTEX_AI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+                level: 'warn',
+                hint: '当前 LLM provider 使用 vertex，请配置 VERTEX_AI_API_KEY，或确保 ADC/Google 凭据可用'
+            });
+        } else if (provider === 'gemini') {
+            checks.push({
+                key: 'GEMINI_API_KEY',
+                label: 'Gemini API Key',
+                anyOf: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+                level: 'warn',
+                hint: '当前 LLM provider 使用 gemini，请配置 GEMINI_API_KEY 或 GOOGLE_API_KEY'
+            });
+        }
+    }
+
+    return checks;
+}
+
 // 初始化统一任务存储
 const taskStore = new TaskStore(paths.TASK_STORE_DB_PATH);
+const materialDrivenTaskRegistry = createMaterialDrivenTaskRegistry(paths);
+const materialDrivenAvatarGeneration = createAvatarGenerationService({
+    paths,
+    persistTaskStateSnapshot: materialDrivenTaskRegistry.persistTaskStateSnapshot
+});
+const materialDrivenPipelineRunner = createMaterialDrivenPipelineRunner({
+    autoGenerateAvatar: materialDrivenAvatarGeneration.autoGenerateAvatar
+});
 
 app.use(express.static(paths.FRONTEND_DIST_DIR));
 app.use(express.static(paths.PUBLIC_DIR));
@@ -262,8 +348,18 @@ function buildPublishTask(platformKey, publishData, assetUrl, platformConfig, pl
         case 'x':
             return {
                 ...common,
-                guide: '需要 X API 媒体上传和发帖凭证，当前可复用现有 X 认证信息补全自动发布。',
-                requiredFields: ['apiKey', 'apiSecret', 'accessToken', 'accessSecret']
+                status: 'rpa_available',
+                guide: '通过 X API v2 上传视频并创建 Post。X 没有远程草稿箱接口，当前只支持自动发表；首次使用前需完成 OAuth2 用户授权，并授予 tweet.write、media.write、offline.access 等 scopes。',
+                accountId: selectedAccountId,
+                accountLabel: selectedAccountLabel,
+                username: String(platformOptions?.username || '').trim(),
+                requiredFields: ['accessToken'],
+                automationModes: ['publish'],
+                runtime: {
+                    state: 'idle',
+                    lastMessage: '',
+                    updatedAt: null
+                }
             };
         case 'youtube':
             return {
@@ -316,7 +412,9 @@ const publishStore = createPublishStore({
 const {
     getWechatAccountMap,
     getSauAccountMap,
+    getXAccountMap,
     getSauPlatformAccounts,
+    getXAccounts,
     readPublishConfig,
     writePublishConfig,
     readPublishJobs,
@@ -330,8 +428,57 @@ const {
     sanitizePlatformConfigInput,
     validateWechatTaskConfig,
     validateSauTaskConfig,
+    validateXTaskConfig,
     reconcileAndPersistPublishJobs
 } = publishStore;
+
+const selfCheckService = createSelfCheckService({
+    fs,
+    spawnSync,
+    envRequirements: () => [
+        { key: 'COMFYUI_BASE_URL', label: 'ComfyUI 地址', level: 'warn', hint: '未配置时数字人生成链路不可用' },
+        ...buildLlmEnvRequirements(),
+        { key: 'XAI_API_KEY', label: 'xAI API Key', level: 'warn', hint: '未配置时 xai 榜单链路不可用' },
+        { key: 'AGENT_API_TOKEN', label: 'Agent API Token', level: 'warn', hint: '未配置时 /api/agent/v1 会拒绝访问' }
+    ],
+    directoryChecks: [
+        { key: 'public', label: 'public 目录', path: paths.PUBLIC_DIR },
+        { key: 'uploads', label: 'uploads 目录', path: paths.UPLOADS_DIR },
+        { key: 'runtime', label: 'runtime_jobs 目录', path: paths.RUNTIME_ROOT, level: 'warn' },
+        { key: 'publish', label: 'publish 目录', path: paths.PUBLISH_CENTER_DIR },
+        { key: 'social_auto_upload', label: '项目内 social-auto-upload vendor', path: paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR, level: 'warn' }
+    ],
+    fileChecks: [
+        { key: 'workflow', label: '工作流配置', path: paths.WORKFLOW_PATH },
+        { key: 'run_asr', label: 'ASR 脚本', path: path.join(paths.PIPELINE_DIR, 'run_asr.py') },
+        { key: 'generate_title', label: '标题生成脚本', path: path.join(paths.PIPELINE_DIR, 'generate_title.py') },
+        { key: 'publish_description', label: '发布描述脚本', path: paths.PUBLISH_DESCRIPTION_SCRIPT },
+        { key: 'wechat_rpa', label: '微信发布脚本', path: paths.WECHAT_RPA_SCRIPT },
+        { key: 'social_auto_upload_adapter', label: 'social-auto-upload 适配脚本', path: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT },
+        { key: 'xai_runner', label: 'xAI 榜单脚本', path: paths.XAI_TOP10_SCRIPT }
+    ],
+    commandChecks: [
+        { key: 'python', label: 'Python', command: 'python', args: ['--version'], hint: '请确认 python 已加入 PATH' },
+        { key: 'ffmpeg', label: 'FFmpeg', command: 'ffmpeg', args: ['-version'], hint: '请确认 ffmpeg 已加入 PATH' },
+        {
+            key: 'playwright_python',
+            label: 'Playwright Python',
+            command: 'python',
+            args: ['-c', 'from playwright.sync_api import sync_playwright; print("playwright-ok")'],
+            level: 'warn',
+            hint: '未安装时微信视频号自动发布不可用'
+        }
+    ]
+});
+
+const xApiPublisher = createXApiPublisher({
+    fs,
+    path,
+    readPublishJobs,
+    readPublishConfig,
+    writePublishConfig,
+    updatePublishPlatformTask
+});
 
 const wechatRpaService = createWechatRpaService({
     fs,
@@ -351,6 +498,7 @@ const wechatRpaService = createWechatRpaService({
     socialAutoUploadDir: process.env.SOCIAL_AUTO_UPLOAD_DIR || paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR,
     socialAutoUploadRuntimeDir: paths.SOCIAL_AUTO_UPLOAD_RUNTIME_DIR,
     socialAutoUploadPython: process.env.SOCIAL_AUTO_UPLOAD_PYTHON || '',
+    xApiPublisher,
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
@@ -379,44 +527,7 @@ const {
         sendError,
         baseDir: paths.PROJECT_ROOT,
         pipelineDir: paths.PIPELINE_DIR,
-        selfCheckService: createSelfCheckService({
-            fs,
-            spawnSync,
-            envRequirements: [
-                { key: 'COMFYUI_BASE_URL', label: 'ComfyUI 地址', level: 'warn', hint: '未配置时数字人生成链路不可用' },
-                { key: 'GEMINI_API_KEY', label: 'Gemini API Key', level: 'warn', hint: '若只配置 GOOGLE_API_KEY 可忽略此项' },
-                { key: 'GOOGLE_API_KEY', label: 'Google API Key', level: 'warn', hint: '若已配置 GEMINI_API_KEY 可忽略此项' },
-                { key: 'XAI_API_KEY', label: 'xAI API Key', level: 'warn', hint: '未配置时 xai 榜单链路不可用' }
-            ],
-            directoryChecks: [
-                { key: 'public', label: 'public 目录', path: paths.PUBLIC_DIR },
-                { key: 'uploads', label: 'uploads 目录', path: paths.UPLOADS_DIR },
-                { key: 'runtime', label: 'runtime_jobs 目录', path: paths.RUNTIME_ROOT, level: 'warn' },
-                { key: 'publish', label: 'publish 目录', path: paths.PUBLISH_CENTER_DIR },
-                { key: 'social_auto_upload', label: '项目内 social-auto-upload vendor', path: paths.SOCIAL_AUTO_UPLOAD_VENDOR_DIR, level: 'warn' }
-            ],
-            fileChecks: [
-                { key: 'workflow', label: '工作流配置', path: paths.WORKFLOW_PATH },
-                { key: 'run_asr', label: 'ASR 脚本', path: path.join(paths.PIPELINE_DIR, 'run_asr.py') },
-                { key: 'generate_title', label: '标题生成脚本', path: path.join(paths.PIPELINE_DIR, 'generate_title.py') },
-                { key: 'publish_description', label: '发布描述脚本', path: paths.PUBLISH_DESCRIPTION_SCRIPT },
-                { key: 'wechat_rpa', label: '微信发布脚本', path: paths.WECHAT_RPA_SCRIPT },
-                { key: 'social_auto_upload_adapter', label: 'social-auto-upload 适配脚本', path: paths.SOCIAL_AUTO_UPLOAD_ADAPTER_SCRIPT },
-                { key: 'xai_runner', label: 'xAI 榜单脚本', path: paths.XAI_TOP10_SCRIPT }
-            ],
-            commandChecks: [
-                { key: 'python', label: 'Python', command: 'python', args: ['--version'], hint: '请确认 python 已加入 PATH' },
-                { key: 'ffmpeg', label: 'FFmpeg', command: 'ffmpeg', args: ['-version'], hint: '请确认 ffmpeg 已加入 PATH' },
-                {
-                    key: 'playwright_python',
-                    label: 'Playwright Python',
-                    command: 'python',
-                    args: ['-c', 'from playwright.sync_api import sync_playwright; print("playwright-ok")'],
-                    level: 'warn',
-                    hint: '未安装时微信视频号自动发布不可用'
-                }
-            ]
-        }),
+        selfCheckService,
         editableJsonFiles: runtime.EDITABLE_JSON_FILES,
         resolveEditableJsonPath: utils.resolveEditableJsonPath,
         workflowPath: paths.WORKFLOW_PATH,
@@ -757,9 +868,11 @@ const {
         generatePublishDescription,
         getWechatAccountMap,
         getSauAccountMap,
+        getXAccountMap,
         buildPublishTask,
         validateWechatTaskConfig,
         validateSauTaskConfig,
+        validateXTaskConfig,
         collectPlatformValidation,
         startWechatRpa,
         retryWechatRpa,
@@ -788,6 +901,165 @@ const {
     registerReviewRoutes(app, reviewHandlers);
     registerLoginStatusRoutes(app, loginStatusService, feishuService);
     registerMaterialDrivenRoutes(app, paths);
+
+    const agentHandlers = createAgentHandlers({
+        sendError,
+        paths,
+        selfCheckService,
+        xaiService,
+        materialDrivenStarter: {
+            start: (params) => startMaterialDrivenFromUrl(paths, params),
+            getStatus: (jobId, outputPath = '') => {
+                const runtimeStatus = getTaskStatus(jobId);
+                if (runtimeStatus) {
+                    return { success: true, task: runtimeStatus };
+                }
+                const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+                return task ? materialDrivenTaskRegistry.buildStatusPayload(task) : null;
+            },
+            retryStep: async (jobId, outputPath = '', step = 5, options = {}) => {
+                const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+                if (!task) {
+                    throw new Error('任务不存在');
+                }
+                if (typeof options.autoGenerate === 'boolean') {
+                    task.autoGenerate = options.autoGenerate;
+                }
+                if (typeof options.useCache === 'boolean') {
+                    task.useCache = options.useCache;
+                }
+                materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                materialDrivenPipelineRunner.startRetryPipeline(jobId, task, step);
+                return materialDrivenTaskRegistry.buildStatusPayload(task);
+            },
+            updateAvatarConfig: async (jobId, outputPath = '', options = {}) => {
+                const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+                if (!task) {
+                    throw new Error('任务不存在');
+                }
+                if (options.avatarConfig && typeof options.avatarConfig === 'object') {
+                    task.avatarConfig = { ...(task.avatarConfig || {}), ...options.avatarConfig };
+                }
+                task.updatedAt = new Date().toISOString();
+                materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                return materialDrivenTaskRegistry.buildStatusPayload(task);
+            },
+            generateAvatarOnly: async (jobId, outputPath = '', options = {}) => {
+                const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+                if (!task) {
+                    throw new Error('任务不存在');
+                }
+                if (options.avatarConfig && typeof options.avatarConfig === 'object') {
+                    task.avatarConfig = { ...(task.avatarConfig || {}), ...options.avatarConfig };
+                }
+                task.autoGenerate = false;
+                materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                const aimanPath = path.join(task.outputPath, 'aiman.mp4');
+                if (options.force === true && fs.existsSync(aimanPath)) {
+                    fs.unlinkSync(aimanPath);
+                }
+                if (options.force === true) {
+                    for (const fileName of ['avatar_render_state.json', 'avatar_manifest.json', 'qwen_tts_metadata.json']) {
+                        const filePath = path.join(task.outputPath, fileName);
+                        try {
+                            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+                        } catch (_err) {}
+                    }
+                }
+                if (task.status !== 'generating_avatar') {
+                    (async () => {
+                        try {
+                            await materialDrivenAvatarGeneration.autoGenerateAvatar(jobId, task);
+                            task.status = 'waiting_render';
+                            task.currentStep = 6;
+                            task.progress = Math.max(Number(task.progress || 0), 90);
+                            task.statusText = '数字人已生成，等待预览或剪辑出片';
+                            task.updatedAt = new Date().toISOString();
+                            materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                        } catch (err) {
+                            task.status = 'failed';
+                            task.error = err?.message || '数字人生成失败';
+                            task.statusText = task.error;
+                            task.completedAt = new Date().toISOString();
+                            task.updatedAt = new Date().toISOString();
+                        }
+                    })();
+                }
+                return materialDrivenTaskRegistry.buildStatusPayload(task);
+            },
+            renderFinal: async (jobId, outputPath = '', options = {}) => {
+                const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+                if (!task) {
+                    throw new Error('任务不存在');
+                }
+                if (typeof options.useCache === 'boolean') {
+                    task.useCache = options.useCache;
+                }
+                materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                const executionPlanPath = path.join(task.outputPath, 'execution_plan.json');
+                if (fs.existsSync(executionPlanPath)) {
+                    materialDrivenPipelineRunner.spawnPipeline(jobId, task, 7, {
+                        step: 7,
+                        progressValue: 90,
+                        statusText: '正在根据当前执行计划剪辑出片',
+                        startLog: 'Agent 触发：剪辑并生成竖屏成片',
+                        stepMessage: '步骤7: 剪辑出片'
+                    });
+                } else {
+                    materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task);
+                }
+                return materialDrivenTaskRegistry.buildStatusPayload(task);
+            },
+            continueOneClick: async (jobId, outputPath = '', options = {}) => {
+                const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+                if (!task) {
+                    throw new Error('任务不存在');
+                }
+                if (options.avatarConfig && typeof options.avatarConfig === 'object') {
+                    task.avatarConfig = { ...(task.avatarConfig || {}), ...options.avatarConfig };
+                }
+                if (typeof options.useCache === 'boolean') {
+                    task.useCache = options.useCache;
+                }
+                task.autoGenerate = true;
+                materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                const aimanPath = path.join(task.outputPath, 'aiman.mp4');
+                if (fs.existsSync(aimanPath)) {
+                    materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task);
+                } else if (task.status !== 'generating_avatar') {
+                    (async () => {
+                        try {
+                            await materialDrivenAvatarGeneration.autoGenerateAvatar(jobId, task);
+                            materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task);
+                        } catch (err) {
+                            task.status = 'failed';
+                            task.error = err?.message || '一步到位流程生成数字人失败';
+                            task.statusText = task.error;
+                            task.completedAt = new Date().toISOString();
+                            task.updatedAt = new Date().toISOString();
+                        }
+                    })();
+                }
+                return materialDrivenTaskRegistry.buildStatusPayload(task);
+            }
+        },
+        reviewHandlers,
+        verticalQueueService,
+        taskStore,
+        publishStore,
+        loginStatusService,
+        accountDashboardService,
+        publishAssetsService,
+        generatePublishDescription,
+        buildPublishTask,
+        buildShortTitle,
+        resetPublishAssetsCache,
+        startWechatRpa,
+        startPlatformRpa
+    });
+    registerAgentRoutes(app, agentHandlers, {
+        auditLogPath: path.join(paths.DATA_DIR, 'logs', 'agent_audit.log')
+    });
 
     schedulerService = startScheduler({
         publishStore,
@@ -841,7 +1113,7 @@ const {
     });
 
     const PORT = Number(process.env.PORT || 3001);
-    const HOST = process.env.HOST || "0.0.0.0";
+    const HOST = process.env.HOST || "127.0.0.1";
 
     ensureDir(paths.VERTICAL_QUEUE_ROOT);
     ensureDir(paths.VERTICAL_PUBLIC_DIR);

@@ -83,6 +83,11 @@ function createWechatLoginService(deps) {
     } catch (_err) {}
   }
 
+  function isProcessActive(proc) {
+    if (!proc || proc.killed) return false;
+    return proc.exitCode === null && proc.signalCode === null;
+  }
+
   function openWechatContentManager(accountId) {
     return new Promise((resolve, reject) => {
       const activeAccountRuntime = getActiveWechatRuntimeForAccount(accountId);
@@ -91,13 +96,16 @@ function createWechatLoginService(deps) {
       }
 
       const existingSession = contentManagerSessions.get(accountId);
-      if (existingSession?.proc && existingSession.proc.exitCode === null && existingSession.proc.signalCode === null) {
+      if (isProcessActive(existingSession?.proc)) {
         return resolve({
           success: true,
           status: 'already_open',
           url: CONTENT_MANAGER_URL,
           accountId
         });
+      }
+      if (existingSession) {
+        contentManagerSessions.delete(accountId);
       }
 
       const openScript = path.join(publishCenterDir, 'wechat_open_content_manager.py');

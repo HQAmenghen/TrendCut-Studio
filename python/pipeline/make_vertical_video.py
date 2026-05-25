@@ -19,9 +19,19 @@ try:
 except ImportError:
     from pipeline.skills.prompt_skill_loader import load_prompt_text
 try:
-    from subtitle_terms import mask_preserved_terms, restore_preserved_terms, to_simplified_chinese
+    from subtitle_terms import (
+        mask_preserved_terms,
+        normalize_chinese_numeric_display,
+        restore_preserved_terms,
+        to_simplified_chinese,
+    )
 except ImportError:
-    from pipeline.subtitle_terms import mask_preserved_terms, restore_preserved_terms, to_simplified_chinese
+    from pipeline.subtitle_terms import (
+        mask_preserved_terms,
+        normalize_chinese_numeric_display,
+        restore_preserved_terms,
+        to_simplified_chinese,
+    )
 
 # 终极防崩溃补丁
 sys.stdout.reconfigure(encoding='utf-8')
@@ -61,6 +71,11 @@ DEFAULT_ZH_MAX_LINES = 3
 DEFAULT_EN_FONT_SIZE = 52
 DEFAULT_EN_MIN_SIZE = 16
 DEFAULT_EN_MAX_LINES = 3
+SUBTITLE_ACTIVE_GAP_MIN_SECONDS = 0.25
+SUBTITLE_ACTIVE_GAP_MAX_SECONDS = 6.0
+SUBTITLE_SILENCE_NOISE = "-35dB"
+SUBTITLE_SILENCE_MIN_DURATION = 0.15
+SUBTITLE_SILENCE_TOLERANCE = 0.04
 
 # ================== Helper Functions ==================
 def load_json(path: Path):
@@ -79,7 +94,9 @@ def normalize_subtitles_for_display(subtitles: list[dict]) -> list[dict]:
         item = dict(entry)
         for key in ("zh", "text", "en"):
             if item.get(key):
-                item[key] = to_simplified_chinese(str(item[key]).strip())
+                item[key] = normalize_chinese_numeric_display(
+                    to_simplified_chinese(str(item[key]).strip())
+                )
         normalized.append(item)
     return normalized
 
@@ -110,6 +127,133 @@ def probe_media(input_video: Path) -> dict:
         "duration": max(0.0, duration),
         "has_audio": has_audio
     }
+
+
+def parse_silencedetect_ranges(output: str, duration: float | None = None) -> list[tuple[float, float]]:
+    ranges = []
+    open_start = None
+    for match in re.finditer(r"silence_(start|end):\s*([0-9.]+)", output or ""):
+        kind = match.group(1)
+        value = float(match.group(2))
+        if kind == "start":
+            open_start = value
+            continue
+        if open_start is not None and value > open_start:
+            ranges.append((round(open_start, 3), round(value, 3)))
+            open_start = None
+
+    if open_start is not None and duration and duration > open_start:
+        ranges.append((round(open_start, 3), round(duration, 3)))
+    return ranges
+
+
+def detect_silence_ranges(input_video: Path) -> tuple[list[tuple[float, float]], dict]:
+    media_info = probe_media(input_video)
+    if not media_info.get("has_audio"):
+        duration = float(media_info.get("duration") or 0.0)
+        return ([(0.0, duration)] if duration > 0 else []), media_info
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostats",
+        "-i", str(input_video),
+        "-af", f"silencedetect=noise={SUBTITLE_SILENCE_NOISE}:d={SUBTITLE_SILENCE_MIN_DURATION}",
+        "-f", "null",
+        "-"
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "ffmpeg silencedetect failed").strip())
+    return parse_silencedetect_ranges(
+        f"{result.stderr}\n{result.stdout}",
+        float(media_info.get("duration") or 0.0)
+    ), media_info
+
+
+def first_active_time_in_gap(gap_start: float, gap_end: float, silence_ranges: list[tuple[float, float]]) -> float | None:
+    cursor = gap_start
+    for silence_start, silence_end in sorted(silence_ranges):
+        if silence_end <= cursor + SUBTITLE_SILENCE_TOLERANCE:
+            continue
+        if silence_start >= gap_end - SUBTITLE_SILENCE_TOLERANCE:
+            break
+        if silence_start <= cursor + SUBTITLE_SILENCE_TOLERANCE:
+            cursor = max(cursor, silence_end)
+            if cursor >= gap_end - SUBTITLE_SILENCE_TOLERANCE:
+                return None
+            continue
+        return cursor
+    return cursor if cursor < gap_end - SUBTITLE_SILENCE_TOLERANCE else None
+
+
+def close_active_audio_subtitle_gaps(
+    subtitles: list[dict],
+    input_video: Path | None = None,
+    silence_ranges: list[tuple[float, float]] | None = None,
+    min_gap: float = SUBTITLE_ACTIVE_GAP_MIN_SECONDS,
+    max_gap: float = SUBTITLE_ACTIVE_GAP_MAX_SECONDS,
+    min_duration: float = 0.12,
+) -> list[dict]:
+    if not subtitles:
+        return []
+
+    adjusted = [dict(entry) for entry in subtitles]
+    ranges = silence_ranges
+    media_info = None
+    if ranges is None:
+        if not input_video:
+            return adjusted
+        try:
+            ranges, media_info = detect_silence_ranges(input_video)
+        except Exception as exc:
+            print(f"WARNING: Could not inspect subtitle gap audio activity: {exc}")
+            return adjusted
+
+    if media_info and not media_info.get("has_audio"):
+        return adjusted
+
+    closed = []
+    for index in range(1, len(adjusted)):
+        previous = adjusted[index - 1]
+        current = adjusted[index]
+        previous_end = float(previous["time"][1])
+        current_start = float(current["time"][0])
+        gap = current_start - previous_end
+        if gap < min_gap or gap > max_gap:
+            continue
+
+        active_start = first_active_time_in_gap(previous_end, current_start, ranges or [])
+        if active_start is None:
+            continue
+
+        previous_start = float(previous["time"][0])
+        extended_end = max(previous_end, current_start)
+        if extended_end - previous_start < min_duration:
+            continue
+
+        previous["time"] = [round(previous_start, 3), round(extended_end, 3)]
+        closed.append((
+            previous_end,
+            extended_end,
+            active_start,
+            previous.get("zh") or previous.get("text") or previous.get("en") or ""
+        ))
+
+    if closed:
+        details = "; ".join(
+            f"{old_end:.2f}s->{new_end:.2f}s for '{str(text)[:16]}'"
+            for old_end, new_end, _active_start, text in closed[:3]
+        )
+        print(f"INFO: Closed {len(closed)} active-audio subtitle gap(s): {details}")
+    return adjusted
 
 def resolve_font(candidates: list[str], size: int) -> ImageFont.FreeTypeFont:
     for candidate in candidates:
@@ -662,18 +806,21 @@ def clamp_subtitle_timeline_for_render(subtitles: list[dict], min_duration: floa
     return clamped
 
 
-def prepare_subtitles_for_render(subtitles: list[dict], split_long: bool = False):
+def prepare_subtitles_for_render(subtitles: list[dict], split_long: bool = False, input_video: Path | None = None):
     subtitles = translate_subtitles_batch(subtitles)
     if split_long:
         subtitles = split_long_subtitles(subtitles, max_chars=24)
-    return clamp_subtitle_timeline_for_render(deduplicate_subtitles(subtitles))
+    subtitles = clamp_subtitle_timeline_for_render(deduplicate_subtitles(subtitles))
+    return clamp_subtitle_timeline_for_render(close_active_audio_subtitle_gaps(subtitles, input_video=input_video))
 
 
 
 def make_subtitle_card(entry: dict, output_path: Path, zh_font_size: int, zh_min_size: int, zh_max_lines: int, en_font_size: int, en_min_size: int, en_max_lines: int):
     card = Image.new("RGBA", SUBTITLE_CARD_SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(card)
-    zh_text_content = to_simplified_chinese(entry.get("zh", entry.get("text", "")))
+    zh_text_content = normalize_chinese_numeric_display(
+        to_simplified_chinese(entry.get("zh", entry.get("text", "")))
+    )
     en_text_content = entry.get("en", "")
 
     box_y_offset = 10
@@ -797,6 +944,73 @@ def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], 
     print("Running FFmpeg command...")
     subprocess.run(cmd, check=True)
 
+
+def append_outro(output_video: Path, outro_video: Path | None):
+    if not outro_video:
+        return False
+    if not outro_video.exists():
+        raise FileNotFoundError(f"Outro video not found: {outro_video}")
+
+    emit_stage("vertical_outro", "正在拼接自定义片尾")
+    main_info = probe_media(output_video)
+    outro_info = probe_media(outro_video)
+    temp_output = output_video.with_name(f"{output_video.stem}.with_outro{output_video.suffix}")
+    if temp_output.exists():
+        temp_output.unlink()
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(output_video),
+        "-i", str(outro_video),
+    ]
+
+    next_input_index = 2
+    audio_sources = []
+    for input_index, media_info in enumerate((main_info, outro_info)):
+        if media_info["has_audio"]:
+            audio_sources.append(f"[{input_index}:a]")
+            continue
+        duration = max(0.001, float(media_info.get("duration") or 0.0))
+        cmd.extend([
+            "-f", "lavfi",
+            "-t", f"{duration:.3f}",
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        ])
+        audio_sources.append(f"[{next_input_index}:a]")
+        next_input_index += 1
+
+    video_filter = (
+        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
+        f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "fps=30,setsar=1,format=yuv420p"
+    )
+    filter_parts = [
+        f"[0:v]setpts=PTS-STARTPTS,{video_filter}[v0]",
+        f"[1:v]setpts=PTS-STARTPTS,{video_filter}[v1]",
+        f"{audio_sources[0]}aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[a0]",
+        f"{audio_sources[1]}aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[a1]",
+        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]",
+    ]
+
+    cmd.extend([
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[outv]",
+        "-map", "[outa]",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        str(temp_output),
+    ])
+    print(f"INFO: Appending outro video: {outro_video}")
+    subprocess.run(cmd, check=True)
+    temp_output.replace(output_video)
+    return True
+
 # ================== Main Execution ==================
 def main():
     emit_stage("vertical_render", "正在生成动态竖屏视频")
@@ -805,6 +1019,7 @@ def main():
     parser.add_argument("--content", type=str, default="content.json", help="Content JSON file for title.")
     parser.add_argument("--subtitles", type=str, default="subtitles.json", help="Subtitles JSON file.")
     parser.add_argument("--output", type=str, default="output_9x16.mp4", help="Output video file.")
+    parser.add_argument("--outro", type=str, default="", help="Optional outro video to append after the rendered vertical output.")
     parser.add_argument("--background", type=str, default="background_generated.png")
     parser.add_argument("--sub-dir", type=str, default="subtitle_cards")
     parser.add_argument("--title-font-size", type=int, default=DEFAULT_TITLE_FONT_SIZE)
@@ -829,6 +1044,7 @@ def main():
     content_file = base / args.content
     subtitles_file = base / args.subtitles
     output_video = base / args.output
+    outro_video = (base / args.outro) if args.outro else None
     background_png = base / args.background
     subtitle_dir = base / args.sub_dir
     
@@ -858,7 +1074,12 @@ def main():
             subtitles = []
 
     if subtitles:
-        subtitles = prepare_subtitles_for_render(subtitles, split_long=args.split_long_subtitles)
+        subtitles = prepare_subtitles_for_render(
+            subtitles,
+            split_long=args.split_long_subtitles,
+            input_video=input_video
+        )
+        subtitles_file.write_text(json.dumps(subtitles, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n--- [STEP 2] Generating assets ---")
     emit_stage("vertical_assets", "正在生成竖屏背景与字幕卡")
@@ -882,6 +1103,7 @@ def main():
     
     print("\n--- [STEP 3] Running FFmpeg to compose final video ---")
     run_ffmpeg(background_png, input_video, subtitle_cards, output_video, args.subtitle_offset_y)
+    outro_appended = append_outro(output_video, outro_video)
 
     print(f"\n✅ Generation complete: {output_video}")
     # Fixed center-crop mode no longer builds a vertical framing plan, but
@@ -891,6 +1113,7 @@ def main():
         output_video=str(output_video),
         subtitle_card_count=len(subtitle_cards),
         framing_segment_count=0,
+        outro_appended=outro_appended,
     )
 
 if __name__ == "__main__":

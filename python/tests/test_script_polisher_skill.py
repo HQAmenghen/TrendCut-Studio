@@ -147,6 +147,57 @@ class ScriptPolisherSkillTest(unittest.TestCase):
         self.assertTrue(result.meta["repair_applied"])
         self.assertNotIn("初创公司", "".join(item["text"] for item in result.output["script_units"]))
 
+    def test_retries_when_output_contains_monitor_account_and_parenthetical_gloss(self):
+        skill = ScriptPolisherSkill()
+        payload = {
+            **self.payload,
+            "source_post": {
+                "body": "@BMNRBullz - Tom Lee warns about a 15-20% summer drawdown before the biggest rally of our lifetime.",
+                "author": "BMNRBullz",
+                "postUrl": "https://x.com/BMNRBullz/status/2056061081995378881",
+            },
+            "draft_script_units": [
+                {"unit_id": 1, "role": "hook", "text": "Tom Lee 提到夏季可能先回调15-20%。"},
+                {"unit_id": 2, "role": "explain", "text": "之后才可能迎来更大的反弹。"},
+                {"unit_id": 3, "role": "ending", "text": "关键是分清短期压力和长期判断。"},
+            ],
+        }
+        invalid = {
+            "script_units": [
+                {"unit_id": 1, "role": "hook", "text": "BMNRBullz账号分享Tom Lee判断：夏季可能先回调15-20%。"},
+                {"unit_id": 2, "role": "explain", "text": "他称这是更大反弹（THE BIGGEST RALLY）之前的痛苦。"},
+                {"unit_id": 3, "role": "ending", "text": "所以短期波动更像一场压力测试。"},
+            ]
+        }
+        repaired = {
+            "script_units": [
+                {"unit_id": 1, "role": "hook", "text": "Tom Lee 这次的判断很直接：夏季可能先出现15-20%的回调，市场要先承受一段压力。"},
+                {"unit_id": 2, "role": "explain", "text": "他的重点放在回调之后的更大反弹窗口，节奏上先压低预期，再观察资金重新进场。"},
+                {"unit_id": 3, "role": "ending", "text": "真正要看的，是这轮压力测试会不会改变中长期方向。短期波动可以很难受，但判断不能只盯一两天的涨跌。"},
+            ]
+        }
+
+        with patch("pipeline.skills.script_polisher_skill.create_llm_client", return_value=object()), patch(
+            "pipeline.skills.script_polisher_skill.get_llm_provider",
+            return_value="qwen",
+        ), patch(
+            "pipeline.skills.script_polisher_skill.generate_content",
+            side_effect=[_response(invalid), _response(repaired)],
+        ) as generate:
+            with patch.dict(os.environ, {
+                "SCRIPT_POLISH_MIN_CHARS": "80",
+                "SCRIPT_POLISH_MAX_CHARS": "260",
+            }, clear=False):
+                result = skill.run(payload)
+
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(result.meta["status"], "ready")
+        self.assertTrue(result.meta["repair_applied"])
+        full_text = "".join(item["text"] for item in result.output["script_units"])
+        self.assertNotIn("BMNRBullz", full_text)
+        self.assertNotIn("（THE BIGGEST RALLY）", full_text)
+        self.assertIn("Tom Lee", full_text)
+
     def test_retries_when_first_output_exceeds_max_chars(self):
         skill = ScriptPolisherSkill()
         over_limit = _valid_blackrock_units()

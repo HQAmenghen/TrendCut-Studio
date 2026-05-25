@@ -135,7 +135,8 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     avatarConfig: rawAvatarConfig = {},
     useSmartClip = true,
     useCache = true,
-    autoGenerate = true
+    autoGenerate = true,
+    allowRuleFallback = true
   } = params;
 
   if (!videoUrl) {
@@ -247,6 +248,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     useSmartClip,
     useCache,
     autoGenerate,
+    allowRuleFallback,
     status: 'running',
     currentStep: 0,
     progress: 0,
@@ -279,7 +281,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   addTaskLog(task, '[AutoPilot] 自动启动素材驱动工作流');
   addTaskLog(task, `任务目录: ${outputDir}`, 'info');
   addTaskLog(task, `素材文件已就位: material.mp4 (${formatBytes(fs.statSync(materialPath).size)})`, 'success');
-  addTaskLog(task, 'AutoPilot 模式: smartClip=on, cache=on, autoGenerate=on', 'info');
+  addTaskLog(task, `AutoPilot 模式: smartClip=${useSmartClip ? 'on' : 'off'}, cache=${useCache ? 'on' : 'off'}, autoGenerate=${autoGenerate ? 'on' : 'off'}`, 'info');
   if (title) addTaskLog(task, `素材来源: ${title.slice(0, 80)}`, 'info');
 
   activeTasks.set(jobId, task);
@@ -295,6 +297,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   ];
   if (!useSmartClip) args.push('--no-smart-clip');
   if (useCache) args.push('--use-cache');
+  if (allowRuleFallback) args.push('--allow-rule-fallback');
 
   const pythonProcess = spawn('python', args, {
     cwd: outputPath,
@@ -354,6 +357,13 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     if (code === 0) {
       task.progress = Math.max(task.progress || 0, 80);
       task.currentStep = 5;
+      if (!task.autoGenerate) {
+        task.status = 'waiting_avatar';
+        task.statusText = '口播稿已生成，等待确认后再生成数字人';
+        task.updatedAt = nowIso();
+        addTaskLog(task, '步骤1-5完成，已停在口播确认点', 'success');
+        return;
+      }
       task.statusText = '前置步骤完成，开始自动生成数字人...';
       addTaskLog(task, '步骤1-5完成，自动触发数字人生成', 'success');
 
@@ -449,6 +459,7 @@ function launchFromStep6(paths, jobId, task) {
     endAt: null,
     useSmartClip: task.useSmartClip,
     useCache: task.useCache,
+    allowRuleFallback: task.allowRuleFallback,
     unbuffered: true
   });
 

@@ -5,7 +5,7 @@ milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
 last_updated: "2026-05-08T06:04:00Z"
-last_activity: 2026-05-15 — Completed quick task: 账号看板新增抖音和小红书登录检测控制与多账户适配
+last_activity: 2026-05-20 — Completed quick task: 在竖屏后期合成流程中增加可选自定义片尾视频拼接
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-15 — Completed quick task: 账号看板新增抖音和小红书登录检测控制与多账户适配
+Last activity: 2026-05-20 — Completed quick task: 在竖屏后期合成流程中增加可选自定义片尾视频拼接
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -109,6 +109,11 @@ None yet.
 | 2026-05-15 | 口播稿编号安全化，避免法案编号被 TTS 误读成大数字 | `.planning/quick/260515-d5l-fix-tts-narration-so-law-bill-identifier/SUMMARY.md` |
 | 2026-05-15 | 禁用登录检查自动推送飞书 | `.planning/quick/260515-kkq-disable-login-check-feishu/260515-kkq-SUMMARY.md` |
 | 2026-05-15 | 账号看板新增抖音和小红书登录检测控制与多账户适配 | `.planning/quick/260515-lf6-account-dashboard-social-accounts/SUMMARY.md` |
+| 2026-05-19 | 修改封面标题生成提示词以降低视频号虚拟货币违规风险 | `.planning/quick/260519-etd-title-compliance-prompt/SUMMARY.md` |
+| 2026-05-19 | 放宽封面标题生成提示词的流量感同时保留视频号虚拟货币安全边界 | `.planning/quick/260519-eyt-title-traffic-balanced-prompt/SUMMARY.md` |
+| 2026-05-19 | 修正标题提示词避免生成无需许可和拦不住等高风险使用引导表达 | `.planning/quick/260519-f52-title-avoid-permissionless-risk/SUMMARY.md` |
+| 2026-05-19 | 本地自测版 V0 agent API 与 MCP server 接入 | `.planning/quick/260519-fgb-v0-agent-api-mcp-server/260519-fgb-SUMMARY.md` |
+| 2026-05-20 | 在竖屏后期合成流程中增加可选自定义片尾视频拼接 | `.planning/quick/260520-gah-vertical-outro-append/260520-gah-SUMMARY.md` |
 
 ## Session Continuity
 

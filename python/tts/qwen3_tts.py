@@ -28,6 +28,23 @@ DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 DEFAULT_PREFERRED_NAME = "comfyavatar"
 DEFAULT_TIMEOUT_SECONDS = 180
 PREFERRED_NAME_PATTERN = re.compile(r"[^A-Za-z0-9]+")
+KEY_FAILOVER_ERROR_MARKERS = (
+    "401",
+    "402",
+    "403",
+    "429",
+    "api key",
+    "apikey",
+    "balance",
+    "billing",
+    "insufficient",
+    "payment required",
+    "quota",
+    "rate limit",
+    "unauthorized",
+    "余额不足",
+    "欠费",
+)
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -50,14 +67,34 @@ def normalize_preferred_name(preferred_name: str) -> str:
     return cleaned[:16]
 
 
-def get_api_key() -> str:
+def get_api_keys() -> list[str]:
     raw_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
     if not raw_key:
         raise RuntimeError("Missing Qwen API key. Set QWEN_API_KEY or DASHSCOPE_API_KEY.")
     for separator in (";", ","):
         if separator in raw_key:
-            return next(item.strip() for item in raw_key.split(separator) if item.strip())
-    return raw_key.strip()
+            return [item.strip() for item in raw_key.split(separator) if item.strip()]
+    return [raw_key.strip()]
+
+
+def mask_api_key(api_key: str) -> str:
+    key = str(api_key or "").strip()
+    if len(key) >= 4:
+        return f"****{key[-4:]}"
+    return "****"
+
+
+def is_key_failover_error(err: Exception) -> bool:
+    text = str(err or "").lower()
+    response = getattr(err, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if status_code:
+            text += f" {status_code}"
+        body = getattr(response, "text", None)
+        if body:
+            text += f" {body}".lower()
+    return any(marker in text for marker in KEY_FAILOVER_ERROR_MARKERS)
 
 
 def customization_url(base_url: str) -> str:
@@ -218,32 +255,49 @@ def main(argv: list[str] | None = None) -> int:
     if not text:
         raise RuntimeError("缺少可用口播文案")
 
-    api_key = get_api_key()
+    api_keys = get_api_keys()
     reference_audio = pathlib.Path(args.reference_audio).resolve()
     output_path = pathlib.Path(args.output).resolve()
     model = str(args.model or DEFAULT_TARGET_MODEL).strip()
     base_url = normalize_base_url(str(args.base_url or DEFAULT_BASE_URL))
 
-    emit_stage("qwen_tts_voice", "正在使用 Qwen3TTS 创建复刻音色")
-    voice = create_voice(
-        reference_audio,
-        api_key=api_key,
-        base_url=base_url,
-        target_model=model,
-        preferred_name=normalize_preferred_name(args.preferred_name),
-        timeout=int(args.timeout),
-    )
+    voice = ""
+    audio_url = ""
+    for attempt, api_key in enumerate(api_keys, start=1):
+        try:
+            emit_stage("qwen_tts_voice", "正在使用 Qwen3TTS 创建复刻音色")
+            voice = create_voice(
+                reference_audio,
+                api_key=api_key,
+                base_url=base_url,
+                target_model=model,
+                preferred_name=normalize_preferred_name(args.preferred_name),
+                timeout=int(args.timeout),
+            )
 
-    emit_stage("qwen_tts_synthesize", "正在使用复刻音色合成口播音频")
-    response = synthesize_speech(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        text=text,
-        voice=voice,
-        language_type=str(args.language_type or "").strip(),
-    )
-    audio_url = extract_audio_url(response)
+            emit_stage("qwen_tts_synthesize", "正在使用复刻音色合成口播音频")
+            response = synthesize_speech(
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                text=text,
+                voice=voice,
+                language_type=str(args.language_type or "").strip(),
+            )
+            audio_url = extract_audio_url(response)
+            break
+        except Exception as err:
+            if attempt >= len(api_keys) or not is_key_failover_error(err):
+                raise
+            print(
+                f"[qwen3_tts] 当前 Qwen Key 无法完成复刻/合成，切换备用 Key "
+                f"({attempt}/{len(api_keys)}, key={mask_api_key(api_key)}): {err}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    if not voice or not audio_url:
+        raise RuntimeError("Qwen3TTS 未生成可用 voice 或音频 URL")
 
     emit_stage("qwen_tts_download", "正在下载 Qwen3TTS 合成音频")
     file_size = download_audio(audio_url, output_path, timeout=int(args.timeout))

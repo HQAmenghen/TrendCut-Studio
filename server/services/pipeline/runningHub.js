@@ -10,7 +10,7 @@ const SUCCESS_STATUSES = new Set(['SUCCESS', 'SUCCEEDED', 'COMPLETED', 'FINISHED
 const FAILURE_STATUSES = new Set(['FAILED', 'FAILURE', 'ERROR', 'CANCELED', 'CANCELLED']);
 const VIDEO_FILE_TYPES = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'video']);
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
-const TRANSIENT_QUERY_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_QUERY_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 554]);
 const TRANSIENT_QUERY_ERROR_CODES = new Set(['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT']);
 
 function sanitizeUrl(url) {

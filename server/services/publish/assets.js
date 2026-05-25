@@ -59,6 +59,22 @@ function createPublishAssetsService(deps) {
     return value.length > limit ? `${value.slice(0, limit)}...` : value;
   }
 
+  function isDefaultFileTitle(value, label) {
+    const text = String(value || '').trim().toLowerCase();
+    if (!text) return true;
+    const baseLabel = String(label || '').trim().toLowerCase();
+    const defaultNames = new Set([
+      baseLabel,
+      'vertical output',
+      'standalone output vertical',
+      'output final',
+      'output final vertical',
+      'output 9 16',
+      'output 16 9'
+    ]);
+    return defaultNames.has(text);
+  }
+
   function extractSubtitleSnippet(subtitles, limit = 90) {
     if (!Array.isArray(subtitles)) return '';
     const joined = subtitles
@@ -82,6 +98,14 @@ function createPublishAssetsService(deps) {
       .replace(/\s+/g, ' ')
       .trim();
     return normalized || fallback;
+  }
+
+  function pickString(...values) {
+    for (const value of values) {
+      const text = String(value || '').trim();
+      if (text) return text;
+    }
+    return '';
   }
 
   function buildShortTitle(title, fallback = '热点速递') {
@@ -217,8 +241,17 @@ function createPublishAssetsService(deps) {
       const mergedSubtitles = Array.isArray(savedMetadata.subtitles) && savedMetadata.subtitles.length
         ? savedMetadata.subtitles
         : (Array.isArray(metadata.subtitles) ? metadata.subtitles : []);
+      const metadataTitle = pickString(metadata.title, metadata.suggestedTitle, metadata.suggestedShortTitle);
+      const savedTitle = pickString(
+        savedMetadata.title,
+        savedMetadata.suggestedTitle,
+        savedMetadata.suggestedShortTitle
+      );
+      const preservedTitle = !isDefaultFileTitle(savedTitle, label) || !metadataTitle
+        ? pickString(savedTitle, metadataTitle)
+        : metadataTitle;
       const computedMetadata = buildPublishMetadata({
-        title: savedMetadata.title || metadata.title || savedMetadata.suggestedTitle || metadata.suggestedTitle || '',
+        title: preservedTitle,
         subtitles: mergedSubtitles,
         summary: savedMetadata.sourceSummary || metadata.sourceSummary || '',
         sourceType,
@@ -229,6 +262,7 @@ function createPublishAssetsService(deps) {
       const mergedMetadata = {
         ...metadata,
         ...savedMetadata,
+        title: preservedTitle,
         subtitles: mergedSubtitles,
         aiReview: savedMetadata.aiReview || metadata.aiReview || null,
         sourceSummary: shouldPreferSubtitleSummary
@@ -245,7 +279,13 @@ function createPublishAssetsService(deps) {
           : (metadata.suggestedTags || computedMetadata.suggestedTags || [])
       };
       const typeLabel = getPublishAssetTypeLabel(sourceType);
-      const titleText = truncateDisplayText(mergedMetadata?.suggestedTitle || mergedMetadata?.suggestedShortTitle || label, 34);
+      const titleText = truncateDisplayText(
+        mergedMetadata?.title ||
+        mergedMetadata?.suggestedTitle ||
+        mergedMetadata?.suggestedShortTitle ||
+        label,
+        34
+      ).replace(/\s+/g, ' ').trim();
       const authorText = mergedMetadata?.author ? `@${mergedMetadata.author}` : '';
       assets.push({
         id: crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12),

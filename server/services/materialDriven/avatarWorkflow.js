@@ -35,6 +35,287 @@ const DIGIT_SPEECH_MAP = {
   8: '八',
   9: '九'
 };
+const NUMBER_TOKEN_PATTERN = '[+-]?\\d+(?:[,.]\\d+)*';
+const NUMBER_BOUNDARY_PATTERN = '(?<![A-Za-z0-9_])';
+const CURRENCY_SYMBOL_UNIT_MAP = {
+  $: '美元',
+  '¥': '元',
+  '￥': '元',
+  '€': '欧元',
+  '£': '英镑'
+};
+const CURRENCY_UNIT_PATTERN = [
+  '万美元',
+  '亿美元',
+  '人民币',
+  '元人民币',
+  '美元',
+  '美金',
+  '欧元',
+  '英镑',
+  '日元',
+  '港币',
+  '港元',
+  '澳元',
+  '加元',
+  '新台币',
+  '台币',
+  '韩元',
+  '新币',
+  '泰铢',
+  '卢布',
+  '比特币',
+  '以太坊',
+  'USDT',
+  'BTC',
+  'ETH',
+  '元',
+  '块钱',
+  '块'
+].join('|');
+const MEASURE_UNIT_PATTERN = [
+  '个百分点',
+  '个基点',
+  '平方公里',
+  '平方米',
+  '个点',
+  '摄氏度',
+  '小时',
+  '分钟',
+  '秒钟',
+  '个月',
+  '星期',
+  '公里',
+  '千米',
+  '公斤',
+  '千克',
+  '周',
+  '天',
+  '年',
+  '月',
+  '日',
+  '次',
+  '倍',
+  '人',
+  '名',
+  '位',
+  '家公司',
+  '家',
+  '条',
+  '枚',
+  '笔',
+  '单',
+  '台',
+  '部',
+  '篇',
+  '份',
+  '只',
+  '张',
+  '套',
+  '件',
+  '吨',
+  '克',
+  '米',
+  '度'
+].join('|');
+const NUMBER_UNIT_PATTERN = `${CURRENCY_UNIT_PATTERN}|${MEASURE_UNIT_PATTERN}`;
+const FULL_DATE_PATTERN = new RegExp(`${NUMBER_BOUNDARY_PATTERN}((?:19|20)\\d{2})年(\\d{1,2})月(\\d{1,2})(日|号)?`, 'gu');
+const YEAR_PATTERN = new RegExp(`${NUMBER_BOUNDARY_PATTERN}((?:19|20)\\d{2})年`, 'gu');
+const PERCENT_PATTERN = new RegExp(`${NUMBER_BOUNDARY_PATTERN}(${NUMBER_TOKEN_PATTERN})\\s*(%|％)`, 'gu');
+const RANGE_WITH_UNIT_PATTERN = new RegExp(
+  `${NUMBER_BOUNDARY_PATTERN}(${NUMBER_TOKEN_PATTERN})\\s*(?:-|－|—|–|~|～|至|到)\\s*(${NUMBER_TOKEN_PATTERN})\\s*(${NUMBER_UNIT_PATTERN})`,
+  'giu'
+);
+const PREFIX_CURRENCY_PATTERN = new RegExp(`([\\$¥￥€£])\\s*(${NUMBER_TOKEN_PATTERN})`, 'gu');
+const SUFFIX_CURRENCY_PATTERN = new RegExp(`${NUMBER_BOUNDARY_PATTERN}(${NUMBER_TOKEN_PATTERN})\\s*(${CURRENCY_UNIT_PATTERN})`, 'giu');
+const SUFFIX_MEASURE_PATTERN = new RegExp(`${NUMBER_BOUNDARY_PATTERN}(${NUMBER_TOKEN_PATTERN})\\s*(${MEASURE_UNIT_PATTERN})`, 'gu');
+
+function spellDigitsForSpeech(value) {
+  return String(value || '')
+    .split('')
+    .map((digit) => DIGIT_SPEECH_MAP[digit] || digit)
+    .join('');
+}
+
+function convertFourDigitGroupToChinese(value) {
+  const number = Number(value || 0);
+  if (!number) return '';
+  const digits = [
+    Math.floor(number / 1000) % 10,
+    Math.floor(number / 100) % 10,
+    Math.floor(number / 10) % 10,
+    number % 10
+  ];
+  const units = ['千', '百', '十', ''];
+  let result = '';
+  let zeroPending = false;
+
+  digits.forEach((digit, index) => {
+    if (!digit) {
+      if (result) zeroPending = true;
+      return;
+    }
+    if (zeroPending) {
+      result += '零';
+      zeroPending = false;
+    }
+    if (!(digit === 1 && units[index] === '十' && !result)) {
+      result += DIGIT_SPEECH_MAP[digit];
+    }
+    result += units[index];
+  });
+
+  return result;
+}
+
+function integerTextToChinese(integerText) {
+  const cleaned = String(integerText || '').replace(/\D/gu, '').replace(/^0+(?=\d)/u, '');
+  if (!cleaned || /^0+$/u.test(cleaned)) return '零';
+  if (cleaned.length > 16) return spellDigitsForSpeech(cleaned);
+
+  const chunks = [];
+  for (let end = cleaned.length; end > 0; end -= 4) {
+    chunks.unshift(cleaned.slice(Math.max(0, end - 4), end));
+  }
+
+  const largeUnits = ['', '万', '亿', '万亿'];
+  let result = '';
+  let zeroPending = false;
+
+  chunks.forEach((chunk, index) => {
+    const chunkValue = Number(chunk);
+    const unitIndex = chunks.length - index - 1;
+    if (!chunkValue) {
+      if (result) zeroPending = true;
+      return;
+    }
+
+    if (result && (zeroPending || chunkValue < 1000)) {
+      result += '零';
+    }
+    result += `${convertFourDigitGroupToChinese(chunkValue)}${largeUnits[unitIndex] || ''}`;
+    zeroPending = false;
+  });
+
+  return result.replace(/零+/gu, '零').replace(/零$/u, '') || '零';
+}
+
+function parseLocalizedNumber(numberText) {
+  let normalized = String(numberText || '').trim().replace(/\s+/gu, '');
+  let sign = '';
+  if (/^[+-]/u.test(normalized)) {
+    sign = normalized[0];
+    normalized = normalized.slice(1);
+  }
+
+  let integerPart = normalized;
+  let decimalPart = '';
+  let match = normalized.match(/^(\d{1,3}(?:,\d{3})+)\.(\d+)$/u);
+  if (match) {
+    integerPart = match[1].replace(/,/gu, '');
+    decimalPart = match[2];
+  } else {
+    match = normalized.match(/^(\d{1,3}(?:\.\d{3})+),(\d+)$/u);
+    if (match) {
+      integerPart = match[1].replace(/\./gu, '');
+      decimalPart = match[2];
+    } else if (/^\d{1,3}(?:[,.]\d{3})+$/u.test(normalized)) {
+      integerPart = normalized.replace(/[,.]/gu, '');
+    } else if (/^\d+\.\d+$/u.test(normalized)) {
+      [integerPart, decimalPart] = normalized.split('.');
+    } else if (/^\d+,\d+$/u.test(normalized) && !/^\d{1,3},\d{3}$/u.test(normalized)) {
+      [integerPart, decimalPart] = normalized.split(',');
+    } else {
+      integerPart = normalized.replace(/\D/gu, '');
+    }
+  }
+
+  decimalPart = String(decimalPart || '').replace(/0+$/u, '');
+  return {
+    sign,
+    integerPart: integerPart.replace(/^0+(?=\d)/u, '') || '0',
+    decimalPart
+  };
+}
+
+function localizedNumberToChinese(numberText) {
+  const parsed = parseLocalizedNumber(numberText);
+  let result = integerTextToChinese(parsed.integerPart);
+  if (parsed.decimalPart) {
+    result += `点${spellDigitsForSpeech(parsed.decimalPart)}`;
+  }
+  if (parsed.sign === '-' && result !== '零') {
+    result = `负${result}`;
+  }
+  return result;
+}
+
+function createNormalization(kind, raw, reading) {
+  return {
+    kind,
+    raw: String(raw || ''),
+    reading: String(reading || '')
+  };
+}
+
+function normalizeNumericExpressionsForSpeech(text) {
+  const normalizations = [];
+  let speechText = String(text || '');
+
+  function record(kind, raw, reading) {
+    if (raw !== reading) {
+      normalizations.push(createNormalization(kind, raw, reading));
+    }
+    return reading;
+  }
+
+  speechText = speechText.replace(FULL_DATE_PATTERN, (raw, year, month, day, suffix) => record(
+    'date',
+    raw,
+    `${spellDigitsForSpeech(year)}年${integerTextToChinese(month)}月${integerTextToChinese(day)}${suffix || '日'}`
+  ));
+
+  speechText = speechText.replace(YEAR_PATTERN, (raw, year) => record(
+    'year',
+    raw,
+    `${spellDigitsForSpeech(year)}年`
+  ));
+
+  speechText = speechText.replace(PERCENT_PATTERN, (raw, numberText) => record(
+    'percent',
+    raw,
+    `百分之${localizedNumberToChinese(numberText)}`
+  ));
+
+  speechText = speechText.replace(RANGE_WITH_UNIT_PATTERN, (raw, startNumber, endNumber, unit) => record(
+    'range',
+    raw,
+    `${localizedNumberToChinese(startNumber)}到${localizedNumberToChinese(endNumber)}${unit}`
+  ));
+
+  speechText = speechText.replace(PREFIX_CURRENCY_PATTERN, (raw, symbol, numberText) => record(
+    'currency',
+    raw,
+    `${localizedNumberToChinese(numberText)}${CURRENCY_SYMBOL_UNIT_MAP[symbol] || ''}`
+  ));
+
+  speechText = speechText.replace(SUFFIX_CURRENCY_PATTERN, (raw, numberText, unit) => record(
+    'currency',
+    raw,
+    `${localizedNumberToChinese(numberText)}${unit}`
+  ));
+
+  speechText = speechText.replace(SUFFIX_MEASURE_PATTERN, (raw, numberText, unit) => record(
+    'measure',
+    raw,
+    `${localizedNumberToChinese(numberText)}${unit}`
+  ));
+
+  return {
+    text: speechText,
+    normalizations
+  };
+}
 
 function stripInlineControlMarkers(text) {
   return String(text || '')
@@ -96,10 +377,7 @@ function normalizeBillIdentifierPrefix(prefix) {
 }
 
 function spellBillIdentifierNumberForSpeech(numberText) {
-  return String(numberText || '')
-    .split('')
-    .map((digit) => DIGIT_SPEECH_MAP[digit] || digit)
-    .join('');
+  return spellDigitsForSpeech(numberText);
 }
 
 function normalizeBillIdentifiersForSpeech(text) {
@@ -121,7 +399,20 @@ function normalizeBillIdentifiersForSpeech(text) {
 }
 
 function prepareNarrationTextForSpeech(text) {
-  return normalizeBillIdentifiersForSpeech(sanitizeNarrationText(text));
+  return prepareNarrationTextForSpeechWithMeta(text).speechText;
+}
+
+function prepareNarrationTextForSpeechWithMeta(text) {
+  const displayText = sanitizeNarrationText(text);
+  const billSafeText = normalizeBillIdentifiersForSpeech(displayText);
+  const normalized = normalizeNumericExpressionsForSpeech(billSafeText);
+
+  return {
+    displayText,
+    speechText: normalized.text,
+    normalizations: normalized.normalizations,
+    changed: displayText !== normalized.text
+  };
 }
 
 function prepareNarrationTextForAvatarWorkflow(text) {
@@ -129,13 +420,15 @@ function prepareNarrationTextForAvatarWorkflow(text) {
     .replace(/\r\n?/g, '\n')
     .trim();
   const validationText = sanitizeNarrationText(workflowText);
-  const speechText = prepareNarrationTextForSpeech(workflowText);
+  const speech = prepareNarrationTextForSpeechWithMeta(workflowText);
 
   return {
     workflowText,
     validationText,
-    speechText,
-    isUsable: Boolean(speechText)
+    speechText: speech.speechText,
+    speechNormalizations: speech.normalizations,
+    speechTextChanged: speech.changed,
+    isUsable: Boolean(speech.speechText)
   };
 }
 
@@ -474,6 +767,7 @@ module.exports = {
   prepareAvatarSpeechWorkflow,
   prepareNarrationTextForAvatarWorkflow,
   prepareNarrationTextForSpeech,
+  prepareNarrationTextForSpeechWithMeta,
   resolveAvatarSpeechNodeId,
   resolveAvatarSeed,
   sanitizeNarrationText

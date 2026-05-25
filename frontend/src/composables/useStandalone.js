@@ -38,6 +38,8 @@ export function useStandalone() {
     sourceTaskTitle: '',
     srt: null,
     srtName: '',
+    outro: null,
+    outroName: '',
     title: '',
     context: '',
     script: '',
@@ -340,6 +342,7 @@ export function useStandalone() {
       if (form.value.video) data.append('video', form.value.video);
       if (form.value.sourceTaskDir) data.append('sourceTaskDir', form.value.sourceTaskDir);
       if (form.value.srt) data.append('srt', form.value.srt);
+      if (form.value.outro) data.append('outro', form.value.outro);
       if (form.value.subtitlesPayload) data.append('subtitlesPayload', form.value.subtitlesPayload);
       if (form.value.context) data.append('context', form.value.context);
       if (form.value.script) data.append('script', form.value.script);

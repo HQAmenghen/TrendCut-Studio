@@ -7,7 +7,6 @@ const { createPublishConfigService } = require('../publishStore.config');
 function createStore() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-config-'));
   const publishConfigPath = path.join(tempRoot, 'platform_config.json');
-  const publishJobsPath = path.join(tempRoot, 'publish_jobs.json');
   const store = createPublishConfigService({
     publishConfigPath,
     wechatAccountFields: ['displayName', 'finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'],
@@ -69,6 +68,44 @@ describe('publish config social accounts', () => {
 
       expect(validation.missingFields).toEqual([]);
       expect(validation.account).toMatchObject({ id: 'xhs_a', sauAccountName: 'xhs_a' });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('migrates legacy X config into OAuth account list and validates selected account', () => {
+    const { tempRoot, store } = createStore();
+    try {
+      const config = store.normalizePublishConfig({
+        x: {
+          enabled: true,
+          displayName: 'X 主账号',
+          username: '@comfy_ops',
+          clientId: 'client-id',
+          clientSecret: 'client-secret',
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token'
+        }
+      });
+
+      expect(config.x.accounts).toHaveLength(1);
+      expect(config.x.accounts[0]).toMatchObject({
+        id: 'x_main',
+        displayName: 'X 主账号',
+        username: 'comfy_ops',
+        clientId: 'client-id',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        markMadeWithAi: true
+      });
+
+      const validation = store.validateXTaskConfig(config.x, {
+        accountId: 'x_main',
+        requiredFields: ['accessToken']
+      });
+
+      expect(validation.missingFields).toEqual([]);
+      expect(validation.account).toMatchObject({ id: 'x_main', username: 'comfy_ops' });
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

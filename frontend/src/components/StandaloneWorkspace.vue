@@ -54,7 +54,7 @@
               <div class="config-cluster">
                 <div class="config-cluster-title">主视频</div>
                 <label class="upload-card">
-                  <span class="upload-icon">🎞️</span>
+                  <span class="upload-icon">🎞</span>
                   <span class="upload-title">上传横屏源视频</span>
                   <span class="upload-name">{{ form.videoName || (form.sourceTaskDir ? `任务：${form.sourceTaskTitle || form.sourceTaskDir}` : '点击上传 mp4') }}</span>
                   <input type="file" accept="video/mp4,video/*" hidden @change="onFileChange('video', $event)" />
@@ -63,7 +63,7 @@
               <div class="config-cluster">
                 <div class="config-cluster-title">字幕来源</div>
                 <label class="upload-card">
-                  <span class="upload-icon">📄</span>
+                  <span class="upload-icon">▤</span>
                   <span class="upload-title">{{ form.srtName || '上传 .srt 字幕' }}</span>
                   <span class="upload-sub">或切换为自动打轴</span>
                   <button
@@ -76,6 +76,19 @@
                   </button>
                   <input type="file" accept=".srt" hidden @change="onFileChange('srt', $event)" />
                 </label>
+              </div>
+              <div class="config-cluster">
+                <div class="config-cluster-title">可选片尾</div>
+                <label class="upload-card">
+                  <span class="upload-icon">＋</span>
+                  <span class="upload-title">追加自定义片尾</span>
+                  <span class="upload-name">{{ form.outroName || '不选择则直接出片' }}</span>
+                  <span class="upload-sub">会拼接在竖屏成片最后</span>
+                  <input type="file" accept="video/mp4,video/*" hidden @change="onFileChange('outro', $event)" />
+                </label>
+                <button v-if="form.outroName" type="button" class="ghost-mini clear-upload" @click="clearFile('outro')">
+                  清除片尾
+                </button>
               </div>
             </div>
 
@@ -396,6 +409,11 @@ const chineseBoxStyle = computed(() => ({
 
 function onFileChange(type, event) {
   emit('update:file', type, event.target.files?.[0] || null);
+  event.target.value = '';
+}
+
+function clearFile(type) {
+  emit('update:file', type, null);
 }
 
 function clamp(value, min = 0, max = 100) {
@@ -512,10 +530,15 @@ function formatJobDuration(job) {
 }
 
 .hero-stats,
-.upload-grid,
 .queue-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.upload-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -906,6 +929,11 @@ function formatJobDuration(job) {
 
 .ghost-mini.danger {
   color: #dc2626;
+}
+
+.clear-upload {
+  width: 100%;
+  margin-top: 10px;
 }
 
 .video-shell {

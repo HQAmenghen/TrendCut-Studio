@@ -4,8 +4,11 @@ const path = require('path');
 
 const {
   AVATAR_RENDER_STATE_FILE,
+  NARRATION_SPEECH_METADATA_FILE,
+  NARRATION_SPEECH_TEXT_FILE,
   QWEN_TTS_METADATA_FILE,
   createAvatarGenerationService,
+  generateDeepSeekSpeechNarration,
   readAvatarRenderState
 } = require('../avatarGeneration');
 
@@ -15,6 +18,15 @@ function makeTempProject() {
 
 function writeJson(filePath, payload) {
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+function mockSpeechNarration() {
+  return jest.fn(async ({ fallbackText }) => ({
+    speechText: fallbackText,
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    normalizations: []
+  }));
 }
 
 function createBaseProject() {
@@ -41,6 +53,43 @@ function createBaseProject() {
 }
 
 describe('createAvatarGenerationService', () => {
+  test('parses DeepSeek speech narration protocol result', async () => {
+    const runPython = jest.fn(async () => ({
+      protocol: {
+        result: {
+          speechText: '十二万五千美元',
+          provider: 'deepseek',
+          model: 'deepseek-v4-flash',
+          changes: [
+            { raw: '12万5美元', reading: '十二万五千美元', reason: '价格缩写' }
+          ]
+        }
+      }
+    }));
+
+    const result = await generateDeepSeekSpeechNarration({
+      sourceText: '12万5美元',
+      fallbackText: '12万5美元',
+      outputDir: 'C:\\work',
+      runPython
+    });
+
+    expect(result).toEqual({
+      speechText: '十二万五千美元',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      normalizations: [
+        { kind: 'llm', raw: '12万5美元', reading: '十二万五千美元', reason: '价格缩写' }
+      ]
+    });
+    expect(runPython.mock.calls[0][1]).toEqual([
+      '--source-text',
+      '12万5美元',
+      '--fallback-text',
+      '12万5美元'
+    ]);
+  });
+
   test('reuses cached Qwen3TTS audio when retrying avatar generation', async () => {
     const { outputPath, paths } = createBaseProject();
     const cachedAudioPath = path.join(outputPath, 'avatar_qwen3tts.wav');
@@ -65,6 +114,7 @@ describe('createAvatarGenerationService', () => {
         wasTrimmed: false,
         durationSeconds: 8
       }),
+      generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
       rendererFactory: () => ({ render }),
       downloadFile
@@ -87,7 +137,16 @@ describe('createAvatarGenerationService', () => {
     expect(render).toHaveBeenCalledWith(expect.objectContaining({
       speechAudioPath: cachedAudioPath
     }));
-    expect(downloadFile).toHaveBeenCalledWith('https://example.com/avatar.mp4', path.join(outputPath, 'aiman.mp4'));
+    expect(downloadFile).toHaveBeenCalledWith(
+      'https://example.com/avatar.mp4',
+      path.join(outputPath, 'aiman.mp4'),
+      expect.objectContaining({
+        timeout: 180000,
+        headers: expect.objectContaining({
+          'User-Agent': expect.any(String)
+        })
+      })
+    );
     expect(task.logs.map((item) => item.message)).toContain(`复用已生成的 Qwen3TTS 口播音频: ${path.basename(cachedAudioPath)}`);
   });
 
@@ -129,6 +188,7 @@ describe('createAvatarGenerationService', () => {
           durationSeconds: 30
         };
       },
+      generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
       rendererFactory: () => ({ render }),
       downloadFile
@@ -182,6 +242,7 @@ describe('createAvatarGenerationService', () => {
         wasTrimmed: false,
         durationSeconds: 8
       }),
+      generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
       rendererFactory: () => ({ render }),
       downloadFile
@@ -205,6 +266,210 @@ describe('createAvatarGenerationService', () => {
     }));
     expect(JSON.parse(fs.readFileSync(path.join(outputPath, 'narration.json'), 'utf8')).full_text)
       .toBe('法案编号HR 3000,633在投票中以多数通过');
+  });
+
+  test('writes speech-only narration artifacts and keeps display narration unchanged', async () => {
+    const { outputPath, paths } = createBaseProject();
+    writeJson(path.join(outputPath, 'narration.json'), {
+      full_text: '预计收入达到60.000美元，同比增长12.5%。'
+    });
+    const synthesizeSpeech = jest.fn(async () => ({
+      outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+      model: 'qwen3-tts'
+    }));
+    const render = jest.fn(async () => ({
+      provider: 'runninghub',
+      taskId: 'task-1',
+      videoUrl: 'https://example.com/avatar.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      nodeInfoList: []
+    }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech,
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: jest.fn(async () => ({
+        speechText: '预计收入达到六万美元，同比增长百分之十二点五。',
+        provider: 'deepseek',
+        model: 'deepseek-v4-flash',
+        normalizations: [
+          { kind: 'llm', raw: '60.000美元', reading: '六万美元', reason: '金额读法' },
+          { kind: 'llm', raw: '12.5%', reading: '百分之十二点五', reason: '百分比读法' }
+        ]
+      })),
+      readWorkflowFile: () => ({}),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(synthesizeSpeech).toHaveBeenCalledWith(expect.objectContaining({
+      text: '预计收入达到六万美元，同比增长百分之十二点五。'
+    }));
+    expect(fs.readFileSync(path.join(outputPath, NARRATION_SPEECH_TEXT_FILE), 'utf8'))
+      .toBe('预计收入达到六万美元，同比增长百分之十二点五。');
+    expect(JSON.parse(fs.readFileSync(path.join(outputPath, NARRATION_SPEECH_METADATA_FILE), 'utf8')))
+      .toMatchObject({
+        source: 'deepseek_speech_normalizer',
+        provider: 'deepseek',
+        model: 'deepseek-v4-flash',
+        displayText: '预计收入达到60.000美元，同比增长12.5%。',
+        speechText: '预计收入达到六万美元，同比增长百分之十二点五。',
+        changed: true,
+        normalizations: [
+          { kind: 'llm', raw: '60.000美元', reading: '六万美元', reason: '金额读法' },
+          { kind: 'llm', raw: '12.5%', reading: '百分之十二点五', reason: '百分比读法' }
+        ]
+      });
+    expect(JSON.parse(fs.readFileSync(path.join(outputPath, 'narration.json'), 'utf8')).full_text)
+      .toBe('预计收入达到60.000美元，同比增长12.5%。');
+  });
+
+  test('uses DeepSeek speech narration when it resolves contextual shorthand', async () => {
+    const { outputPath, paths } = createBaseProject();
+    writeJson(path.join(outputPath, 'narration.json'), {
+      full_text: '十月高点大约12万5，现在回到6万附近。一家公司计划买下150万枚比特币。'
+    });
+    const synthesizeSpeech = jest.fn(async () => ({
+      outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+      model: 'qwen3-tts'
+    }));
+    const generateSpeechNarration = jest.fn(async () => ({
+      speechText: '十月高点大约十二万五千，现在回到六万附近。一家公司计划买下一百五十万枚比特币。',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      normalizations: [
+        { kind: 'llm', raw: '12万5', reading: '十二万五千', reason: '市场价格缩写' },
+        { kind: 'llm', raw: '6万附近', reading: '六万附近', reason: '价格数量读法' },
+        { kind: 'llm', raw: '150万枚比特币', reading: '一百五十万枚比特币', reason: '带单位数量' }
+      ]
+    }));
+    const render = jest.fn(async () => ({
+      provider: 'runninghub',
+      taskId: 'task-1',
+      videoUrl: 'https://example.com/avatar.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      nodeInfoList: []
+    }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech,
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration,
+      readWorkflowFile: () => ({}),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(generateSpeechNarration).toHaveBeenCalledWith({
+      sourceText: '十月高点大约12万5，现在回到6万附近。一家公司计划买下150万枚比特币。',
+      fallbackText: '十月高点大约12万5，现在回到6万附近。一家公司计划买下150万枚比特币。',
+      outputDir: outputPath
+    });
+    expect(synthesizeSpeech).toHaveBeenCalledWith(expect.objectContaining({
+      text: '十月高点大约十二万五千，现在回到六万附近。一家公司计划买下一百五十万枚比特币。'
+    }));
+  });
+
+  test('falls back to rule-based speech narration when DeepSeek fails', async () => {
+    const { outputPath, paths } = createBaseProject();
+    writeJson(path.join(outputPath, 'narration.json'), {
+      full_text: '预计收入达到60.000美元，同比增长12.5%。'
+    });
+    const synthesizeSpeech = jest.fn(async () => ({
+      outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+      model: 'qwen3-tts'
+    }));
+    const render = jest.fn(async () => ({
+      provider: 'runninghub',
+      taskId: 'task-1',
+      videoUrl: 'https://example.com/avatar.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      nodeInfoList: []
+    }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech,
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: jest.fn(async () => {
+        throw new Error('deepseek unavailable');
+      }),
+      readWorkflowFile: () => ({}),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(synthesizeSpeech).toHaveBeenCalledWith(expect.objectContaining({
+      text: '预计收入达到六万美元，同比增长百分之十二点五。'
+    }));
+    expect(JSON.parse(fs.readFileSync(path.join(outputPath, NARRATION_SPEECH_METADATA_FILE), 'utf8')))
+      .toMatchObject({
+        source: 'rule_based_numeric_normalizer',
+        speechText: '预计收入达到六万美元，同比增长百分之十二点五。'
+      });
+    expect(task.logs.some((item) => item.message.includes('DeepSeek 口播专用稿生成失败'))).toBe(true);
   });
 
   test('stores RunningHub task id on submission and resumes it on retry', async () => {
@@ -252,6 +517,7 @@ describe('createAvatarGenerationService', () => {
         wasTrimmed: false,
         durationSeconds: 8
       }),
+      generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
       rendererFactory: () => ({ render }),
       downloadFile
@@ -289,7 +555,13 @@ describe('createAvatarGenerationService', () => {
       runningHubRemoteAudioName: 'api/avatar.wav',
       runningHubRemoteImageName: 'api/avatar.png'
     });
-    expect(downloadFile).toHaveBeenCalledWith('https://example.com/resumed.mp4', path.join(outputPath, 'aiman.mp4'));
+    expect(downloadFile).toHaveBeenCalledWith(
+      'https://example.com/resumed.mp4',
+      path.join(outputPath, 'aiman.mp4'),
+      expect.objectContaining({
+        timeout: 180000
+      })
+    );
     expect(readAvatarRenderState(outputPath)).toMatchObject({
       provider: 'runninghub',
       status: 'downloaded',
@@ -322,6 +594,7 @@ describe('createAvatarGenerationService', () => {
         wasTrimmed: false,
         durationSeconds: 8
       }),
+      generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
       rendererFactory: () => ({ render }),
       downloadFile
@@ -347,5 +620,77 @@ describe('createAvatarGenerationService', () => {
     expect(render).not.toHaveBeenCalled();
     expect(downloadFile).not.toHaveBeenCalled();
     expect(task.logs.map((item) => item.message)).toContain('复用已下载的数字人视频: aiman.mp4, taskId=task-done');
+  });
+
+  test('retries avatar video download before marking RunningHub task downloaded', async () => {
+    const { outputPath, paths } = createBaseProject();
+    const render = jest.fn(async () => ({
+      provider: 'runninghub',
+      taskId: 'task-1',
+      videoUrl: 'https://example.com/avatar.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      nodeInfoList: []
+    }));
+    const downloadFile = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('Request failed with status code 554'))
+      .mockImplementationOnce(async (_url, outputFile) => {
+        fs.writeFileSync(outputFile, 'video', 'utf8');
+      });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(async () => ({
+        outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+        model: 'qwen3-tts'
+      })),
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+    const previousRetries = process.env.AVATAR_DOWNLOAD_RETRIES;
+    const previousDelay = process.env.AVATAR_DOWNLOAD_RETRY_DELAY_MS;
+    process.env.AVATAR_DOWNLOAD_RETRIES = '6';
+    process.env.AVATAR_DOWNLOAD_RETRY_DELAY_MS = '1';
+    try {
+      await service.autoGenerateAvatar('job-1', task);
+    } finally {
+      if (previousRetries === undefined) {
+        delete process.env.AVATAR_DOWNLOAD_RETRIES;
+      } else {
+        process.env.AVATAR_DOWNLOAD_RETRIES = previousRetries;
+      }
+      if (previousDelay === undefined) {
+        delete process.env.AVATAR_DOWNLOAD_RETRY_DELAY_MS;
+      } else {
+        process.env.AVATAR_DOWNLOAD_RETRY_DELAY_MS = previousDelay;
+      }
+    }
+
+    expect(downloadFile).toHaveBeenCalledTimes(2);
+    expect(task.logs.some((item) => item.message.includes('数字人视频下载失败，准备重试 1/6'))).toBe(true);
+    expect(readAvatarRenderState(outputPath)).toMatchObject({
+      provider: 'runninghub',
+      status: 'downloaded',
+      taskId: 'task-1',
+      videoUrl: 'https://example.com/avatar.mp4'
+    });
   });
 });

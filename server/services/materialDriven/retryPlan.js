@@ -21,6 +21,7 @@ function buildMaterialDrivenPipelineArgs({
   endAt = null,
   useSmartClip = true,
   useCache = true,
+  allowRuleFallback = false,
   unbuffered = false
 }) {
   const args = [];
@@ -43,6 +44,9 @@ function buildMaterialDrivenPipelineArgs({
   }
   if (useCache) {
     args.push('--use-cache');
+  }
+  if (allowRuleFallback) {
+    args.push('--allow-rule-fallback');
   }
   return args;
 }

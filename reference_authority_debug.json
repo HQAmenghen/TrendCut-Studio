@@ -1,0 +1,271 @@
+[
+  {
+    "attempt": 1,
+    "max_attempts": 5,
+    "reason": "atom_span_not_contiguous:expected_0_got_1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      }
+    ],
+    "timestamp": "2026-05-21T09:58:55+0800"
+  },
+  {
+    "attempt": 2,
+    "max_attempts": 5,
+    "reason": "atom_span_not_allowed:0-1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      }
+    ],
+    "timestamp": "2026-05-21T09:59:41+0800"
+  },
+  {
+    "attempt": 3,
+    "max_attempts": 5,
+    "reason": "atom_span_not_contiguous:expected_0_got_1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      }
+    ],
+    "timestamp": "2026-05-21T10:00:11+0800"
+  },
+  {
+    "attempt": 4,
+    "max_attempts": 5,
+    "reason": "atom_span_not_allowed:0-0",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 0,
+        "text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。"
+      },
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1,
+        "text": "任何可停止可审查的工具，都与比特币主权使命背道而驰。"
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2,
+        "text": "视频强调，目标是让八十亿人都拥有金融主权"
+      }
+    ],
+    "timestamp": "2026-05-21T10:00:51+0800"
+  },
+  {
+    "attempt": 5,
+    "max_attempts": 5,
+    "reason": "atom_span_not_allowed:0-1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 1,
+        "text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。"
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2,
+        "text": "视频强调，目标是让八十亿人都拥有金融主权"
+      }
+    ],
+    "timestamp": "2026-05-21T10:01:26+0800"
+  }
+]

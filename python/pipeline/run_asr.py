@@ -34,6 +34,7 @@ try:
     from subtitle_terms import (
         extract_preserve_terms,
         mask_preserved_terms,
+        normalize_chinese_numeric_display,
         repair_reference_subtitle_text,
         select_present_reference_terms,
         restore_preserved_terms,
@@ -43,6 +44,7 @@ except ImportError:
     from pipeline.subtitle_terms import (
         extract_preserve_terms,
         mask_preserved_terms,
+        normalize_chinese_numeric_display,
         repair_reference_subtitle_text,
         select_present_reference_terms,
         restore_preserved_terms,
@@ -402,16 +404,16 @@ def expand_filetrans_transcription_urls(payload, headers=None):
 
 
 def submit_qwen_filetrans_task(file_url, model):
-    from qwen_client import get_qwen_api_keys
+    from qwen_client import (
+        create_qwen_client,
+        is_key_failover_error,
+        is_retryable_error,
+        mask_api_key,
+    )
 
-    api_key = get_qwen_api_keys()[0]
+    client = create_qwen_client()
     base_url = get_qwen_asr_api_base_url()
     submit_url = f"{base_url}/services/audio/asr/transcription"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "X-DashScope-Async": "enable",
-    }
     payload = {
         "model": model,
         "input": {
@@ -422,13 +424,35 @@ def submit_qwen_filetrans_task(file_url, model):
             "enable_words": True,
         },
     }
-    response = requests.post(submit_url, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
-    result = response.json()
-    task_id = ((result.get("output") or {}).get("task_id") or result.get("task_id") or "").strip()
-    if not task_id:
-        raise RuntimeError(f"Filetrans 未返回 task_id: {result}")
-    return task_id, headers
+    attempts = max(1, client.key_count)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        api_key = client.api_key
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "X-DashScope-Async": "enable",
+        }
+        try:
+            response = requests.post(submit_url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            result = response.json()
+            task_id = ((result.get("output") or {}).get("task_id") or result.get("task_id") or "").strip()
+            if not task_id:
+                raise RuntimeError(f"Filetrans 未返回 task_id: {result}")
+            return task_id, headers
+        except Exception as exc:
+            last_error = exc
+            if is_key_failover_error(exc):
+                client.mark_key_unavailable(api_key)
+            if attempt >= attempts or not is_retryable_error(exc):
+                raise
+            print(
+                f"   ⚠️ Filetrans 提交失败，切换备用 Qwen Key 重试 "
+                f"({attempt}/{attempts}, key={mask_api_key(api_key)}): {exc}"
+            )
+    if last_error:
+        raise last_error
 
 
 def wait_qwen_filetrans_task(task_id, headers):
@@ -489,12 +513,12 @@ def _split_audio_chunks(audio_file, chunk_sec=ALIYUN_ASR_CHUNK_SEC):
     return chunks, duration
 
 
-def _call_aliyun_asr(dashscope_module, audio_path, model=None):
+def _call_aliyun_asr(dashscope_module, audio_path, *, api_key, model=None):
     messages = [
         {"role": "user", "content": [{"audio": audio_path}]}
     ]
     return dashscope_module.MultiModalConversation.call(
-        api_key=dashscope_module.api_key,
+        api_key=api_key,
         model=model or LEGACY_QWEN_ASR_MODEL,
         messages=messages,
         result_format="message",
@@ -528,8 +552,8 @@ def build_raw_segments_filetrans(file_url, model=None, split_config=None):
 
 def build_raw_segments_qwen_flash(audio_file, split_config=None, model=None):
     import dashscope
-    from qwen_client import get_qwen_api_keys
-    dashscope.api_key = get_qwen_api_keys()[0]
+    from qwen_client import create_qwen_client, is_key_failover_error, mask_api_key
+    qwen_client = create_qwen_client()
     model = model or LEGACY_QWEN_ASR_MODEL
 
     emit_stage("asr", "正在进行阿里云 Qwen3-ASR 识别")
@@ -567,13 +591,60 @@ def build_raw_segments_qwen_flash(audio_file, split_config=None, model=None):
             if need_chunking:
                 print(f"   识别分段 {chunk_idx + 1}/{len(chunk_list)}...")
             resolved_path = str(Path(chunk_path).resolve())
-            response = _call_aliyun_asr(dashscope, resolved_path, model=model)
+            response = None
+            for key_attempt in range(1, qwen_client.key_count + 1):
+                api_key = qwen_client.api_key
+                try:
+                    response = _call_aliyun_asr(dashscope, resolved_path, api_key=api_key, model=model)
+                    break
+                except Exception as err:
+                    if is_key_failover_error(err) and key_attempt < qwen_client.key_count:
+                        qwen_client.mark_key_unavailable(api_key)
+                        print(
+                            f"   ⚠️ 阿里云 ASR Key 不可用，切换备用 Key "
+                            f"({key_attempt}/{qwen_client.key_count}, key={mask_api_key(api_key)}): {err}"
+                        )
+                        continue
+                    raise
 
             status_code = getattr(response, "status_code", None)
             if status_code != 200:
-                print(f"   ⚠️ 阿里云 ASR 返回异常: status_code={status_code}, "
-                      f"code={getattr(response, 'code', '?')}, message={getattr(response, 'message', '?')}")
-                return [], "zh"
+                error = RuntimeError(
+                    f"阿里云 ASR 返回异常: status_code={status_code}, "
+                    f"code={getattr(response, 'code', '?')}, message={getattr(response, 'message', '?')}"
+                )
+                if is_key_failover_error(error):
+                    qwen_client.mark_key_unavailable(api_key)
+                    if qwen_client.key_count > 1:
+                        for retry_idx in range(1, qwen_client.key_count):
+                            fallback_key = qwen_client.api_key
+                            response = _call_aliyun_asr(
+                                dashscope,
+                                resolved_path,
+                                api_key=fallback_key,
+                                model=model,
+                            )
+                            status_code = getattr(response, "status_code", None)
+                            if status_code == 200:
+                                api_key = fallback_key
+                                break
+                            retry_error = RuntimeError(
+                                f"阿里云 ASR 返回异常: status_code={status_code}, "
+                                f"code={getattr(response, 'code', '?')}, message={getattr(response, 'message', '?')}"
+                            )
+                            if is_key_failover_error(retry_error):
+                                qwen_client.mark_key_unavailable(fallback_key)
+                            print(
+                                f"   ⚠️ 备用 Qwen Key ASR 仍失败 "
+                                f"({retry_idx}/{qwen_client.key_count - 1}, key={mask_api_key(fallback_key)}): {retry_error}"
+                            )
+                        if getattr(response, "status_code", None) == 200:
+                            print("   ✅ 已切换备用 Qwen Key 完成当前 ASR 分段")
+                        else:
+                            return [], "zh"
+                if getattr(response, "status_code", None) != 200:
+                    print(f"   ⚠️ {error}")
+                    return [], "zh"
 
             choices = (response.output or {}).get("choices") or []
             if not choices:
@@ -665,6 +736,58 @@ def visible_text(text: str) -> str:
     return re.sub(r"[\s，。！？；：、“”‘’,.!?;:()\[\]{}\"'…·-]", "", text or "")
 
 
+CHINESE_NUMERAL_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+
+def parse_small_chinese_number(text: str):
+    sample = str(text or "")
+    if not sample:
+        return None
+    if sample == "十":
+        return 10
+    if "十" in sample:
+        left, right = sample.split("十", 1)
+        if "十" in right:
+            return None
+        tens = 1 if not left else CHINESE_NUMERAL_DIGITS.get(left)
+        ones = 0 if not right else CHINESE_NUMERAL_DIGITS.get(right)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    if len(sample) == 1:
+        return CHINESE_NUMERAL_DIGITS.get(sample)
+    if all(char in CHINESE_NUMERAL_DIGITS for char in sample):
+        return int("".join(str(CHINESE_NUMERAL_DIGITS[char]) for char in sample))
+    return None
+
+
+def normalize_visible_text_for_reference_match(text: str) -> str:
+    sample = visible_text(text).lower()
+
+    def replace_number(match):
+        value = parse_small_chinese_number(match.group(1))
+        return str(value) if value is not None else match.group(1)
+
+    return re.sub(
+        r"([零〇一二两三四五六七八九十]{1,3})(?=[年月日天个只条次位栋%万亿千百美元元])",
+        replace_number,
+        sample,
+    )
+
+
 def has_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
@@ -706,6 +829,7 @@ def apply_domain_corrections(text: str) -> str:
     for wrong, right in sorted(DOMAIN_CORRECTIONS.items(), key=lambda item: len(item[0]), reverse=True):
         normalized = re.sub(re.escape(wrong), right, normalized, flags=re.IGNORECASE)
     normalized = normalized.replace("万事达卡卡", "万事达卡")
+    normalized = normalize_chinese_numeric_display(normalized)
     return to_simplified_chinese(normalized)
 
 
@@ -1503,6 +1627,16 @@ def common_prefix_length(left, right):
     return count
 
 
+def common_suffix_length(left, right):
+    count = 0
+    left = left or ""
+    right = right or ""
+    max_len = min(len(left), len(right))
+    while count < max_len and left[-(count + 1)] == right[-(count + 1)]:
+        count += 1
+    return count
+
+
 def find_asr_anchor_visible_position(reference_visible, asr_text):
     sample = visible_text(asr_text).lower()
     reference = str(reference_visible or "")
@@ -1786,6 +1920,11 @@ READABLE_TARGET_VISIBLE_CHARS = 18
 READABLE_HARD_VISIBLE_CHARS = 30
 READABLE_ATOM_TARGET_VISIBLE_CHARS = 24
 READABLE_LATIN_HARD_VISIBLE_CHARS = 36
+REFERENCE_AUTHORITY_MICRO_FRAGMENT_MAX_DURATION_SECONDS = 0.45
+REFERENCE_AUTHORITY_MICRO_FRAGMENT_MAX_GAP_SECONDS = 0.28
+REFERENCE_AUTHORITY_MICRO_FRAGMENT_MAX_VISIBLE_CHARS = 2
+REFERENCE_AUTHORITY_NEXT_PREFIX_MAX_GAP_SECONDS = 0.75
+REFERENCE_AUTHORITY_NEXT_PREFIX_MAX_VISIBLE_CHARS = 12
 
 
 def set_subtitle_primary_text(entry, text):
@@ -1835,6 +1974,63 @@ def subtitle_duration(entry):
     if not time_range:
         return 0.0
     return max(0.0, time_range[1] - time_range[0])
+
+
+def normalize_reference_authority_asr_entry(entry):
+    time_range = subtitle_time_range(entry)
+    text = get_subtitle_primary_text(entry)
+    if not time_range or not text:
+        return None
+    normalized = dict(entry)
+    normalized["time"] = [time_range[0], time_range[1]]
+    if not str(normalized.get("zh") or "").strip():
+        normalized["zh"] = text
+    normalized["text"] = text
+    return normalized
+
+
+def is_reference_authority_micro_asr_fragment(entry):
+    duration = subtitle_duration(entry)
+    if duration <= 0 or duration > REFERENCE_AUTHORITY_MICRO_FRAGMENT_MAX_DURATION_SECONDS:
+        return False
+    text = get_subtitle_primary_text(entry)
+    visible_len = readable_visible_len(text)
+    if visible_len <= REFERENCE_AUTHORITY_MICRO_FRAGMENT_MAX_VISIBLE_CHARS:
+        return True
+    return visible_len <= 3 and not has_latin_text(text)
+
+
+def merge_reference_authority_asr_entries(previous, current):
+    previous_time = subtitle_time_range(previous)
+    current_time = subtitle_time_range(current)
+    if not previous_time or not current_time:
+        return previous
+    merged = dict(previous)
+    merged["time"] = [previous_time[0], current_time[1]]
+    merged_text = apply_domain_corrections(join_subtitle_text(
+        get_subtitle_primary_text(previous),
+        get_subtitle_primary_text(current),
+    ))
+    merged["zh"] = merged_text
+    merged["text"] = merged_text
+    return merged
+
+
+def merge_reference_authority_micro_asr_fragments(asr_entries):
+    output = []
+    for entry in asr_entries or []:
+        normalized = normalize_reference_authority_asr_entry(entry)
+        if not normalized:
+            continue
+        if output and is_reference_authority_micro_asr_fragment(normalized):
+            previous_time = subtitle_time_range(output[-1])
+            current_time = subtitle_time_range(normalized)
+            gap = current_time[0] - previous_time[1] if previous_time and current_time else 0
+            if -0.03 <= gap <= REFERENCE_AUTHORITY_MICRO_FRAGMENT_MAX_GAP_SECONDS:
+                output[-1] = merge_reference_authority_asr_entries(output[-1], normalized)
+                continue
+        output.append(normalized)
+    return output
 
 
 def readable_visible_len(text):
@@ -2127,6 +2323,8 @@ def polish_readable_subtitle_segments(entries, split_config=None, use_llm=True):
 
 REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS = 8.0
 REFERENCE_AUTHORITY_MAX_INTERNAL_GAP_SECONDS = 0.65
+REFERENCE_AUTHORITY_MAX_CONTINUOUS_GAP_SECONDS = 3.25
+REFERENCE_AUTHORITY_MAX_TAIL_EXTENSION_SECONDS = 6.0
 
 
 class ReferenceAuthorityAlignmentError(RuntimeError):
@@ -2154,6 +2352,38 @@ def append_reference_authority_debug_event(event):
     payload["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     existing.append(payload)
     debug_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def reference_authority_asr_debug_segments(asr_entries):
+    return [
+        {
+            "index": index,
+            "time": list(subtitle_time_range(entry) or []),
+            "asr_text": get_subtitle_primary_text(entry),
+        }
+        for index, entry in enumerate(asr_entries or [])
+    ]
+
+
+def append_reference_authority_fallback_debug_event(
+    fallback_stage,
+    reason,
+    reference_text="",
+    asr_entries=None,
+    fallback_entries=None,
+    details=None,
+):
+    payload = {
+        "event_type": "reference_authority_fallback",
+        "fallback_stage": fallback_stage,
+        "reason": str(reason or ""),
+        "reference_text": apply_domain_corrections(str(reference_text or "").strip()),
+        "asr_segments": reference_authority_asr_debug_segments(asr_entries or []),
+        "fallback_entries_count": len(fallback_entries or []),
+    }
+    if details:
+        payload["details"] = details
+    append_reference_authority_debug_event(payload)
 
 
 def visible_len_between(text, start_index, end_index):
@@ -2200,6 +2430,28 @@ def parse_reference_authority_group_span(item):
     if end is None:
         end = start
     return start, end
+
+
+def reference_position_hint_matches(item, reference, start_position, end_position, tolerance=2):
+    span = parse_reference_authority_group_span(item)
+    if span is None:
+        return False
+    start, end = span
+    if start is None or end is None:
+        return False
+
+    visible_start = visible_len_between(reference, 0, start_position)
+    visible_end = visible_len_between(reference, 0, end_position)
+    start_matches = (
+        abs(start - start_position) <= tolerance
+        or abs(start - visible_start) <= tolerance
+    )
+    end_matches = (
+        abs(end - end_position) <= tolerance
+        or abs(end - (end_position - 1)) <= tolerance
+        or abs(end - visible_end) <= tolerance
+    )
+    return start_matches and end_matches
 
 
 def build_reference_piece_spans(reference, pieces):
@@ -2424,7 +2676,7 @@ def split_reference_text_for_readable_atoms(text, max_visible_chars=READABLE_ATO
                     current = ""
                 atoms.extend(split_long_reference_atom_piece(chunk, max_visible_chars))
                 continue
-            candidate = join_subtitle_text(current, chunk) if current else chunk
+            candidate = f"{current}{chunk}" if current else chunk
             if current and readable_visible_len(candidate) > max_visible_chars:
                 atoms.append(current)
                 current = chunk
@@ -2438,17 +2690,17 @@ def split_reference_text_for_readable_atoms(text, max_visible_chars=READABLE_ATO
         if (
             balanced
             and readable_visible_len(atom) <= READABLE_MIN_VISIBLE_CHARS
-            and readable_visible_len(join_subtitle_text(balanced[-1], atom)) <= max_visible_chars
+            and readable_visible_len(f"{balanced[-1]}{atom}") <= max_visible_chars
         ):
-            balanced[-1] = join_subtitle_text(balanced[-1], atom)
+            balanced[-1] = f"{balanced[-1]}{atom}"
         else:
             balanced.append(atom)
     if (
         len(balanced) > 1
         and readable_visible_len(balanced[0]) <= READABLE_MIN_VISIBLE_CHARS
-        and readable_visible_len(join_subtitle_text(balanced[0], balanced[1])) <= max_visible_chars
+        and readable_visible_len(f"{balanced[0]}{balanced[1]}") <= max_visible_chars
     ):
-        balanced[1] = join_subtitle_text(balanced[0], balanced[1])
+        balanced[1] = f"{balanced[0]}{balanced[1]}"
         balanced = balanced[1:]
     return [atom for atom in balanced if visible_text(atom)]
 
@@ -2506,6 +2758,15 @@ def has_severe_unreadable_subtitle_duration(entry):
     if duration <= 0 or minimum <= 0:
         return False
     return duration + 0.03 < max(0.75, minimum * 0.45)
+
+
+def has_intolerable_reference_authority_duration(entry):
+    text = get_subtitle_primary_text(entry)
+    duration = subtitle_duration(entry)
+    minimum = minimum_display_duration_for_text(text)
+    if duration <= 0 or minimum <= 0:
+        return False
+    return duration + 0.03 < max(0.75, minimum * 0.9)
 
 
 def has_overextended_subtitle_duration(entry):
@@ -2636,7 +2897,11 @@ def validate_reference_authority_llm_atom_groups(reference, atoms, results, spli
         max_duration = max(split_config["max_chunk_duration"] + 1.2, REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS)
         if start_atom_index != end_atom_index and duration > max_duration:
             return reject(f"duration_too_long_for_atom_span:{start_atom_index}-{end_atom_index}")
-        if duration + 0.03 < minimum_display_duration_for_text(text):
+        if has_intolerable_reference_authority_duration({
+            "time": [start_time, end_time],
+            "zh": text,
+            "text": text,
+        }):
             return reject(f"duration_too_short_for_atom_span:{start_atom_index}-{end_atom_index}")
         if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", text):
             return reject(f"leading_punctuation_for_atom_span:{start_atom_index}-{end_atom_index}")
@@ -2654,28 +2919,383 @@ def validate_reference_authority_llm_atom_groups(reference, atoms, results, spli
     return (output, "") if return_reason else output
 
 
+def validate_reference_authority_llm_text_groups(
+    asr_entries,
+    reference_text,
+    results,
+    split_config=None,
+    require_position_hints=False,
+):
+    split_config = resolve_split_config(split_config)
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if not normalized_asr_entries or not reference or not ordered_items:
+        return []
+
+    reference_pieces = split_reference_text_by_asr_segments(reference, normalized_asr_entries)
+    if len(reference_pieces) != len(normalized_asr_entries):
+        return []
+    piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    if len(piece_spans) != len(reference_pieces):
+        return []
+
+    cursor = 0
+    previous_end_time = None
+    output = []
+    for item in ordered_items:
+        raw_text = apply_domain_corrections(str(item.get("text") or item.get("zh") or "").strip())
+        if not raw_text:
+            return []
+
+        position = reference.find(raw_text, cursor)
+        if position < 0:
+            return []
+        skipped = reference[cursor:position]
+        if visible_text(skipped):
+            return []
+
+        start_position = cursor
+        end_position = position + len(raw_text)
+        if require_position_hints and not reference_position_hint_matches(
+            item,
+            reference,
+            position,
+            end_position,
+        ):
+            return []
+
+        span_time = time_range_for_reference_span(
+            normalized_asr_entries,
+            piece_spans,
+            start_position,
+            end_position,
+        )
+        if span_time is None:
+            return []
+        _actual_start_index, _actual_end_index, start_time, end_time = span_time
+        if previous_end_time is not None and start_time < previous_end_time - 0.03:
+            return []
+
+        assigned_text = apply_domain_corrections(reference[start_position:end_position].strip())
+        if not visible_text(assigned_text):
+            return []
+        entry = {
+            "time": [start_time, end_time],
+            "zh": assigned_text,
+            "text": assigned_text,
+        }
+        if readable_visible_len(assigned_text) > combined_readable_limit(assigned_text, ""):
+            return []
+        if subtitle_duration(entry) > REFERENCE_AUTHORITY_GROUP_MAX_DURATION_SECONDS:
+            return []
+        if has_unreadable_subtitle_duration(entry):
+            return []
+        if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", assigned_text):
+            return []
+
+        output.append(entry)
+        previous_end_time = end_time
+        cursor = end_position
+
+    if visible_text(reference[cursor:]):
+        return []
+
+    joined = "".join(item["zh"] for item in output)
+    if visible_text(joined) != visible_text(reference):
+        return []
+    return output
+
+
+def text_group_results_cover_reference(reference_text, results, *, require_position_hints=False):
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    if not reference or not ordered_items:
+        return False
+
+    cursor = 0
+    for item in ordered_items:
+        raw_text = apply_domain_corrections(str(item.get("text") or item.get("zh") or "").strip())
+        if not raw_text:
+            return False
+        position = reference.find(raw_text, cursor)
+        if position < 0:
+            return False
+        skipped = reference[cursor:position]
+        if visible_text(skipped):
+            return False
+        end_position = position + len(raw_text)
+        if require_position_hints and not reference_position_hint_matches(
+            item,
+            reference,
+            position,
+            end_position,
+        ):
+            return False
+        cursor = end_position
+    return not visible_text(reference[cursor:])
+
+
+def choose_allowed_reference_atom_partition(reference, atoms, split_config=None):
+    allowed_ranges = build_allowed_reference_atom_ranges(reference, atoms, split_config)
+    if not atoms or not allowed_ranges:
+        return []
+
+    grouped_by_start = {}
+    for item in allowed_ranges:
+        start_index = item["start_atom_index"]
+        end_index = item["end_atom_index"]
+        text = apply_domain_corrections(
+            reference[atoms[start_index]["start_pos"]:atoms[end_index]["end_pos"]].strip()
+        )
+        duration = atoms[end_index]["time"][1] - atoms[start_index]["time"][0]
+        score = (
+            abs(readable_visible_len(text) - READABLE_TARGET_VISIBLE_CHARS),
+            0 if ends_with_sentence_punctuation(text) else 1,
+            -duration,
+            -(end_index - start_index),
+        )
+        grouped_by_start.setdefault(start_index, []).append((score, start_index, end_index))
+
+    memo = {}
+
+    def visit(start_index):
+        if start_index == len(atoms):
+            return []
+        if start_index in memo:
+            return memo[start_index]
+        candidates = sorted(grouped_by_start.get(start_index, []), key=lambda item: item[0])
+        for _score, candidate_start, candidate_end in candidates:
+            tail = visit(candidate_end + 1)
+            if tail is not None:
+                memo[start_index] = [(candidate_start, candidate_end)] + tail
+                return memo[start_index]
+        memo[start_index] = None
+        return None
+
+    return visit(0) or []
+
+
+def build_reference_authority_entries_from_atom_partition(reference, atoms, partition):
+    output = []
+    for start_atom_index, end_atom_index in partition or []:
+        if not (0 <= start_atom_index <= end_atom_index < len(atoms)):
+            return []
+        start_atom = atoms[start_atom_index]
+        end_atom = atoms[end_atom_index]
+        text = apply_domain_corrections(reference[start_atom["start_pos"]:end_atom["end_pos"]].strip())
+        if not visible_text(text):
+            return []
+        entry = {
+            "time": [start_atom["time"][0], end_atom["time"][1]],
+            "zh": text,
+            "text": text,
+        }
+        if readable_visible_len(text) > combined_readable_limit(text, ""):
+            return []
+        if has_intolerable_reference_authority_duration(entry):
+            return []
+        if re.match(rf"^[{re.escape(READABLE_LEADING_PUNCTUATION)}]", text):
+            return []
+        output.append(entry)
+
+    joined = "".join(item["zh"] for item in output)
+    if visible_text(joined) != visible_text(reference):
+        return []
+    return output
+
+
+def build_reference_authority_deterministic_atom_groups(asr_entries, reference_text, split_config=None):
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
+    reference_pieces = split_reference_text_by_asr_segments(reference, normalized_asr_entries)
+    piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    if len(piece_spans) != len(reference_pieces):
+        return []
+    atoms = build_reference_readable_atoms(normalized_asr_entries, reference, piece_spans, split_config)
+    partition = choose_allowed_reference_atom_partition(reference, atoms, split_config)
+    return build_reference_authority_entries_from_atom_partition(reference, atoms, partition)
+
+
+def build_reference_authority_split_fallback_entries(asr_entries, reference_text, reference_entry=None, split_config=None):
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
+    if not normalized_asr_entries or not reference:
+        return []
+    reference_chunks = split_reference_text_for_authority(reference, split_config)
+    if not reference_chunks:
+        return []
+    return build_reference_authority_entries(
+        normalized_asr_entries,
+        reference_chunks,
+        reference_entry=reference_entry,
+        split_config=split_config,
+    )
+
+
+def build_reference_authority_reference_timing_entries(reference_entry, split_config=None, previous_end=None):
+    ref_time = subtitle_time_range(reference_entry)
+    reference_text = get_subtitle_primary_text(reference_entry)
+    if not ref_time or not reference_text:
+        return []
+    reference_chunks = split_reference_text_for_authority(reference_text, split_config)
+    if not reference_chunks:
+        return []
+
+    start, end = ref_time
+    min_start = max(start, float(previous_end)) if previous_end is not None else start
+    if end <= min_start:
+        return []
+    synthetic_entry = {
+        "time": [round(min_start, 2), end],
+        "zh": reference_text,
+        "text": reference_text,
+    }
+    return build_reference_authority_entries([synthetic_entry], reference_chunks, split_config=split_config)
+
+
+def reference_authority_fallback_is_usable(entries, reference_text, *, allow_severe_timing=False):
+    normalized = normalize_final_subtitles(entries)
+    reference = apply_domain_corrections(str(reference_text or "").strip())
+    if not normalized or not reference:
+        return False
+    joined = "".join(get_subtitle_primary_text(item) for item in normalized)
+    if visible_text(joined) != visible_text(reference):
+        return False
+    if not allow_severe_timing and severe_subtitle_timing_quality_issues(normalized):
+        return False
+    return True
+
+
+def finalize_reference_authority_fallback_entries(
+    entries,
+    source_entries,
+    reference_entry,
+    split_config,
+    *,
+    use_polish,
+    previous_end=None,
+    close_continuous_gaps=True,
+    allow_severe_timing=False,
+):
+    finalized = finalize_reference_authority_block(
+        entries,
+        source_entries,
+        reference_entry,
+        split_config,
+        use_polish=use_polish,
+        previous_end=previous_end,
+        close_continuous_gaps=close_continuous_gaps,
+    )
+    reference_text = get_subtitle_primary_text(reference_entry)
+    if reference_authority_fallback_is_usable(
+        finalized,
+        reference_text,
+        allow_severe_timing=allow_severe_timing,
+    ):
+        return finalized
+    return []
+
+
+def build_reference_authority_failsoft_block(
+    selected_entries,
+    reference_entry,
+    split_config=None,
+    previous_end=None,
+    reason="",
+):
+    reference_text = get_subtitle_primary_text(reference_entry)
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(selected_entries)
+    attempts = [
+        (
+            "deterministic_atom_projection",
+            build_reference_authority_deterministic_atom_groups(
+                normalized_asr_entries,
+                reference_text,
+                split_config,
+            ),
+            False,
+            normalized_asr_entries,
+        ),
+        (
+            "deterministic_reference_authority_split",
+            build_reference_authority_split_fallback_entries(
+                normalized_asr_entries,
+                reference_text,
+                reference_entry=reference_entry,
+                split_config=split_config,
+            ),
+            True,
+            normalized_asr_entries,
+        ),
+        (
+            "reference_subtitle_timing",
+            build_reference_authority_reference_timing_entries(
+                reference_entry,
+                split_config,
+                previous_end=previous_end,
+            ),
+            True,
+            [reference_entry],
+        ),
+    ]
+
+    for fallback_stage, entries, use_polish, source_entries in attempts:
+        block_entries = finalize_reference_authority_fallback_entries(
+            entries,
+            source_entries,
+            reference_entry,
+            split_config,
+            use_polish=use_polish,
+            previous_end=previous_end,
+            close_continuous_gaps=True,
+            allow_severe_timing=fallback_stage == "reference_subtitle_timing",
+        )
+        if block_entries:
+            print(f"   ⚠️ 参考文本权威严格分配失败，使用{fallback_stage}兜底: {reason}")
+            append_reference_authority_fallback_debug_event(
+                fallback_stage,
+                reason,
+                reference_text=reference_text,
+                asr_entries=normalized_asr_entries,
+                fallback_entries=block_entries,
+            )
+            return block_entries
+
+    append_reference_authority_fallback_debug_event(
+        "unavailable",
+        reason,
+        reference_text=reference_text,
+        asr_entries=normalized_asr_entries,
+        fallback_entries=[],
+    )
+    return []
+
+
 def validate_reference_authority_llm_groups(asr_entries, reference_text, results, split_config=None):
     split_config = resolve_split_config(split_config)
     reference = apply_domain_corrections(str(reference_text or "").strip())
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
     ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
-    if not asr_entries or not reference or not ordered_items:
+    if not normalized_asr_entries or not reference or not ordered_items:
         return []
     has_group_span = any(parse_reference_authority_group_span(item) is not None for item in ordered_items)
     has_atom_group_span = any(parse_reference_atom_group_span(item) is not None for item in ordered_items)
     if not has_group_span and not has_atom_group_span:
         return []
 
-    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
-    if len(reference_pieces) != len(asr_entries):
-        return []
+    reference_pieces = split_reference_text_by_asr_segments(reference, normalized_asr_entries)
     piece_spans = build_reference_piece_spans(reference, reference_pieces)
+    if has_atom_group_span and len(piece_spans) == len(reference_pieces):
+        atoms = build_reference_readable_atoms(normalized_asr_entries, reference, piece_spans, split_config)
+        atom_grouped = validate_reference_authority_llm_atom_groups(reference, atoms, results, split_config)
+        if atom_grouped:
+            return atom_grouped
+
+    if len(reference_pieces) != len(normalized_asr_entries):
+        return []
     if len(piece_spans) != len(reference_pieces):
         return []
-
-    atoms = build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config)
-    atom_grouped = validate_reference_authority_llm_atom_groups(reference, atoms, results, split_config)
-    if atom_grouped:
-        return atom_grouped
 
     cursor = 0
     previous_actual_end_index = -1
@@ -2688,7 +3308,7 @@ def validate_reference_authority_llm_groups(asr_entries, reference_text, results
         start_index, end_index = span
         if start_index is None or end_index is None:
             return []
-        if not (0 <= start_index <= end_index < len(asr_entries)):
+        if not (0 <= start_index <= end_index < len(normalized_asr_entries)):
             return []
 
         raw_text = str(item.get("text") or item.get("zh") or "").strip()
@@ -2700,7 +3320,7 @@ def validate_reference_authority_llm_groups(asr_entries, reference_text, results
             return []
         end_position = position + len(raw_text)
 
-        span_time = time_range_for_reference_span(asr_entries, piece_spans, position, end_position)
+        span_time = time_range_for_reference_span(normalized_asr_entries, piece_spans, position, end_position)
         if span_time is None:
             return []
         actual_start_index, actual_end_index, start_time, end_time = span_time
@@ -2747,18 +3367,63 @@ def validate_reference_authority_llm_groups(asr_entries, reference_text, results
 
 
 def validate_reference_authority_llm_results(asr_entries, reference_text, results, split_config=None, require_atom_groups=False):
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
     ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
     if require_atom_groups and not any(parse_reference_atom_group_span(item) is not None for item in ordered_items):
-        return []
-
-    grouped = validate_reference_authority_llm_groups(asr_entries, reference_text, results, split_config)
-    if grouped:
-        return grouped
-    if any(parse_reference_authority_group_span(item) is not None for item in ordered_items):
+        text_grouped = validate_reference_authority_llm_text_groups(
+            normalized_asr_entries,
+            reference_text,
+            results,
+            split_config,
+            require_position_hints=True,
+        )
+        if text_grouped:
+            return text_grouped
+        reference = apply_domain_corrections(str(reference_text or "").strip())
+        if text_group_results_cover_reference(reference, results, require_position_hints=True):
+            deterministic = build_reference_authority_deterministic_atom_groups(
+                normalized_asr_entries,
+                reference,
+                split_config,
+            )
+            if deterministic:
+                return deterministic
         return []
 
     reference = apply_domain_corrections(str(reference_text or "").strip())
-    if not asr_entries or not reference or not isinstance(results, list):
+    grouped = validate_reference_authority_llm_groups(normalized_asr_entries, reference_text, results, split_config)
+    if grouped:
+        return grouped
+    if require_atom_groups:
+        deterministic = build_reference_authority_deterministic_atom_groups(
+            normalized_asr_entries,
+            reference,
+            split_config,
+        )
+        if deterministic:
+            return deterministic
+
+    if any(parse_reference_authority_group_span(item) is not None for item in ordered_items):
+        text_grouped = validate_reference_authority_llm_text_groups(
+            normalized_asr_entries,
+            reference_text,
+            results,
+            split_config,
+            require_position_hints=True,
+        )
+        if text_grouped:
+            return text_grouped
+        if text_group_results_cover_reference(reference, results, require_position_hints=True):
+            deterministic = build_reference_authority_deterministic_atom_groups(
+                normalized_asr_entries,
+                reference,
+                split_config,
+            )
+            if deterministic:
+                return deterministic
+        return []
+
+    if not normalized_asr_entries or not reference or not isinstance(results, list):
         return []
 
     by_index = {}
@@ -2771,7 +3436,7 @@ def validate_reference_authority_llm_results(asr_entries, reference_text, result
 
     cursor = 0
     assignments = []
-    for index, asr_entry in enumerate(asr_entries):
+    for index, asr_entry in enumerate(normalized_asr_entries):
         item = by_index.get(index)
         if item is None:
             assignments.append((asr_entry, ""))
@@ -2798,7 +3463,7 @@ def validate_reference_authority_llm_results(asr_entries, reference_text, result
                 assignments[index] = (entry, apply_domain_corrections(f"{text}{tail}"))
                 break
         else:
-            assignments.append((asr_entries[-1], apply_domain_corrections(tail)))
+            assignments.append((normalized_asr_entries[-1], apply_domain_corrections(tail)))
 
     output = []
     for asr_entry, text in assignments:
@@ -2823,22 +3488,23 @@ def validate_reference_authority_llm_results(asr_entries, reference_text, result
         return []
 
     natural_piece_count = max(1, len(split_text_by_clause_boundaries(reference)))
-    min_expected = min(len(asr_entries), natural_piece_count, 2)
-    if len(asr_entries) > 1 and len(output) < min_expected:
+    min_expected = min(len(normalized_asr_entries), natural_piece_count, 2)
+    if len(normalized_asr_entries) > 1 and len(output) < min_expected:
         return []
     return output
 
 
 def diagnose_reference_authority_llm_results(asr_entries, reference_text, results, split_config=None, require_atom_groups=False):
     reference = apply_domain_corrections(str(reference_text or "").strip())
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
     ordered_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
     if not isinstance(results, list):
         return "llm_output_is_not_json_array"
     if not ordered_items:
         return "llm_output_has_no_objects"
-    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    reference_pieces = split_reference_text_by_asr_segments(reference, normalized_asr_entries)
     piece_spans = build_reference_piece_spans(reference, reference_pieces)
-    atoms = build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config) if piece_spans else []
+    atoms = build_reference_readable_atoms(normalized_asr_entries, reference, piece_spans, split_config) if piece_spans else []
     if require_atom_groups:
         if not atoms:
             return "reference_atoms_unavailable"
@@ -2853,7 +3519,7 @@ def diagnose_reference_authority_llm_results(asr_entries, reference_text, result
         )
         return atom_reason or "unknown_atom_group_validation_failure"
     if any(parse_reference_authority_group_span(item) is not None for item in ordered_items):
-        grouped = validate_reference_authority_llm_groups(asr_entries, reference, results, split_config)
+        grouped = validate_reference_authority_llm_groups(normalized_asr_entries, reference, results, split_config)
         return "" if grouped else "asr_group_validation_failed"
     return "index_assignment_validation_failed"
 
@@ -3007,27 +3673,125 @@ def close_short_reference_authority_gaps(entries, max_gap=REFERENCE_AUTHORITY_MA
     return normalize_final_subtitles(output)
 
 
-def finalize_reference_authority_block(entries, source_entries, reference_entry=None, split_config=None, use_polish=True):
+def close_continuous_reference_authority_gaps(
+    entries,
+    reference_entry=None,
+    previous_end=None,
+    max_gap=REFERENCE_AUTHORITY_MAX_CONTINUOUS_GAP_SECONDS,
+):
+    normalized = normalize_final_subtitles(entries)
+    if not normalized:
+        return normalized
+
+    ref_time = subtitle_time_range(reference_entry) if reference_entry else None
+    if not ref_time and len(normalized) <= 1:
+        return normalized
+
+    output = [dict(entry) for entry in normalized]
+    changed = False
+
+    if ref_time:
+        ref_start, ref_end = ref_time
+        first_start, first_end = subtitle_time_range(output[0])
+        min_start = ref_start
+        if previous_end is not None:
+            min_start = max(min_start, float(previous_end))
+        if previous_end is not None and first_start - min_start > 0.03 and first_end > min_start:
+            leading_gap = first_start - min_start
+            if leading_gap <= max_gap:
+                output[0]["time"] = [round(min_start, 2), first_end]
+                changed = True
+
+        last_start, last_end = subtitle_time_range(output[-1])
+        trailing_gap = ref_end - last_end
+        if trailing_gap > 0.03 and trailing_gap <= max_gap and ref_end > last_start:
+            output[-1]["time"] = [last_start, round(ref_end, 2)]
+            changed = True
+
+    for index in range(len(output) - 1):
+        current_time = subtitle_time_range(output[index])
+        next_time = subtitle_time_range(output[index + 1])
+        if not current_time or not next_time:
+            continue
+        current_start, current_end = current_time
+        next_start, next_end = next_time
+        gap = next_start - current_end
+        if gap <= 0.03 or gap > max_gap:
+            continue
+
+        current_load = normalized_subtitle_reading_load(output[index])
+        next_load = normalized_subtitle_reading_load(output[index + 1])
+        if current_load >= next_load:
+            output[index]["time"] = [current_start, round(next_start, 2)]
+        else:
+            output[index + 1]["time"] = [round(current_end, 2), next_end]
+        changed = True
+
+    if changed:
+        print("   ✅ 已闭合参考字幕连续口播空隙")
+    return normalize_final_subtitles(output)
+
+
+def extend_reference_authority_block_tail(
+    entries,
+    reference_entry=None,
+    max_extension=REFERENCE_AUTHORITY_MAX_TAIL_EXTENSION_SECONDS,
+):
+    normalized = normalize_final_subtitles(entries)
+    ref_time = subtitle_time_range(reference_entry) if reference_entry else None
+    if not normalized or not ref_time:
+        return normalized
+
+    _ref_start, ref_end = ref_time
+    output = [dict(entry) for entry in normalized]
+    last_start, last_end = subtitle_time_range(output[-1])
+    trailing_gap = ref_end - last_end
+    if trailing_gap <= 0.03 or trailing_gap > max_extension or ref_end <= last_start:
+        return normalized
+
+    output[-1]["time"] = [last_start, round(ref_end, 2)]
+    print("   ✅ 已延长参考字幕尾段到口播结束")
+    return normalize_final_subtitles(output)
+
+
+def finalize_reference_authority_block(
+    entries,
+    source_entries,
+    reference_entry=None,
+    split_config=None,
+    use_polish=True,
+    previous_end=None,
+    close_continuous_gaps=False,
+):
     block_entries = normalize_final_subtitles(entries)
     if use_polish:
         block_entries = polish_readable_subtitle_segments(block_entries, split_config, use_llm=False)
     block_entries = balance_reference_authority_group_timing(block_entries, source_entries, reference_entry)
-    return close_short_reference_authority_gaps(block_entries)
+    block_entries = close_short_reference_authority_gaps(block_entries)
+    if close_continuous_gaps:
+        block_entries = close_continuous_reference_authority_gaps(
+            block_entries,
+            reference_entry,
+            previous_end=previous_end,
+        )
+        block_entries = extend_reference_authority_block_tail(block_entries, reference_entry)
+    return block_entries
 
 
 def reference_authority_retry_count():
     try:
-        return max(1, int(os.getenv("REFERENCE_AUTHORITY_LLM_RETRIES", "3")))
+        return max(5, int(os.getenv("REFERENCE_AUTHORITY_LLM_RETRIES", "5")))
     except (TypeError, ValueError):
-        return 3
+        return 5
 
 
 def reference_authority_has_readable_atoms(asr_entries, reference, split_config=None):
-    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
+    reference_pieces = split_reference_text_by_asr_segments(reference, normalized_asr_entries)
     piece_spans = build_reference_piece_spans(reference, reference_pieces)
     if not piece_spans:
         return False
-    return bool(build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config))
+    return bool(build_reference_readable_atoms(normalized_asr_entries, reference, piece_spans, split_config))
 
 
 def build_allowed_reference_atom_ranges(reference, atoms, split_config=None):
@@ -3051,7 +3815,11 @@ def build_allowed_reference_atom_ranges(reference, atoms, split_config=None):
             duration = end_time - start_time
             if duration > max_duration:
                 break
-            if duration + 0.03 < minimum_display_duration_for_text(text):
+            if has_intolerable_reference_authority_duration({
+                "time": [start_time, end_time],
+                "zh": text,
+                "text": text,
+            }):
                 continue
             ranges.append({
                 "start_atom_index": start_index,
@@ -3063,6 +3831,7 @@ def build_allowed_reference_atom_ranges(reference, atoms, split_config=None):
 def build_reference_authority_prompt(asr_entries, reference_text, source_language="", split_config=None, retry_index=0, failure_reason=""):
     split_config = resolve_split_config(split_config)
     reference = apply_domain_corrections(str(reference_text or "").strip())
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
     payload = {
         "source_language": source_language or "auto",
         "reference_text": reference,
@@ -3072,12 +3841,12 @@ def build_reference_authority_prompt(asr_entries, reference_text, source_languag
                 "time": list(subtitle_time_range(entry) or []),
                 "asr_text": get_subtitle_primary_text(entry),
             }
-            for index, entry in enumerate(asr_entries)
+            for index, entry in enumerate(normalized_asr_entries)
         ],
     }
-    reference_pieces = split_reference_text_by_asr_segments(reference, asr_entries)
+    reference_pieces = split_reference_text_by_asr_segments(reference, normalized_asr_entries)
     piece_spans = build_reference_piece_spans(reference, reference_pieces)
-    atoms = build_reference_readable_atoms(asr_entries, reference, piece_spans, split_config) if piece_spans else []
+    atoms = build_reference_readable_atoms(normalized_asr_entries, reference, piece_spans, split_config) if piece_spans else []
     if atoms:
         payload["reference_atoms"] = [
             {
@@ -3118,7 +3887,8 @@ def build_reference_authority_prompt(asr_entries, reference_text, source_languag
 def align_reference_authority_with_llm(asr_entries, reference_text, source_language="", split_config=None, strict=False):
     split_config = resolve_split_config(split_config)
     reference = apply_domain_corrections(str(reference_text or "").strip())
-    if len(asr_entries or []) <= 1 or not reference:
+    normalized_asr_entries = merge_reference_authority_micro_asr_fragments(asr_entries)
+    if len(normalized_asr_entries or []) <= 1 or not reference:
         return []
 
     max_attempts = reference_authority_retry_count() if strict else 1
@@ -3126,7 +3896,7 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
     client = None
     model = None
     last_error = ""
-    require_atom_groups = strict and reference_authority_has_readable_atoms(asr_entries, reference, split_config)
+    require_atom_groups = strict and reference_authority_has_readable_atoms(normalized_asr_entries, reference, split_config)
     for attempt in range(max_attempts):
         attempt_error = ""
         try:
@@ -3139,7 +3909,7 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
                 client = create_llm_client(provider=provider)
                 model = get_text_model_for_provider(provider)
             prompt = build_reference_authority_prompt(
-                asr_entries,
+                normalized_asr_entries,
                 reference,
                 source_language=source_language,
                 split_config=split_config,
@@ -3159,11 +3929,18 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
                 for item in (results if isinstance(results, list) else [])
                 if isinstance(item, dict)
             ):
-                validated = []
-                attempt_error = "模型未按 reference_atoms 返回分组"
+                validated = validate_reference_authority_llm_results(
+                    normalized_asr_entries,
+                    reference,
+                    results,
+                    split_config,
+                    require_atom_groups=require_atom_groups,
+                )
+                if not validated:
+                    attempt_error = "模型未按 reference_atoms 返回分组"
             else:
                 validated = validate_reference_authority_llm_results(
-                    asr_entries,
+                    normalized_asr_entries,
                     reference,
                     results,
                     split_config,
@@ -3171,7 +3948,7 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
                 )
                 if not validated:
                     attempt_error = diagnose_reference_authority_llm_results(
-                        asr_entries,
+                        normalized_asr_entries,
                         reference,
                         results,
                         split_config,
@@ -3184,14 +3961,7 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
                     "reason": attempt_error or "unknown_validation_failure",
                     "require_atom_groups": require_atom_groups,
                     "reference_text": reference,
-                    "asr_segments": [
-                        {
-                            "index": index,
-                            "time": list(subtitle_time_range(entry) or []),
-                            "asr_text": get_subtitle_primary_text(entry),
-                        }
-                        for index, entry in enumerate(asr_entries)
-                    ],
+                    "asr_segments": reference_authority_asr_debug_segments(normalized_asr_entries),
                     "llm_results": results,
                 })
             if validated:
@@ -3218,8 +3988,8 @@ def align_reference_authority_with_llm(asr_entries, reference_text, source_langu
 
 
 def asr_entry_text_matches_reference(entry, reference_text):
-    asr_visible = visible_text(get_subtitle_primary_text(entry)).lower()
-    reference_visible = visible_text(reference_text).lower()
+    asr_visible = normalize_visible_text_for_reference_match(get_subtitle_primary_text(entry))
+    reference_visible = normalize_visible_text_for_reference_match(reference_text)
     if len(asr_visible) < 2 or not reference_visible:
         return False
     if asr_visible in reference_visible:
@@ -3235,8 +4005,8 @@ def asr_entry_text_matches_reference(entry, reference_text):
 
 
 def asr_entry_text_matches_reference_prefix(entry, reference_text):
-    asr_visible = visible_text(get_subtitle_primary_text(entry)).lower()
-    reference_visible = visible_text(reference_text).lower()
+    asr_visible = normalize_visible_text_for_reference_match(get_subtitle_primary_text(entry))
+    reference_visible = normalize_visible_text_for_reference_match(reference_text)
     if len(asr_visible) < 2 or not reference_visible:
         return False
     if reference_visible.startswith(asr_visible):
@@ -3246,6 +4016,21 @@ def asr_entry_text_matches_reference_prefix(entry, reference_text):
     if len(asr_visible) <= 4:
         required = len(asr_visible)
     return prefix_len >= max(2, required)
+
+
+def asr_entry_should_belong_to_next_reference(entry, reference_text, next_reference_text):
+    if not next_reference_text:
+        return False
+    asr_visible = normalize_visible_text_for_reference_match(get_subtitle_primary_text(entry))
+    reference_visible = normalize_visible_text_for_reference_match(reference_text)
+    next_visible = normalize_visible_text_for_reference_match(next_reference_text)
+    if len(asr_visible) < 2 or len(asr_visible) > REFERENCE_AUTHORITY_NEXT_PREFIX_MAX_VISIBLE_CHARS:
+        return False
+    next_prefix_len = common_prefix_length(asr_visible, next_visible)
+    if next_prefix_len < max(2, min(len(asr_visible), 6)):
+        return False
+    current_suffix_len = common_suffix_length(asr_visible, reference_visible)
+    return current_suffix_len < max(2, min(len(asr_visible), 4))
 
 
 def collect_asr_entries_for_reference(asr_entries, reference_entry, used_indices, next_reference_entry=None):
@@ -3267,6 +4052,36 @@ def collect_asr_entries_for_reference(asr_entries, reference_entry, used_indices
         center = (start + end) / 2.0
         if time_overlap_ratio(start, end, ref_start, ref_end) > 0 or ref_start <= center <= ref_end:
             selected.append((index, entry))
+
+    if selected and next_reference_text:
+        while len(selected) > 1:
+            _index, entry = selected[-1]
+            entry_time = subtitle_time_range(entry)
+            gap_to_next = min(
+                abs(ref_end - entry_time[0]),
+                abs(ref_end - entry_time[1]),
+            ) if entry_time else 0
+            if gap_to_next > REFERENCE_AUTHORITY_NEXT_PREFIX_MAX_GAP_SECONDS:
+                break
+            if not asr_entry_should_belong_to_next_reference(entry, reference_text, next_reference_text):
+                break
+            selected.pop()
+
+    first_selected_index = selected[0][0] if selected else len(asr_entries)
+    for index, entry in enumerate(asr_entries[:first_selected_index]):
+        if index in used_indices:
+            continue
+        entry_time = subtitle_time_range(entry)
+        if not entry_time:
+            continue
+        start, end = entry_time
+        if end < ref_start - REFERENCE_AUTHORITY_NEXT_PREFIX_MAX_GAP_SECONDS:
+            continue
+        if start - ref_start > REFERENCE_AUTHORITY_NEXT_PREFIX_MAX_GAP_SECONDS:
+            continue
+        if asr_entry_text_matches_reference_prefix(entry, reference_text):
+            selected.insert(0, (index, entry))
+            break
 
     if selected:
         cursor = selected[-1][0] + 1
@@ -3368,13 +4183,18 @@ def build_reference_authority_subtitles(
             selected_indices = [index for index, _entry in selected]
             selected_entries = [_entry for _index, _entry in selected]
             if use_llm:
-                llm_entries = align_reference_authority_with_llm(
-                    selected_entries,
-                    reference_text,
-                    source_language=source_language,
-                    split_config=split_config,
-                    strict=strict,
-                )
+                llm_failure_reason = ""
+                try:
+                    llm_entries = align_reference_authority_with_llm(
+                        selected_entries,
+                        reference_text,
+                        source_language=source_language,
+                        split_config=split_config,
+                        strict=strict,
+                    )
+                except ReferenceAuthorityAlignmentError as err:
+                    llm_entries = []
+                    llm_failure_reason = str(err)
                 if llm_entries:
                     block_entries = clamp_reference_authority_timing(
                         llm_entries,
@@ -3388,11 +4208,26 @@ def build_reference_authority_subtitles(
                         reference_entry,
                         split_config,
                         use_polish=False,
+                        previous_end=subtitle_time_range(output[-1])[1] if output else None,
+                        close_continuous_gaps=strict,
                     ))
                     used_indices.update(selected_indices)
                     continue
                 if strict:
-                    raise ReferenceAuthorityAlignmentError("参考文本权威分配未返回可验证结果")
+                    block_entries = build_reference_authority_failsoft_block(
+                        selected_entries,
+                        reference_entry,
+                        split_config,
+                        previous_end=subtitle_time_range(output[-1])[1] if output else None,
+                        reason=llm_failure_reason or "参考文本权威分配未返回可验证结果",
+                    )
+                    if block_entries:
+                        output.extend(block_entries)
+                        used_indices.update(selected_indices)
+                        continue
+                    raise ReferenceAuthorityAlignmentError(
+                        llm_failure_reason or "参考文本权威分配未返回可验证结果"
+                    )
             fallback_entries = build_reference_authority_entries(
                 selected_entries,
                 reference_chunks,
@@ -3410,6 +4245,8 @@ def build_reference_authority_subtitles(
                 reference_entry,
                 split_config,
                 use_polish=True,
+                previous_end=subtitle_time_range(output[-1])[1] if output else None,
+                close_continuous_gaps=strict,
             ))
             used_indices.update(selected_indices)
             continue
@@ -3430,6 +4267,8 @@ def build_reference_authority_subtitles(
                 reference_entry,
                 split_config,
                 use_polish=True,
+                previous_end=subtitle_time_range(output[-1])[1] if output else None,
+                close_continuous_gaps=strict,
             ))
 
     if not output:
@@ -3442,7 +4281,16 @@ def build_reference_authority_subtitles(
     if timing_issues:
         issue_summary = ", ".join(f"{index}:{reason}" for index, reason, _text in timing_issues[:3])
         if strict:
-            raise ReferenceAuthorityAlignmentError(f"参考文本权威字幕时间轴质量异常: {issue_summary}")
+            print(f"   ⚠️ 参考文本权威字幕时间轴质量异常，回退参考段时间轴: {issue_summary}")
+            append_reference_authority_fallback_debug_event(
+                "reference_subtitle_timing",
+                f"参考文本权威字幕时间轴质量异常: {issue_summary}",
+                reference_text="".join(get_subtitle_primary_text(item) for item in reference_entries),
+                asr_entries=asr_entries,
+                fallback_entries=reference_entries,
+                details={"timing_issues": issue_summary},
+            )
+            return normalize_final_subtitles(reference_entries)
         if use_llm:
             print(f"   ⚠️ 参考文本权威字幕时间轴质量异常，改用确定性分配: {issue_summary}")
             return build_reference_authority_subtitles(

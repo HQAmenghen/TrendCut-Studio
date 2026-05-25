@@ -242,6 +242,63 @@ describe('standalone vertical task import', () => {
     ]);
   });
 
+  test('passes uploaded outro video to standalone vertical renderer', async () => {
+    const inputVideoPath = path.join(runtimeDir, 'upload.mp4');
+    const outroUploadPath = path.join(runtimeDir, 'outro-upload.mp4');
+    fs.writeFileSync(inputVideoPath, 'task video');
+    fs.writeFileSync(outroUploadPath, 'outro video');
+    const runPythonScript = jest.fn(async (_scriptPath, args) => {
+      const outputPath = args[args.indexOf('--output') + 1];
+      fs.writeFileSync(outputPath, 'vertical video with outro');
+    });
+    const handler = createStandaloneHandler({
+      sendError: (res, options) => res.status(options.status || 500).json(options),
+      baseDir: tempRoot,
+      pipelineDir,
+      projectsDir,
+      upload: { fields: () => [] },
+      getProgressClient: () => null,
+      sendProgressEvent: jest.fn(),
+      createRuntimeJobDir: () => runtimeDir,
+      generateHotTitle: jest.fn(async () => 'fallback title'),
+      writeJsonFile: (filePath, payload) => writeJson(filePath, payload),
+      writeMediaMetadata: (filePath, payload) => writeJson(`${filePath}.meta.json`, payload),
+      readJsonIfExists: (filePath, fallback) => {
+        if (!fs.existsSync(filePath)) return fallback;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      },
+      runPythonScript
+    });
+    const req = {
+      body: {
+        clientId: 'client-1',
+        renderOptions: '{}',
+        useASR: 'false',
+        title: '手动标题'
+      },
+      files: {
+        video: [{ path: inputVideoPath }],
+        outro: [{ path: outroUploadPath, originalname: 'brand-outro.mp4' }]
+      }
+    };
+    const res = createResponse();
+
+    await handler.handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(runPythonScript).toHaveBeenCalledTimes(1);
+    const renderArgs = runPythonScript.mock.calls[0][1];
+    expect(renderArgs).toEqual(expect.arrayContaining([
+      '--outro',
+      path.join(runtimeDir, 'standalone_outro.mp4')
+    ]));
+    expect(fs.readFileSync(path.join(runtimeDir, 'standalone_outro.mp4'), 'utf8')).toBe('outro video');
+    expect(JSON.parse(fs.readFileSync(path.join(publicDir, 'standalone_output_vertical.mp4.meta.json'), 'utf8'))).toMatchObject({
+      title: '手动标题',
+      outroSource: 'brand-outro.mp4'
+    });
+  });
+
   test('uses reference subtitles as ASR alignment input when standalone is routed from vertical sync', async () => {
     const inputVideoPath = path.join(runtimeDir, 'upload.mp4');
     fs.writeFileSync(inputVideoPath, 'task video');
@@ -384,6 +441,82 @@ describe('standalone vertical task import', () => {
     expect(res.statusCode).toBe(200);
     const asrCalls = runPythonScript.mock.calls.filter(([scriptPath]) => scriptPath.endsWith('run_asr.py'));
     expect(asrCalls).toHaveLength(2);
+    expect(runPythonScript.mock.calls.some(([scriptPath]) => scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
+  });
+
+  test('falls back to plain standalone ASR when strict reference authority keeps failing', async () => {
+    const inputVideoPath = path.join(runtimeDir, 'upload.mp4');
+    fs.writeFileSync(inputVideoPath, 'task video');
+    const referencePayload = [
+      { time: [0, 2.4], zh: '更关键的是，机构采用已经落地。' }
+    ];
+    const runPythonScript = jest.fn(async (scriptPath, args, options = {}) => {
+      if (scriptPath.endsWith('run_asr.py')) {
+        const usesReferenceAuthority = args.includes('--reference-text-authority');
+        if (usesReferenceAuthority) {
+          const err = new Error('参考文本字幕时间轴未通过严格校验');
+          err.code = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
+          err.stage = 'subtitle_reference_authority';
+          err.details = 'atom_span_not_contiguous:expected_0_got_1';
+          throw err;
+        }
+        const subtitlesPath = path.join(options.cwd || runtimeDir, 'subtitles.json');
+        const audioPath = path.join(options.cwd || runtimeDir, 'audio.json');
+        const subtitles = [{ time: [0, 2.4], zh: '普通 ASR 字幕', text: '普通 ASR 字幕' }];
+        fs.writeFileSync(audioPath, JSON.stringify(subtitles, null, 2));
+        fs.writeFileSync(subtitlesPath, JSON.stringify(subtitles, null, 2));
+        return;
+      }
+
+      if (scriptPath.endsWith('make_vertical_video.py')) {
+        const outputPath = args[args.indexOf('--output') + 1];
+        fs.writeFileSync(outputPath, 'vertical video');
+      }
+    });
+
+    const handler = createStandaloneHandler({
+      sendError: (res, options) => res.status(options.status || 500).json(options),
+      baseDir: tempRoot,
+      pipelineDir,
+      projectsDir,
+      upload: { fields: () => [] },
+      getProgressClient: () => null,
+      sendProgressEvent: jest.fn(),
+      createRuntimeJobDir: () => runtimeDir,
+      generateHotTitle: jest.fn(async () => 'fallback title'),
+      writeJsonFile: (filePath, payload) => writeJson(filePath, payload),
+      writeMediaMetadata: (filePath, payload) => writeJson(`${filePath}.meta.json`, payload),
+      readJsonIfExists: (filePath, fallback) => {
+        if (!fs.existsSync(filePath)) return fallback;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      },
+      runPythonScript
+    });
+    const req = {
+      body: {
+        clientId: 'client-1',
+        renderOptions: '{}',
+        useASR: 'true',
+        subtitlesPayload: JSON.stringify(referencePayload)
+      },
+      files: {
+        video: [{ path: inputVideoPath }]
+      }
+    };
+    const res = createResponse();
+
+    await handler.handler(req, res);
+
+    expect(res.statusCode).toBe(200);
+    const asrCalls = runPythonScript.mock.calls.filter(([scriptPath]) => scriptPath.endsWith('run_asr.py'));
+    expect(asrCalls).toHaveLength(3);
+    expect(asrCalls[0][1]).toContain('--reference-text-authority');
+    expect(asrCalls[1][1]).toContain('--reference-text-authority');
+    expect(asrCalls[2][1]).not.toContain('--reference-text-authority');
+    expect(asrCalls[2][1]).not.toContain('--reference-subtitles-json');
+    expect(JSON.parse(fs.readFileSync(path.join(runtimeDir, 'subtitles.json'), 'utf8'))).toEqual([
+      { time: [0, 2.4], zh: '普通 ASR 字幕', text: '普通 ASR 字幕' }
+    ]);
     expect(runPythonScript.mock.calls.some(([scriptPath]) => scriptPath.endsWith('make_vertical_video.py'))).toBe(true);
   });
 

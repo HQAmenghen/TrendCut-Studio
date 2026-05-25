@@ -1,0 +1,3 @@
+display_name: Video Assistant Agent
+short_description: Local video workflow MCP guide
+default_prompt: Use local MCP tools for hotspots, vertical rendering, and publish schedules.

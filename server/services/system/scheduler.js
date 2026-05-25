@@ -7,8 +7,10 @@ const { runCleanup, getCleanupConfig } = require('../../core/cleanup');
 const SCHEDULER_TIME_ZONE = 'Asia/Shanghai';
 const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.log');
 const DEFAULT_XAI_PARTITION_ID = 'crypto';
-const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu'];
+const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu', 'x'];
 const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
+const DEFAULT_AVATAR_AUDIO_PRESET = '毕.mp3';
+const DEFAULT_AVATAR_IMAGE_PRESET = '毕（保守）.png';
 const DEFAULT_LOGIN_CHECK_INTERVAL_MINUTES = 30;
 const LOGIN_CHECK_CRON_EXPRESSION = '* * * * *';
 const LOGIN_CHECK_MS_PER_MINUTE = 60 * 1000;
@@ -235,9 +237,15 @@ function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
   const platforms = Array.isArray(schedule.platforms)
     ? trimTrailingEmptyPlatformRows(schedule.platforms)
     : [];
+  const audioPresets = Array.isArray(schedule.audioPresets)
+    ? trimTrailingEmptyStrings(schedule.audioPresets)
+    : [];
+  const imagePresets = Array.isArray(schedule.imagePresets)
+    ? trimTrailingEmptyStrings(schedule.imagePresets)
+    : [];
 
-  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length) {
-    return { accountIds, times, partitionIds, sourceRanks, platforms };
+  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length || audioPresets.length || imagePresets.length) {
+    return { accountIds, times, partitionIds, sourceRanks, platforms, audioPresets, imagePresets };
   }
 
   return {
@@ -249,7 +257,9 @@ function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
       : [],
     partitionIds: [],
     sourceRanks: [],
-    platforms: []
+    platforms: [],
+    audioPresets: [],
+    imagePresets: []
   };
 }
 
@@ -273,6 +283,19 @@ function getAutoPilotSlotSourceRank(config = {}, pipelineMode = 'vertical', rank
   return normalizeAutoPilotSourceRank(modeSchedule.sourceRanks?.[rankIndex], rankIndex + 1);
 }
 
+function getAutoPilotSlotAvatarConfig(config = {}, pipelineMode = 'vertical', rankIndex = 0) {
+  const base = config?.global?.avatarPipelineConfig || {};
+  const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+  if (String(pipelineMode || '').trim() !== 'avatar') {
+    return { ...base };
+  }
+  return {
+    ...base,
+    audioPreset: String(modeSchedule.audioPresets?.[rankIndex] || base.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET).trim(),
+    imagePreset: String(modeSchedule.imagePresets?.[rankIndex] || base.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET).trim()
+  };
+}
+
 function getAutoPilotRequiredPartitionIds(config = {}) {
   const partitionIds = new Set();
   const configCount = Math.max(1, Number(config?.global?.autoPilotCount) || 1);
@@ -283,7 +306,9 @@ function getAutoPilotRequiredPartitionIds(config = {}) {
       modeSchedule.accountIds?.length || 0,
       modeSchedule.partitionIds?.length || 0,
       modeSchedule.sourceRanks?.length || 0,
-      modeSchedule.platforms?.length || 0
+      modeSchedule.platforms?.length || 0,
+      modeSchedule.audioPresets?.length || 0,
+      modeSchedule.imagePresets?.length || 0
     );
     for (let index = 0; index < count; index += 1) {
       partitionIds.add(getAutoPilotSlotPartitionId(config, pipelineMode, index));
@@ -313,6 +338,26 @@ function getWechatAccountId(job) {
     || (job?.platformTasks || []).find((task) => task.platform === 'wechatChannels')?.accountId
     || ''
   ).trim();
+}
+
+function buildAutoPilotPlatformSelections(config = {}, selectedPlatforms = [], wechatAccount = null) {
+  const selections = {};
+  if (selectedPlatforms.includes('wechatChannels') && wechatAccount) {
+    selections.wechatChannels = {
+      accountId: wechatAccount.id,
+      accountLabel: wechatAccount.displayName || wechatAccount.finderUserName || wechatAccount.helperAccount || ''
+    };
+  }
+  if (selectedPlatforms.includes('x')) {
+    const xAccount = Array.isArray(config?.x?.accounts) ? config.x.accounts[0] : null;
+    if (xAccount) {
+      selections.x = {
+        accountId: xAccount.id,
+        accountLabel: xAccount.displayName || xAccount.username || xAccount.userId || ''
+      };
+    }
+  }
+  return selections;
 }
 
 function getJobSourceVideoKey(job) {
@@ -395,7 +440,16 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     const targetPartitionIds = modeSchedule.partitionIds || [];
     const targetSourceRanks = modeSchedule.sourceRanks || [];
     const targetPlatforms = modeSchedule.platforms || [];
-    const mappingLength = Math.max(targetAccountIds.length, targetPartitionIds.length, targetSourceRanks.length, targetPlatforms.length);
+    const targetAudioPresets = modeSchedule.audioPresets || [];
+    const targetImagePresets = modeSchedule.imagePresets || [];
+    const mappingLength = Math.max(
+      targetAccountIds.length,
+      targetPartitionIds.length,
+      targetSourceRanks.length,
+      targetPlatforms.length,
+      targetAudioPresets.length,
+      targetImagePresets.length
+    );
     const count = Math.max(configCount, mappingLength);
     const sourceIndexByPartition = new Map();
     let rank = 0;
@@ -500,7 +554,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
 
         if (pipelineMode === 'avatar' && materialDrivenStarter && typeof materialDrivenStarter.start === 'function') {
           try {
-            const avatarConfig = config?.global?.avatarPipelineConfig || {};
+            const avatarConfig = getAutoPilotSlotAvatarConfig(config, pipelineMode, rank);
             avatarPendingQueue.push({
               rank,
               activeKey,
@@ -525,8 +579,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
                 runningHubImageNodeId: avatarConfig.runningHubImageNodeId || '',
                 runningHubImageFieldName: avatarConfig.runningHubImageFieldName || '',
                 runningHubOutputNodeId: avatarConfig.runningHubOutputNodeId || '',
-                audioPreset: avatarConfig.audioPreset || '',
-                imagePreset: avatarConfig.imagePreset || '',
+                audioPreset: avatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+                imagePreset: avatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET,
                 genText: avatarConfig.genText || ''
               }
             });
@@ -782,6 +836,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0,
             avatarConfig: pendingTask.avatarConfig
           });
+          const startedAvatarConfig = pendingTask.avatarConfig || {};
           autoPilotAvatarJobs.set(avatarJobId, {
             rank: pendingTask.rank,
             activeKey: pendingTask.activeKey,
@@ -796,6 +851,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             sourcePartitionId: pendingTask.sourcePartitionId || pendingTask.normalized.sourcePartitionId || '',
             sourcePartitionLabel: pendingTask.sourcePartitionLabel || pendingTask.normalized.sourcePartitionLabel || '',
             sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0,
+            avatarConfig: {
+              audioPreset: startedAvatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+              imagePreset: startedAvatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET
+            },
             platforms: pendingTask.platforms || DEFAULT_AUTO_PILOT_PLATFORMS
           });
           logInfo('[AutoPilot] 调度器从队列中启动了新的 AI剪辑+数字人 任务', {
@@ -804,6 +863,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             outputPath: avatarOutputPath,
             title: pendingTask.normalized.title,
             pipelineMode: pendingTask.pipelineMode || 'avatar',
+            audioPreset: startedAvatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+            imagePreset: startedAvatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET,
             remainingInQueue: avatarPendingQueue.length
           });
         } catch (err) {
@@ -882,7 +943,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               platforms: meta.platforms || DEFAULT_AUTO_PILOT_PLATFORMS,
               sourcePartitionId: meta.sourcePartitionId || '',
               sourcePartitionLabel: meta.sourcePartitionLabel || '',
-              sourceRank: meta.sourceRank || 0
+              sourceRank: meta.sourceRank || 0,
+              avatarConfig: meta.avatarConfig || {}
             });
             logInfo('[AutoPilot:Avatar] 数字人成片已送入竖屏渲染队列', {
               avatarJobId,
@@ -1051,13 +1113,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             asset,
             publishData,
             selectedPlatforms,
-            platformSelections: shouldPublishWechat
-              ? {
-                wechatChannels: account
-                  ? { accountId: account.id, accountLabel: account.displayName || account.finderUserName || account.helperAccount || '' }
-                  : {}
-              }
-              : {},
+            platformSelections: buildAutoPilotPlatformSelections(config, selectedPlatforms, account),
             platformErrors: [],
             autoPilot: {
               queueJobId: vjobId,
@@ -1070,7 +1126,15 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               sourceMode: typeof meta === 'object' ? meta.sourceMode || '' : '',
               sourcePartitionId: sourcePartitionId || asset.metadata?.sourcePartitionId || '',
               sourcePartitionLabel: sourcePartitionLabel || asset.metadata?.sourcePartitionLabel || '',
-              sourceRank: sourceRank || asset.metadata?.sourceRank || 0
+              sourceRank: sourceRank || asset.metadata?.sourceRank || 0,
+              ...(pipelineMode === 'avatar'
+                ? {
+                  avatarConfig: {
+                    audioPreset: meta?.avatarConfig?.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+                    imagePreset: meta?.avatarConfig?.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET
+                  }
+                }
+                : {})
             }
           };
 

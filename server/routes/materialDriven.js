@@ -162,6 +162,7 @@ function registerMaterialDrivenRoutes(app, paths) {
         useSmartClip,
         useCache,
         autoGenerate,
+        allowRuleFallback: true,
         status: 'running',
         currentStep: 1,
         progress: 2,

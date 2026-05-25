@@ -219,10 +219,34 @@ class ScriptRewriterSkill(BaseSkill):
                     return text
             return ""
 
-        title = str(payload.get("title") or "").strip()
-        body = str(payload.get("body") or "").strip()
-        post_url = str(payload.get("postUrl") or "").strip()
-        material_url = str(payload.get("materialUrl") or "").strip()
+        post_url = pick_string(
+            payload.get("postUrl"),
+            payload.get("post_url"),
+            source_meta.get("postUrl"),
+            source_meta.get("post_url"),
+        )
+        material_url = pick_string(
+            payload.get("materialUrl"),
+            payload.get("material_url"),
+            source_meta.get("materialUrl"),
+            source_meta.get("material_url"),
+        )
+        url_author_match = re.search(r"(?:x|twitter)\.com/([^/?#]+)", post_url, re.IGNORECASE)
+        source_author = pick_string(
+            payload.get("author"),
+            payload.get("sourceAuthor"),
+            payload.get("source_author"),
+            payload.get("postAuthor"),
+            payload.get("post_author"),
+            source_meta.get("sourceAuthor"),
+            source_meta.get("source_author"),
+            source_meta.get("postAuthor"),
+            source_meta.get("post_author"),
+            url_author_match.group(1) if url_author_match else "",
+        )
+        forbidden_terms = self._build_source_account_terms(source_author)
+        title = self._strip_source_account_from_source_text(str(payload.get("title") or "").strip(), forbidden_terms)
+        body = self._strip_source_account_from_source_text(str(payload.get("body") or "").strip(), forbidden_terms)
         source_rank_raw = pick_string(
             payload.get("sourceRank"),
             payload.get("source_rank"),
@@ -254,7 +278,8 @@ class ScriptRewriterSkill(BaseSkill):
         return {
             "title": title,
             "body": body,
-            "author": pick_string(payload.get("author"), payload.get("sourceAuthor")),
+            "author": source_author,
+            "forbidden_source_account_terms": forbidden_terms,
             "postId": pick_string(payload.get("postId"), payload.get("post_id"), payload.get("sourcePostId")),
             "post_url": post_url,
             "material_url": material_url,
@@ -266,6 +291,64 @@ class ScriptRewriterSkill(BaseSkill):
                 "sourcePartitionLabel": source_partition_label,
                 "sourceRank": source_rank,
             },
+        }
+
+    def _build_source_account_terms(self, source_author: Any) -> List[str]:
+        raw = str(source_author or "").strip()
+        if not raw:
+            return []
+        stripped = raw.lstrip("@").strip()
+        if re.search(r"\s", stripped):
+            return []
+        candidates = [raw, stripped, f"@{stripped}" if stripped else ""]
+        normalized: List[str] = []
+        seen = set()
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text)
+        return normalized
+
+    def _strip_source_account_from_source_text(self, text: str, forbidden_terms: List[str]) -> str:
+        cleaned = str(text or "")
+        for term in forbidden_terms or []:
+            bare = str(term or "").lstrip("@").strip()
+            if not bare:
+                continue
+            escaped = re.escape(bare)
+            cleaned = re.sub(
+                rf"(?i)^{escaped}\s*(?:账号)?(?:分享|发布|转发|直播|报道|称|表示|说|今天直播)(?:了)?[，,：:\s-]*",
+                "",
+                cleaned,
+            )
+            cleaned = re.sub(rf"(?i)@{escaped}\s*[-:：,，]?\s*", "", cleaned)
+            cleaned = re.sub(rf"(?i)^{escaped}\s*[-:：,，]\s*", "", cleaned)
+        cleaned = re.sub(r"^\s*[-:：,，]\s*", "", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned.strip()
+
+    def _source_post_for_prompt(self, source_post_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove monitoring-account metadata before exposing source context to the LLM."""
+        return {
+            "title": str(source_post_info.get("title") or "").strip(),
+            "body": str(source_post_info.get("body") or "").strip(),
+            "material_url": str(source_post_info.get("material_url") or "").strip(),
+            "sourcePartitionId": str(source_post_info.get("sourcePartitionId") or "").strip(),
+            "sourcePartitionLabel": str(source_post_info.get("sourcePartitionLabel") or "").strip(),
+        }
+
+    def _source_focus_for_prompt(self, source_focus: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(source_focus, dict):
+            return {}
+        return {
+            key: value
+            for key, value in source_focus.items()
+            if key != "forbidden_source_account_terms"
         }
 
     def _tokenize(self, text: str) -> List[str]:
@@ -447,6 +530,7 @@ class ScriptRewriterSkill(BaseSkill):
                 if not raw_text
                 else "优先吸收原帖里的结果、收益、胜率、交易次数、时间窗口、方法名称和目标资产。"
             ),
+            "forbidden_source_account_terms": source_post_info.get("forbidden_source_account_terms") or [],
         }
 
     def _text_contains_priority_cue(self, text: str, cue: str) -> bool:
@@ -612,6 +696,8 @@ class ScriptRewriterSkill(BaseSkill):
         current_units: List[Dict[str, Any]],
         out_of_scope_terms: List[str] | None = None,
         style_violations: List[str] | None = None,
+        source_account_mentions: List[str] | None = None,
+        parenthetical_glosses: List[str] | None = None,
     ) -> str:
         current_text = [str(item.get("text") or "").strip() for item in current_units if str(item.get("text") or "").strip()]
         extra_constraints: List[str] = []
@@ -626,6 +712,18 @@ class ScriptRewriterSkill(BaseSkill):
             extra_constraints.append(
                 f"{next_rule_number}. 当前输出出现了 AI 模板化强转折句式: {json.dumps(style_violations, ensure_ascii=False)}。"
                 " 重写时必须改成直接陈述，严禁继续使用“这不是……而是……”“这可不是……而是……”“不再……而是……”这类对比模板。\n"
+            )
+            next_rule_number += 1
+        if source_account_mentions:
+            extra_constraints.append(
+                f"{next_rule_number}. 当前输出误把监控来源账号写进了口播: {json.dumps(source_account_mentions, ensure_ascii=False)}。"
+                " 这些只是抓取来源，不是视频内容主体，重写时必须完全移除；不要写“账号分享”“博主表示”“某账号称”。\n"
+            )
+            next_rule_number += 1
+        if parenthetical_glosses:
+            extra_constraints.append(
+                f"{next_rule_number}. 当前输出包含会被数字人读出来的括号英文注释: {json.dumps(parenthetical_glosses, ensure_ascii=False)}。"
+                " 重写时必须去掉括号注释、英文翻译夹注和中英双写，只保留自然中文口播。\n"
             )
             next_rule_number += 1
         return (
@@ -674,6 +772,61 @@ class ScriptRewriterSkill(BaseSkill):
                 str(item.get("reason") or ""),
             ])
         return " ".join(part for part in parts if part).lower()
+
+    def _script_text(self, script_units: List[Dict[str, Any]]) -> str:
+        return " ".join(str(item.get("text") or "") for item in script_units or [])
+
+    def _find_source_account_mentions(
+        self,
+        script_units: List[Dict[str, Any]],
+        source_focus: Dict[str, Any] | None,
+    ) -> List[str]:
+        if not isinstance(source_focus, dict):
+            return []
+        full_text = self._script_text(script_units)
+        if not full_text:
+            return []
+        lowered = full_text.lower()
+        found: List[str] = []
+        seen = set()
+        for term in source_focus.get("forbidden_source_account_terms") or []:
+            raw = str(term or "").strip()
+            bare = raw.lstrip("@＠").strip()
+            if not bare:
+                continue
+            bare_lower = bare.lower()
+            if len(bare_lower) < 3:
+                continue
+            if len(bare_lower) <= 4 and re.fullmatch(r"[a-z]+", bare_lower):
+                continue
+            if re.search(r"[a-z0-9]", bare_lower):
+                mentioned = bool(re.search(rf"(?<![a-z0-9])@?{re.escape(bare_lower)}(?![a-z0-9])", lowered))
+            else:
+                mentioned = bare_lower in lowered
+            if mentioned and bare not in seen:
+                seen.add(bare)
+                found.append(bare)
+        return found
+
+    def _detect_parenthetical_glosses(self, script_units: List[Dict[str, Any]]) -> List[str]:
+        full_text = self._script_text(script_units)
+        if not full_text:
+            return []
+        found: List[str] = []
+        seen = set()
+        for match in re.finditer(r"[\(（]([^()（）]{1,120})[\)）]", full_text):
+            inner = str(match.group(1) or "").strip()
+            if not inner:
+                continue
+            has_english = bool(re.search(r"[A-Za-z]", inner))
+            english_chars = len(re.findall(r"[A-Za-z]", inner))
+            cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", inner))
+            if has_english and english_chars >= max(3, cjk_chars):
+                phrase = match.group(0)
+                if phrase not in seen:
+                    seen.add(phrase)
+                    found.append(phrase)
+        return found
 
     def _detect_out_of_scope_phrases(self, script_units: List[Dict[str, Any]], context_blob: str) -> List[str]:
         generated = " ".join(str(item.get("text") or "") for item in (script_units or [])).lower()
@@ -738,6 +891,10 @@ class ScriptRewriterSkill(BaseSkill):
             return False
         if self._detect_ai_cliche_phrases(normalized_units):
             return False
+        if self._find_source_account_mentions(normalized_units, source_focus):
+            return False
+        if self._detect_parenthetical_glosses(normalized_units):
+            return False
         return True
 
     def _detect_ai_transition_templates(self, script_units: List[Dict[str, Any]]) -> List[str]:
@@ -773,6 +930,26 @@ class ScriptRewriterSkill(BaseSkill):
                 seen.add("sequential")
                 flagged.append("首先/其次序列连接词")
         return flagged
+
+    def _strip_parenthetical_glosses_from_text(self, text: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            inner = str(match.group(1) or "").strip()
+            if not inner:
+                return ""
+            has_english = bool(re.search(r"[A-Za-z]", inner))
+            english_chars = len(re.findall(r"[A-Za-z]", inner))
+            cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", inner))
+            if has_english and english_chars >= max(3, cjk_chars):
+                return ""
+            return match.group(0)
+
+        cleaned = re.sub(r"[\(（]([^()（）]{1,120})[\)）]", replace, str(text or ""))
+        cleaned = re.sub(r"\s+([，。！？；：])", r"\1", cleaned)
+        cleaned = re.sub(r"[，,]\s*([。！？])", r"\1", cleaned)
+        cleaned = re.sub(r"([\u4e00-\u9fff])([A-Za-z]+)", r"\1 \2", cleaned)
+        cleaned = re.sub(r"([A-Za-z]+)([\u4e00-\u9fff])", r"\1 \2", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned.strip()
 
     def _strip_ai_cliche_phrases(self, text: str) -> str:
         cleaned = str(text or "")
@@ -843,6 +1020,7 @@ class ScriptRewriterSkill(BaseSkill):
 
     def _sanitize_unit_text(self, text: str) -> str:
         cleaned = " ".join(str(text or "").split()).strip()
+        cleaned = self._strip_parenthetical_glosses_from_text(cleaned)
         cleaned = re.sub(r"^(好吧各位|好了各位|来试一试|看看会发生什么)[，,。！!\s]*", "", cleaned)
         cleaned = re.sub(r"^(这到底意味着什么|这背后到底意味着什么)[？?！!\s]*", "", cleaned)
         cleaned = re.sub(r"^(原帖称|原帖热传|原帖显示|发帖者强调(?:的是)?|帖子里说|这条帖子讲的是)[，,。:：\s]*", "", cleaned)
@@ -1237,7 +1415,10 @@ class ScriptRewriterSkill(BaseSkill):
             "}\n\n"
             f"内容类型：{str(route.get('content_type') or 'fast_news')}\n"
             f"目标时长：{str(route.get('duration_target') or outline.get('target_duration_sec') or 45)} 秒\n\n"
-            f"【原帖信息】\n{json.dumps(source_post_info, ensure_ascii=False, indent=2)}\n\n"
+            "7. 监控来源账号不是内容主体，禁止在口播 text 中出现账号名、@handle、"
+            "“账号分享”“博主表示”“某账号称”等来源归因。\n"
+            "8. voiceover 不允许出现括号英文注释、翻译夹注或中英双写；如果需要解释英文短语，改成自然中文句子。\n\n"
+            f"【原帖信息】\n{json.dumps(self._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2)}\n\n"
             f"【素材提纲】\n{json.dumps(compact_outline, ensure_ascii=False, indent=2)}\n\n"
             f"【转写片段】\n{json.dumps(compact_audio, ensure_ascii=False, indent=2)}\n\n"
             f"【已选素材摘要】\n{json.dumps(compact_segments, ensure_ascii=False, indent=2)}"
@@ -1268,8 +1449,8 @@ class ScriptRewriterSkill(BaseSkill):
                 outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
                 audio_json=json.dumps(audio_snippets, ensure_ascii=False, indent=2),
                 segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
-                source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
-                source_focus_json=json.dumps(source_focus, ensure_ascii=False, indent=2),
+                source_post_json=json.dumps(self._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
+                source_focus_json=json.dumps(self._source_focus_for_prompt(source_focus), ensure_ascii=False, indent=2),
             ), partition_profile)
             response = generate_content(
                 client,
@@ -1288,10 +1469,18 @@ class ScriptRewriterSkill(BaseSkill):
             coverage = self._script_source_coverage(text_units, source_focus)
             out_of_scope_terms = self._detect_out_of_scope_phrases(text_units, context_blob)
             style_violations = self._detect_ai_transition_templates(text_units) + self._detect_ai_cliche_phrases(text_units)
+            source_account_mentions = self._find_source_account_mentions(text_units, source_focus)
+            parenthetical_glosses = self._detect_parenthetical_glosses(text_units)
             source_repair_required = self._needs_source_repair(source_focus, coverage)
             text_repaired = False
 
-            needs_repair = source_repair_required or bool(out_of_scope_terms) or bool(style_violations)
+            needs_repair = (
+                source_repair_required
+                or bool(out_of_scope_terms)
+                or bool(style_violations)
+                or bool(source_account_mentions)
+                or bool(parenthetical_glosses)
+            )
             if needs_repair:
                 repair_prompt = self._build_repair_prompt(
                     base_prompt=combined_prompt,
@@ -1300,6 +1489,8 @@ class ScriptRewriterSkill(BaseSkill):
                     current_units=text_units,
                     out_of_scope_terms=out_of_scope_terms or None,
                     style_violations=style_violations or None,
+                    source_account_mentions=source_account_mentions or None,
+                    parenthetical_glosses=parenthetical_glosses or None,
                 )
                 try:
                     repair_response = generate_content(
@@ -1317,7 +1508,11 @@ class ScriptRewriterSkill(BaseSkill):
                         repair_coverage = self._script_source_coverage(repair_units, source_focus)
                         repair_oos = self._detect_out_of_scope_phrases(repair_units, context_blob)
                         repair_style = self._detect_ai_transition_templates(repair_units) + self._detect_ai_cliche_phrases(repair_units)
-                        if not self._can_accept_repair(coverage, repair_coverage, source_repair_required, repair_oos, repair_style):
+                        repair_source_accounts = self._find_source_account_mentions(repair_units, source_focus)
+                        repair_parentheticals = self._detect_parenthetical_glosses(repair_units)
+                        if repair_source_accounts or repair_parentheticals:
+                            pass
+                        elif not self._can_accept_repair(coverage, repair_coverage, source_repair_required, repair_oos, repair_style):
                             pass
                         else:
                             text_units = repair_units
@@ -1325,6 +1520,8 @@ class ScriptRewriterSkill(BaseSkill):
                             coverage = repair_coverage
                             out_of_scope_terms = repair_oos
                             style_violations = repair_style
+                            source_account_mentions = repair_source_accounts
+                            parenthetical_glosses = repair_parentheticals
                             source_repair_required = self._needs_source_repair(source_focus, repair_coverage)
                             text_repaired = True
                 except Exception:
@@ -1334,6 +1531,8 @@ class ScriptRewriterSkill(BaseSkill):
                 return None
 
             script_units = self._merge_enrichment(text_units, raw_units)
+            if source_account_mentions or parenthetical_glosses:
+                return None
 
             guardrail_mode = "enforce" if needs_repair else "pass"
             return SkillResult(
@@ -1358,6 +1557,8 @@ class ScriptRewriterSkill(BaseSkill):
                         "source_coverage": coverage,
                         "source_repair_required": source_repair_required,
                         "out_of_scope_terms": out_of_scope_terms,
+                        "source_account_mentions": source_account_mentions,
+                        "parenthetical_glosses": parenthetical_glosses,
                         "repair_applied": text_repaired,
                         "style_violations": style_violations,
                         "guardrail_mode": guardrail_mode,
@@ -1375,6 +1576,8 @@ class ScriptRewriterSkill(BaseSkill):
                     "source_coverage": coverage,
                     "source_repair_required": source_repair_required,
                     "out_of_scope_terms": out_of_scope_terms,
+                    "source_account_mentions": source_account_mentions,
+                    "parenthetical_glosses": parenthetical_glosses,
                     "repair_applied": text_repaired,
                     "style_violations": style_violations,
                     "guardrail_mode": guardrail_mode,
@@ -1442,8 +1645,8 @@ class ScriptRewriterSkill(BaseSkill):
             outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
             audio_json=json.dumps(audio_snippets, ensure_ascii=False, indent=2),
             segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
-            source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
-            source_focus_json=json.dumps(source_focus, ensure_ascii=False, indent=2),
+            source_post_json=json.dumps(self._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
+            source_focus_json=json.dumps(self._source_focus_for_prompt(source_focus), ensure_ascii=False, indent=2),
         ), partition_profile)
 
         try:
@@ -1487,12 +1690,20 @@ class ScriptRewriterSkill(BaseSkill):
             coverage = self._script_source_coverage(text_units, source_focus)
             out_of_scope_terms = self._detect_out_of_scope_phrases(text_units, context_blob)
             style_violations = self._detect_ai_transition_templates(text_units) + self._detect_ai_cliche_phrases(text_units)
+            source_account_mentions = self._find_source_account_mentions(text_units, source_focus)
+            parenthetical_glosses = self._detect_parenthetical_glosses(text_units)
             source_repair_required = self._needs_source_repair(source_focus, coverage)
             text_repaired = False
             if not text_units:
                 raise ValueError("LLM 未返回有效 script_units")
 
-            needs_repair = source_repair_required or bool(out_of_scope_terms) or bool(style_violations)
+            needs_repair = (
+                source_repair_required
+                or bool(out_of_scope_terms)
+                or bool(style_violations)
+                or bool(source_account_mentions)
+                or bool(parenthetical_glosses)
+            )
             if needs_repair:
                 repair_prompt = self._build_repair_prompt(
                     base_prompt=text_prompt,
@@ -1501,6 +1712,8 @@ class ScriptRewriterSkill(BaseSkill):
                     current_units=text_units,
                     out_of_scope_terms=out_of_scope_terms or None,
                     style_violations=style_violations or None,
+                    source_account_mentions=source_account_mentions or None,
+                    parenthetical_glosses=parenthetical_glosses or None,
                 )
                 try:
                     repair_response = generate_content(
@@ -1517,21 +1730,36 @@ class ScriptRewriterSkill(BaseSkill):
                         repair_coverage = self._script_source_coverage(repair_units, source_focus)
                         repair_oos = self._detect_out_of_scope_phrases(repair_units, context_blob)
                         repair_style = self._detect_ai_transition_templates(repair_units) + self._detect_ai_cliche_phrases(repair_units)
-                        if self._can_accept_repair(coverage, repair_coverage, source_repair_required, repair_oos, repair_style):
+                        repair_source_accounts = self._find_source_account_mentions(repair_units, source_focus)
+                        repair_parentheticals = self._detect_parenthetical_glosses(repair_units)
+                        if (
+                            not repair_source_accounts
+                            and not repair_parentheticals
+                            and self._can_accept_repair(coverage, repair_coverage, source_repair_required, repair_oos, repair_style)
+                        ):
                             text_units = repair_units
                             coverage = repair_coverage
                             out_of_scope_terms = repair_oos
                             style_violations = repair_style
+                            source_account_mentions = repair_source_accounts
+                            parenthetical_glosses = repair_parentheticals
                             source_repair_required = self._needs_source_repair(source_focus, repair_coverage)
                             text_repaired = True
                 except Exception:
                     pass
 
+            if source_account_mentions or parenthetical_glosses:
+                raise ValueError(
+                    "口播包含禁用来源账号或括号英文注释: "
+                    f"source_account_mentions={source_account_mentions}, "
+                    f"parenthetical_glosses={parenthetical_glosses}"
+                )
+
             enrich_prompt = prepend_partition_prompt(self.ENRICH_PROMPT.format(
                 outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
                 audio_json=json.dumps(audio_snippets, ensure_ascii=False, indent=2),
                 segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
-                source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
+                source_post_json=json.dumps(self._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
                 script_units_json=json.dumps(
                     [{"unit_id": idx, "role": item.get("role"), "text": item.get("text")} for idx, item in enumerate(text_units, start=1)],
                     ensure_ascii=False,
@@ -1584,6 +1812,8 @@ class ScriptRewriterSkill(BaseSkill):
                         "source_coverage": coverage,
                         "source_repair_required": source_repair_required,
                         "out_of_scope_terms": out_of_scope_terms,
+                        "source_account_mentions": source_account_mentions,
+                        "parenthetical_glosses": parenthetical_glosses,
                         "repair_applied": text_repaired,
                         "style_violations": style_violations,
                         "guardrail_mode": guardrail_mode,
@@ -1603,6 +1833,8 @@ class ScriptRewriterSkill(BaseSkill):
                     "source_coverage": coverage,
                     "source_repair_required": source_repair_required,
                     "out_of_scope_terms": out_of_scope_terms,
+                    "source_account_mentions": source_account_mentions,
+                    "parenthetical_glosses": parenthetical_glosses,
                     "repair_applied": text_repaired,
                     "style_violations": style_violations,
                     "guardrail_mode": guardrail_mode,

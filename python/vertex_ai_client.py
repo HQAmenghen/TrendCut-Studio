@@ -16,10 +16,12 @@ except ImportError:
     print("警告: vertexai 包未安装，无法使用 Vertex AI", file=sys.stderr)
 
 
-DEFAULT_GENERATE_RETRIES = 3
+DEFAULT_GENERATE_RETRIES = 5
 RETRYABLE_ERROR_MARKERS = (
     "server disconnected without sending a response",
     "connection reset",
+    "connection aborted",
+    "remote end closed connection without response",
     "timed out",
     "timeout",
     "temporarily unavailable",
@@ -28,6 +30,26 @@ RETRYABLE_ERROR_MARKERS = (
     "quota exceeded",
     "resource exhausted",
 )
+
+
+def _env_int(name: str, default: int) -> int:
+    value = str(os.getenv(name) or "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _resolve_generate_attempts(retries: int | None) -> int:
+    try:
+        requested = int(retries or 1)
+    except (TypeError, ValueError):
+        requested = 1
+    minimum = _env_int("VERTEX_GENERATE_MIN_RETRIES", DEFAULT_GENERATE_RETRIES)
+    return max(1, requested, minimum)
 
 
 def get_vertex_ai_project() -> str:
@@ -200,7 +222,7 @@ def generate_content(
     if response_mime_type:
         generation_config["response_mime_type"] = response_mime_type
 
-    attempts = max(1, int(retries or 1))
+    attempts = _resolve_generate_attempts(retries)
     last_error = None
 
     for attempt in range(1, attempts + 1):

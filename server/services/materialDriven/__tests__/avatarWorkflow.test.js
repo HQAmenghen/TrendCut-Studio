@@ -4,6 +4,7 @@ const {
   prepareAvatarSpeechWorkflow,
   prepareNarrationTextForAvatarWorkflow,
   prepareNarrationTextForSpeech,
+  prepareNarrationTextForSpeechWithMeta,
   resolveAvatarSeed,
   resolveAvatarSpeechNodeId,
   sanitizeNarrationText
@@ -41,6 +42,25 @@ describe('prepareNarrationTextForSpeech', () => {
     expect(prepareNarrationTextForSpeech('法案编号HR 3000,633在投票中通过\n结束'))
       .toBe('法案编号H R 三零零零，六三三在投票中通过。');
   });
+
+  test('normalizes currency, percentages, dates, and measured ranges for speech', () => {
+    expect(prepareNarrationTextForSpeech('预计收入达到60.000美元，同比增长12.5%，周期3-5天。'))
+      .toBe('预计收入达到六万美元，同比增长百分之十二点五，周期三到五天。');
+    expect(prepareNarrationTextForSpeech('2026年5月22日收入为$60,000。'))
+      .toBe('二零二六年五月二十二日收入为六万美元。');
+  });
+
+  test('returns normalization metadata for speech-only narration artifacts', () => {
+    const prepared = prepareNarrationTextForSpeechWithMeta('预计收入达到60.000美元，同比增长12.5%。');
+
+    expect(prepared.displayText).toBe('预计收入达到60.000美元，同比增长12.5%。');
+    expect(prepared.speechText).toBe('预计收入达到六万美元，同比增长百分之十二点五。');
+    expect(prepared.changed).toBe(true);
+    expect(prepared.normalizations).toEqual([
+      { kind: 'percent', raw: '12.5%', reading: '百分之十二点五' },
+      { kind: 'currency', raw: '60.000美元', reading: '六万美元' }
+    ]);
+  });
 });
 
 describe('prepareNarrationTextForAvatarWorkflow', () => {
@@ -64,6 +84,7 @@ describe('prepareNarrationTextForAvatarWorkflow', () => {
 
     expect(prepared.validationText).toBe('法案编号HR 3000,633在投票中通过。');
     expect(prepared.speechText).toBe('法案编号H R 三零零零，六三三在投票中通过。');
+    expect(prepared.speechTextChanged).toBe(true);
     expect(prepared.isUsable).toBe(true);
   });
 });

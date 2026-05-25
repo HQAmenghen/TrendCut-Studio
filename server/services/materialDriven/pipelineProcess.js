@@ -149,6 +149,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
       startFrom,
       useSmartClip: task.useSmartClip,
       useCache: task.useCache,
+      allowRuleFallback: task.allowRuleFallback,
       unbuffered: true
     });
     const pythonProcess = spawn('python', args, {
@@ -162,20 +163,17 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
 
   function startInitialPipeline(jobId, task) {
     const materialPath = path.join(task.outputPath, 'material.mp4');
-    const args = [
-      '-u',
-      SCRIPT_PATH,
+    const args = buildMaterialDrivenPipelineArgs({
+      scriptPath: SCRIPT_PATH,
       materialPath,
-      '--output-dir', task.outputPath
-    ];
-
-    if (!task.useSmartClip) {
-      args.push('--no-smart-clip');
-    }
-    if (task.useCache) {
-      args.push('--use-cache');
-    }
-    args.push('--end-at', '5');
+      outputPath: task.outputPath,
+      startFrom: 1,
+      endAt: 5,
+      useSmartClip: task.useSmartClip,
+      useCache: task.useCache,
+      allowRuleFallback: task.allowRuleFallback,
+      unbuffered: true
+    });
 
     const pythonProcess = spawn('python', args, {
       cwd: task.outputPath,
@@ -269,6 +267,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
       endAt: retryPlan.endAt,
       useSmartClip: task.useSmartClip,
       useCache: task.useCache,
+      allowRuleFallback: task.allowRuleFallback,
       unbuffered: true
     });
 

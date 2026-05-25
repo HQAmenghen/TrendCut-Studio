@@ -341,7 +341,7 @@ function createPublishStore(deps) {
   }
 
   function reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig, selection = {}) {
-    const preservedOptions = ['wechatChannels', 'douyin', 'xiaohongshu'].includes(platformKey)
+    const preservedOptions = ['wechatChannels', 'douyin', 'xiaohongshu', 'x'].includes(platformKey)
       ? {
         accountId: String(selection?.accountId || existingTask?.accountId || '').trim(),
         accountLabel: String(selection?.accountLabel || existingTask?.accountLabel || '').trim(),

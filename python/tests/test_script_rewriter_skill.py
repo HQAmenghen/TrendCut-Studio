@@ -60,6 +60,131 @@ class ScriptRewriterStyleGuardTest(unittest.TestCase):
         self.assertIn("AI 模板化强转折句式", prompt)
         self.assertIn("这可不是市场传闻，而是正式的法律动作", prompt)
 
+    def test_normalized_source_post_strips_monitor_account_but_keeps_content_people(self):
+        source_post = self.skill._normalize_source_post({
+            "body": "@BMNRBullz - 🚨 COULD TOM LEE BE RIGHT ABOUT A 15-20% SUMMER DRAWDOWN?",
+            "author": "BMNRBullz",
+            "postUrl": "https://x.com/BMNRBullz/status/2056061081995378881",
+        })
+        prompt_payload = self.skill._source_post_for_prompt(source_post)
+
+        self.assertNotIn("BMNRBullz", prompt_payload["body"])
+        self.assertNotIn("author", prompt_payload)
+        self.assertIn("TOM LEE", prompt_payload["body"])
+        self.assertIn("BMNRBullz", source_post["forbidden_source_account_terms"])
+
+    def test_source_post_strips_bare_handle_attribution_prefixes(self):
+        documenting = self.skill._normalize_source_post({
+            "body": "DocumentingBTC今天直播提到比特币可能继续走强。",
+            "author": "DocumentingBTC",
+        })
+        vivek = self.skill._normalize_source_post({
+            "body": "Vivek4real 分享了一段 Jack Dorsey 的采访。",
+            "author": "Vivek4real",
+        })
+
+        self.assertNotIn("DocumentingBTC", documenting["body"])
+        self.assertIn("比特币", documenting["body"])
+        self.assertNotIn("Vivek4real", vivek["body"])
+        self.assertIn("Jack Dorsey", vivek["body"])
+
+    def test_source_account_mentions_rejected_without_rejecting_video_person(self):
+        source_post_info = self.skill._normalize_source_post({
+            "body": "@BMNRBullz - Tom Lee warns about a 15-20% summer drawdown.",
+            "author": "BMNRBullz",
+        })
+        source_focus = self.skill._extract_source_focus(source_post_info)
+        bad_units = [
+            {"text": "BMNRBullz账号分享Tom Lee最新判断，夏季可能回调15-20%。"}
+        ]
+        good_units = [
+            {"text": "Tom Lee最新判断是，夏季可能先回调15-20%，之后再迎来更大的反弹。"}
+        ]
+
+        self.assertEqual(self.skill._find_source_account_mentions(bad_units, source_focus), ["BMNRBullz"])
+        self.assertEqual(self.skill._find_source_account_mentions(good_units, source_focus), [])
+
+    def test_source_account_detection_does_not_reject_real_spaced_person_name(self):
+        source_post_info = self.skill._normalize_source_post({
+            "body": "@elonmusk - Elon Musk discusses xAI and Tesla.",
+            "author": "elonmusk",
+        })
+        source_focus = self.skill._extract_source_focus(source_post_info)
+        units = [
+            {"text": "Elon Musk 这次谈到 xAI 和 Tesla 的协同，重点放在产品节奏上。"}
+        ]
+
+        self.assertEqual(self.skill._find_source_account_mentions(units, source_focus), [])
+
+    def test_parenthetical_english_gloss_is_removed_from_voiceover_text(self):
+        cleaned = self.skill._sanitize_unit_text(
+            "他称这是我们人生中最大的反弹（THE BIGGEST RALLY OF OUR LIFETIME）前的痛苦。"
+        )
+
+        self.assertNotIn("（THE BIGGEST RALLY OF OUR LIFETIME）", cleaned)
+        self.assertEqual(cleaned, "他称这是我们人生中最大的反弹前的痛苦")
+
+    def test_repair_prompt_includes_source_account_and_parenthetical_constraints(self):
+        prompt = self.skill._build_repair_prompt(
+            base_prompt="base",
+            source_focus={"has_source_anchor": True, "numeric_cues": []},
+            coverage={"missing_cues": []},
+            current_units=[{"text": "BMNRBullz账号分享Tom Lee观点（THE BIGGEST RALLY）。"}],
+            source_account_mentions=["BMNRBullz"],
+            parenthetical_glosses=["（THE BIGGEST RALLY）"],
+        )
+
+        self.assertIn("监控来源账号", prompt)
+        self.assertIn("BMNRBullz", prompt)
+        self.assertIn("括号英文注释", prompt)
+        self.assertIn("THE BIGGEST RALLY", prompt)
+
+    def test_combined_rewrite_rejects_if_repair_keeps_source_account_or_parenthetical(self):
+        source_post = {
+            "body": "@BMNRBullz - Tom Lee warns about a 15-20% summer drawdown.",
+            "author": "BMNRBullz",
+        }
+        source_post_info = self.skill._normalize_source_post(source_post)
+        source_focus = self.skill._extract_source_focus(source_post_info)
+        invalid_payload = {
+            "script_units": [
+                {
+                    "unit_id": 1,
+                    "role": "hook",
+                    "text": "BMNRBullz账号分享Tom Lee判断：夏季可能回调15-20%（SUMMER DRAWDOWN）。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+                {
+                    "unit_id": 2,
+                    "role": "explain",
+                    "text": "他认为短期压力之后还要看更大反弹。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+            ]
+        }
+
+        class FakeResponse:
+            text = __import__("json").dumps(invalid_payload, ensure_ascii=False)
+
+        with patch("pipeline.skills.script_rewriter_skill.generate_content", return_value=FakeResponse()):
+            result = self.skill._run_combined(
+                client=object(),
+                model="test-model",
+                provider="test",
+                source_post_info=source_post_info,
+                source_focus=source_focus,
+                outline_items=[],
+                audio_snippets=[],
+                segment_items=[],
+                route={},
+                outline={},
+                context_blob=self.skill._build_context_blob(source_post_info, [], [], []),
+            )
+
+        self.assertIsNone(result)
+
     def test_partition_prompt_profile_uses_known_ids_only(self):
         profile = resolve_partition_prompt_profile({
             "sourcePartitionId": "finance",

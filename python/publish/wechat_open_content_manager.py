@@ -38,6 +38,26 @@ def has_content_manager_ui(page) -> bool:
         return False
 
 
+def active_pages(browser):
+    try:
+        pages = list(browser.pages)
+    except Exception:
+        return []
+    active = []
+    for page in pages:
+        try:
+            if not page.is_closed():
+                active.append(page)
+        except Exception:
+            continue
+    return active
+
+
+def wait_for_browser_close(browser, poll_interval=0.5) -> None:
+    while active_pages(browser):
+        time.sleep(poll_interval)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Open WeChat Channels content manager")
     parser.add_argument("--user-data-dir", required=True, help="Path to browser profile")
@@ -94,8 +114,7 @@ def main():
                     browser.close()
                     return
             print(f"CONTENT_MANAGER|READY|{page.url or CONTENT_MANAGER_URL}", flush=True)
-            while len(browser.pages) > 0:
-                time.sleep(5)
+            wait_for_browser_close(browser)
         finally:
             try:
                 browser.close()

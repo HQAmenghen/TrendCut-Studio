@@ -1,0 +1,19 @@
+{
+  "name": "comfy-panel-agent-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP bridge for Comfy Panel agent API V0",
+  "bin": {
+    "comfy-panel-agent-mcp": "./src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

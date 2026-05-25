@@ -116,12 +116,12 @@ describe('RunningHub workflow API helpers', () => {
     expect(outputUrl).toBe('https://example.com/avatar.mp4');
   });
 
-  test('keeps polling when a RunningHub query returns a transient 504', async () => {
+  test.each([504, 554])('keeps polling when a RunningHub query returns a transient %s', async (statusCode) => {
     const fakeAxios = {
       post: jest
         .fn()
-        .mockRejectedValueOnce(Object.assign(new Error('Request failed with status code 504'), {
-          response: { status: 504 }
+        .mockRejectedValueOnce(Object.assign(new Error(`Request failed with status code ${statusCode}`), {
+          response: { status: statusCode }
         }))
         .mockResolvedValueOnce({
           data: {
