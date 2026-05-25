@@ -1,77 +1,119 @@
 <template>
-  <div class="top-nav">
-    <button
-      v-for="item in items"
-      :key="item.key"
-      type="button"
-      class="nav-card"
-      :class="{ active: item.key === activeKey }"
-      @click="$emit('change', item.key)"
-    >
-      <div class="nav-kicker">{{ item.kicker }}</div>
-      <div class="nav-title">{{ item.title }}</div>
-      <div class="nav-desc">{{ item.desc }}</div>
-    </button>
-  </div>
+  <nav class="top-nav" aria-label="Console navigation">
+    <div v-for="section in sections" :key="section.label" class="nav-section">
+      <div class="section-label">{{ section.label }}</div>
+      <div class="nav-pills">
+        <button
+          v-for="item in section.items"
+          :key="item.key"
+          type="button"
+          class="nav-pill"
+          :class="{ active: item.key === activeKey }"
+          :title="item.desc"
+          @click="$emit('change', item.key)"
+        >
+          <component :is="item.icon" v-if="item.icon" class="nav-icon" aria-hidden="true" />
+          <span>{{ item.title }}</span>
+        </button>
+      </div>
+    </div>
+  </nav>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   items: { type: Array, default: () => [] },
   activeKey: { type: String, default: '' }
 });
 
 defineEmits(['change']);
+
+const sections = computed(() => {
+  const groups = [];
+  const groupMap = new Map();
+  for (const item of props.items) {
+    const label = item.section || '工作区';
+    if (!groupMap.has(label)) {
+      const group = { label, items: [] };
+      groups.push(group);
+      groupMap.set(label, group);
+    }
+    groupMap.get(label).items.push(item);
+  }
+  return groups;
+});
 </script>
 
 <style scoped>
 .top-nav {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.nav-card {
+  gap: 12px;
   border: 1px solid var(--line-soft);
-  border-radius: 20px;
-  padding: 14px 16px;
-  background: var(--panel-subtle);
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
   box-shadow: var(--shadow);
-  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background .18s ease;
 }
 
-.nav-card:hover {
-  transform: translateY(-1px);
-  border-color: #64748b;
+.nav-section {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
 }
 
-.nav-card.active {
-  border-color: rgba(139, 92, 246, 0.72);
-  background: var(--nav-active-bg);
-  box-shadow: var(--nav-active-shadow);
-}
-
-.nav-kicker {
+.section-label {
   font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   color: var(--muted);
 }
 
-.nav-title {
-  margin-top: 7px;
-  font-size: 16px;
+.nav-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nav-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
   font-weight: 800;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.nav-pill:hover {
+  border-color: var(--line-strong);
   color: var(--strong-text);
 }
 
-.nav-desc {
-  margin-top: 6px;
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--muted);
+.nav-pill.active {
+  border-color: var(--brand-a);
+  background: var(--nav-active-bg);
+  color: var(--strong-text);
+  box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.12);
+}
+
+.nav-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  .nav-section {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -3,13 +3,19 @@
     <div class="page-header">
       <div>
         <div class="header-kicker">Unified Video Console</div>
-        <h1>AI 视频中台工作台</h1>
-        <p>{{ shellDescription }}</p>
+        <h1>自动生产驾驶舱</h1>
+        <p v-if="shellDescription">{{ shellDescription }}</p>
       </div>
       <div class="status-card">
         <div class="theme-toggle">
-          <button type="button" :class="{ active: themeMode === 'dark' }" @click="setThemeMode('dark')">🌙 暗色</button>
-          <button type="button" :class="{ active: themeMode === 'light' }" @click="setThemeMode('light')">☀️ 亮色</button>
+          <button type="button" :class="{ active: themeMode === 'dark' }" @click="setThemeMode('dark')">
+            <Moon class="status-icon" aria-hidden="true" />
+            暗色
+          </button>
+          <button type="button" :class="{ active: themeMode === 'light' }" @click="setThemeMode('light')">
+            <Sun class="status-icon" aria-hidden="true" />
+            亮色
+          </button>
         </div>
         <div class="status-online">
           <span class="dot"></span>
@@ -24,8 +30,23 @@
 
     <TopNavigation :items="navItems" :active-key="activeModule" @change="activeModule = $event" />
 
+    <AutomationDashboard
+      v-if="activeModule === 'dashboard'"
+      :material-driven="materialDriven"
+      :publish-center="publishCenter"
+      :standalone="standalone"
+      :xai="xaiTop10"
+      @change-module="activeModule = $event"
+      @start-automation="materialDriven.startWorkflow"
+      @continue-workflow="materialDriven.continueWorkflow"
+      @retry-step="materialDriven.retryStep"
+      @to-publish="handleToPublish"
+      @to-vertical="handleToVertical"
+      @refresh="refreshDashboard"
+    />
+
     <StandaloneWorkspace
-      v-if="activeModule === 'standalone'"
+      v-else-if="activeModule === 'standalone'"
       :loading="standalone.loading.value"
       :error="standalone.error.value"
       :error-state="standalone.errorState.value"
@@ -135,7 +156,20 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  BarChart3,
+  ClipboardCheck,
+  Clapperboard,
+  LayoutDashboard,
+  Moon,
+  Scissors,
+  Search,
+  Send,
+  Settings2,
+  Sun
+} from 'lucide-vue-next';
 import TopNavigation from './components/TopNavigation.vue';
+import AutomationDashboard from './components/AutomationDashboard.vue';
 import PublishCenterWorkspace from './components/PublishCenterWorkspace.vue';
 import StandaloneWorkspace from './components/StandaloneWorkspace.vue';
 import XaiDiscoveryWorkspace from './components/XaiDiscoveryWorkspace.vue';
@@ -148,6 +182,18 @@ import { useVerticalQueue } from './composables/useVerticalQueue';
 import { useXaiTop10 } from './composables/useXaiTop10';
 import { useStandalone } from './composables/useStandalone';
 import { useMaterialDriven } from './composables/useMaterialDriven';
+
+const UI_HOME_VERSION = 'automation-dashboard-v1';
+const ALLOWED_MODULES = [
+  'dashboard',
+  'standalone',
+  'xaiTop10',
+  'publishCenter',
+  'systemSettings',
+  'reviewCenter',
+  'accountDashboard',
+  'materialDriven'
+];
 
 function getInitialThemeMode() {
   try {
@@ -163,24 +209,30 @@ function getInitialThemeMode() {
 
 function getInitialActiveModule() {
   try {
+    const homeVersion = window.localStorage.getItem('comfy-panel-home-version');
+    if (homeVersion !== UI_HOME_VERSION) {
+      window.localStorage.setItem('comfy-panel-home-version', UI_HOME_VERSION);
+      return 'dashboard';
+    }
     const savedModule = window.localStorage.getItem('comfy-panel-active-module');
-    if (['standalone', 'xaiTop10', 'publishCenter', 'systemSettings', 'reviewCenter', 'accountDashboard', 'materialDriven'].includes(savedModule)) {
+    if (ALLOWED_MODULES.includes(savedModule)) {
       return savedModule;
     }
   } catch (_err) {
     // ignore storage read errors
   }
-  return 'materialDriven';
+  return 'dashboard';
 }
 
 const navItems = [
-  { key: 'materialDriven', kicker: 'Material First', title: '🎬 热点转视频生产线', desc: '热门转入、脚本编排、数字人口播、静音素材插片和发布衔接的一体化入口。' },
-  { key: 'standalone', kicker: 'Vertical Edit', title: '📱 竖屏后期合成', desc: '单条竖屏精修与批量竖屏队列的统一编排入口。' },
-  { key: 'xaiTop10', kicker: 'Discovery', title: '📈 热门视频榜单', desc: '抓取、排序、筛选热点视频，并一键送入自动生产链路。' },
-  { key: 'reviewCenter', kicker: 'Quality', title: '🎯 AI 审核中心', desc: '视频质量审核、评分管理与修复建议。' },
-  { key: 'publishCenter', kicker: 'Distribution', title: '🚀 一键发布', desc: '平台接入、素材选择、任务创建与发布执行统一管理。' },
-  { key: 'accountDashboard', kicker: 'Monitoring', title: '📊 账号看板', desc: '监控账号登录状态、任务统计和最近失败情况。' },
-  { key: 'systemSettings', kicker: 'Ops', title: '⚙️ 系统设置', desc: '飞书通知、登录检测与系统级配置管理。' }
+  { key: 'dashboard', section: '核心', icon: LayoutDashboard, kicker: 'Cockpit', title: '生产驾驶舱', desc: '自动生产、运行状态、失败处理与成片去向。' },
+  { key: 'materialDriven', section: '生产', icon: Clapperboard, kicker: 'Material First', title: '素材生产线', desc: '热门转入、脚本编排、数字人口播、静音素材插片和发布衔接的一体化入口。' },
+  { key: 'xaiTop10', section: '生产', icon: Search, kicker: 'Discovery', title: '热点榜单', desc: '抓取、排序、筛选热点视频，并一键送入自动生产链路。' },
+  { key: 'standalone', section: '生产', icon: Scissors, kicker: 'Vertical Edit', title: '竖屏后期', desc: '单条竖屏精修与批量竖屏队列的统一编排入口。' },
+  { key: 'publishCenter', section: '交付', icon: Send, kicker: 'Distribution', title: '发布中心', desc: '平台接入、素材选择、任务创建与发布执行统一管理。' },
+  { key: 'reviewCenter', section: '交付', icon: ClipboardCheck, kicker: 'Quality', title: '审核中心', desc: '视频质量审核、评分管理与修复建议。' },
+  { key: 'accountDashboard', section: '运营', icon: BarChart3, kicker: 'Monitoring', title: '账号看板', desc: '监控账号登录状态、任务统计和最近失败情况。' },
+  { key: 'systemSettings', section: '运营', icon: Settings2, kicker: 'Ops', title: '系统设置', desc: '飞书通知、登录检测与系统级配置管理。' }
 ];
 
 const activeModule = ref(getInitialActiveModule());
@@ -198,6 +250,15 @@ const currentModuleTitle = computed(() => navItems.find((item) => item.key === a
 
 const setThemeMode = (mode) => {
   themeMode.value = mode;
+};
+
+const refreshDashboard = async () => {
+  await Promise.allSettled([
+    publishCenter.refresh(true, { silent: true, preserveEditor: true }),
+    xaiTop10.refresh(),
+    standalone.loadMaterialTasks(true),
+    materialDriven.refreshTaskSnapshot()
+  ]);
 };
 
 const isMaterialDrivenReadyForPublish = () => {
@@ -425,6 +486,10 @@ watch(activeModule, (value) => {
   }
   if (value === 'standalone') {
     standalone.startAutoRefresh();
+    return;
+  }
+  if (value === 'dashboard') {
+    publishCenter.startAutoRefresh();
   }
 }, { immediate: true });
 
@@ -472,10 +537,10 @@ watch(activeModule, (value) => {
 .shell {
   max-width: 1820px;
   margin: 0 auto;
-  padding: 28px 20px 44px;
+  padding: 22px 20px 44px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 16px;
 }
 
 .page-header {
@@ -486,15 +551,16 @@ watch(activeModule, (value) => {
 }
 
 .header-kicker {
-  color: #8ed1ff;
+  color: var(--brand-a);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.12em;
+  font-weight: 850;
 }
 
 h1 {
-  margin: 10px 0 0;
-  font-size: 32px;
+  margin: 8px 0 0;
+  font-size: 28px;
   line-height: 1.12;
   color: var(--strong-text);
 }
@@ -510,10 +576,10 @@ p {
 .status-card {
   display: inline-flex;
   align-items: center;
-  gap: 18px;
-  border-radius: 24px;
+  gap: 14px;
+  border-radius: 8px;
   border: 1px solid var(--line-soft);
-  background: var(--console-bg);
+  background: var(--panel);
   padding: 10px 14px;
   box-shadow: var(--shadow);
 }
@@ -522,7 +588,7 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-radius: 999px;
+  border-radius: 7px;
   border: 1px solid var(--line-soft);
   background: var(--input-bg);
   padding: 4px;
@@ -530,18 +596,21 @@ p {
 
 .theme-toggle button {
   border: 0;
-  border-radius: 999px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  padding: 8px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
   font-weight: 800;
   cursor: pointer;
 }
 
 .theme-toggle button.active {
-  color: #fff;
-  background: linear-gradient(135deg, var(--brand-a), var(--brand-b));
-  box-shadow: 0 10px 24px rgba(109, 107, 255, 0.22);
+  color: #04110f;
+  background: var(--brand-a);
 }
 
 .status-online {
@@ -575,6 +644,11 @@ p {
 .module-tag strong {
   color: var(--strong-text);
   font-weight: 900;
+}
+
+.status-icon {
+  width: 15px;
+  height: 15px;
 }
 
 .old-link {
