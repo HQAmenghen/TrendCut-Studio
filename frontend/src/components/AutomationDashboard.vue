@@ -167,6 +167,77 @@
       </section>
     </div>
 
+    <div v-if="selectedHotItem" class="picker-backdrop" @click.self="closeHotDetail">
+      <section class="source-modal detail-modal" role="dialog" aria-modal="true" aria-label="热门素材详情">
+        <div class="modal-heading">
+          <div>
+            <span class="panel-kicker">Detail</span>
+            <h3>热门素材详情</h3>
+          </div>
+          <button type="button" class="mini-button" @click="closeHotDetail">关闭</button>
+        </div>
+
+        <div class="detail-title">
+          <span class="rank-pill">{{ selectedHotItem.rank || '-' }}</span>
+          <strong>{{ hotTitle(selectedHotItem) }}</strong>
+        </div>
+
+        <div class="detail-grid">
+          <div>
+            <span>作者</span>
+            <strong>{{ hotAuthor(selectedHotItem) }}</strong>
+          </div>
+          <div>
+            <span>发布时间</span>
+            <strong>{{ selectedHotItem.published_at || '未知' }}</strong>
+          </div>
+          <div>
+            <span>播放</span>
+            <strong>{{ selectedHotItem.views_display || formatNumber(selectedHotItem.views) }}</strong>
+          </div>
+          <div>
+            <span>互动</span>
+            <strong>{{ formatNumber(selectedHotItem.likes) }} / {{ formatNumber(selectedHotItem.reposts) }} / {{ formatNumber(selectedHotItem.replies) }}</strong>
+          </div>
+          <div>
+            <span>爆发系数</span>
+            <strong>{{ selectedHotItem.breakout_display || '-' }}</strong>
+          </div>
+          <div>
+            <span>视频规格</span>
+            <strong>{{ selectedHotItem.video_resolution || '未知' }}</strong>
+          </div>
+        </div>
+
+        <div class="detail-copy">
+          <span>原始摘要</span>
+          <p>{{ selectedHotItem.author_summary || selectedHotItem.title || '暂无英文摘要' }}</p>
+        </div>
+
+        <div class="detail-copy">
+          <span>中文摘要</span>
+          <p>{{ selectedHotItem.author_summary_zh || hotTitle(selectedHotItem) }}</p>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="primary-action" :disabled="sourceLocked" @click="useHotItem(selectedHotItem)">
+            <Play class="icon-sm" aria-hidden="true" />
+            导入制作视频
+          </button>
+          <a
+            v-if="selectedHotItem.post_url"
+            class="tool-button"
+            :href="selectedHotItem.post_url"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink class="icon-sm" aria-hidden="true" />
+            查看原帖
+          </a>
+        </div>
+      </section>
+    </div>
+
     <div class="cockpit-layout">
       <section class="ops-panel intake-panel">
         <div class="panel-heading">
@@ -179,20 +250,59 @@
           </span>
         </div>
 
-        <div class="hot-list">
-          <button
-            v-for="item in hotItems"
-            :key="itemKey(item)"
-            type="button"
-            class="hot-row"
-            :disabled="sourceLocked"
-            @click="useHotItem(item)"
-          >
-            <span>{{ item.rank || '-' }}</span>
-            <strong>{{ hotTitle(item) }}</strong>
-            <em>{{ item.views_display || item.hot_score || activePartitionLabel }}</em>
+        <div class="source-toolbar">
+          <label class="partition-select">
+            <span>榜单分区</span>
+            <select :value="activePartitionId" @change="selectHotPartition($event.target.value)">
+              <option
+                v-for="partition in xaiPartitions"
+                :key="partition.id"
+                :value="partition.id"
+              >
+                {{ partition.label || partition.id }}
+              </option>
+            </select>
+          </label>
+          <button type="button" class="tool-button" :disabled="xaiLoading" @click="$emit('run-xai')">
+            <Search class="icon-sm" aria-hidden="true" />
+            {{ xaiLoading ? '抓取中' : '抓取榜单' }}
           </button>
-          <div v-if="!hotItems.length" class="empty-row picker-empty">
+          <button type="button" class="tool-button" @click="$emit('refresh')">
+            <RefreshCw class="icon-sm" aria-hidden="true" />
+            刷新
+          </button>
+        </div>
+
+        <div class="source-hot-list">
+          <article
+            v-for="item in displayedHotItems"
+            :key="itemKey(item)"
+            class="source-hot-card"
+          >
+            <div class="rank-pill">{{ item.rank || '-' }}</div>
+            <div class="hot-main">
+              <strong>{{ hotTitle(item) }}</strong>
+              <span>{{ hotMetaLine(item) }}</span>
+              <div class="hot-stats">
+                <em>{{ item.views_display || formatNumber(item.views) }} 播放</em>
+                <em>{{ formatNumber(item.likes) }} 赞</em>
+                <em>{{ formatNumber(item.reposts) }} 转</em>
+                <em>{{ item.breakout_display || '常规' }}</em>
+                <em>热度 {{ item.hot_score || '-' }}</em>
+              </div>
+            </div>
+            <div class="hot-actions">
+              <button type="button" class="mini-button" :disabled="sourceLocked" @click="useHotItem(item)">
+                <Play class="icon-sm" aria-hidden="true" />
+                导入制作
+              </button>
+              <button type="button" class="mini-button subtle" @click="openHotDetail(item)">
+                <Info class="icon-sm" aria-hidden="true" />
+                详情
+              </button>
+            </div>
+          </article>
+          <div v-if="!displayedHotItems.length" class="empty-row picker-empty">
             <strong>当前 {{ activePartitionLabel }} 分区暂无素材</strong>
             <button type="button" class="tool-button" @click="openSourcePicker">
               <Search class="icon-sm" aria-hidden="true" />
@@ -433,6 +543,7 @@ import {
   ExternalLink,
   FileVideo,
   Gauge,
+  Info,
   Layers,
   Play,
   Radio,
@@ -470,6 +581,7 @@ const emit = defineEmits([
 
 const selectedFile = ref(null);
 const sourcePickerOpen = ref(false);
+const selectedHotItem = ref(null);
 
 const steps = [
   { id: 1, title: '接入素材', desc: '本地文件或热点素材' },
@@ -534,6 +646,7 @@ const accountLoginStatus = computed(() => readValue(props.publishCenter, 'accoun
 
 const xaiItems = computed(() => readValue(props.xai, 'items', []));
 const hotItems = computed(() => xaiItems.value.slice(0, 5));
+const displayedHotItems = computed(() => xaiItems.value);
 const xaiLoading = computed(() => Boolean(readValue(props.xai, 'loading', false)));
 const xaiPartitions = computed(() => readValue(props.xai, 'partitions', []));
 const activePartitionId = computed(() => String(readValue(props.xai, 'activePartitionId', '')));
@@ -674,6 +787,7 @@ const handleFileSelect = (event) => {
   selectedFile.value = event.target.files?.[0] || null;
   if (selectedFile.value) {
     sourcePickerOpen.value = false;
+    selectedHotItem.value = null;
   }
 };
 
@@ -681,11 +795,13 @@ const useHotItem = (item) => {
   selectedFile.value = null;
   emit('use-xai-material', item);
   sourcePickerOpen.value = false;
+  selectedHotItem.value = null;
 };
 
 const resetWorkflow = () => {
   selectedFile.value = null;
   sourcePickerOpen.value = false;
+  selectedHotItem.value = null;
   emit('reset-workflow');
 };
 
@@ -696,6 +812,14 @@ const openSourcePicker = () => {
 
 const closeSourcePicker = () => {
   sourcePickerOpen.value = false;
+};
+
+const openHotDetail = (item) => {
+  selectedHotItem.value = item;
+};
+
+const closeHotDetail = () => {
+  selectedHotItem.value = null;
 };
 
 const selectHotPartition = async (partitionId) => {
@@ -736,6 +860,29 @@ const itemKey = (item) => String(item?.post_id || item?.id || item?.rank || item
 const hotTitle = (item) => {
   const title = String(item?.author_summary_zh || item?.title || item?.post_title || item?.author_summary || '').trim();
   return title || '未命名热点';
+};
+
+const hotAuthor = (item) => {
+  const author = String(item?.author || '').trim();
+  return author ? `@${author}` : '未知作者';
+};
+
+const hotMetaLine = (item) => {
+  const pieces = [
+    hotAuthor(item),
+    item?.published_at || '',
+    item?.video_resolution || '',
+    item?.source_partition_label || activePartitionLabel.value
+  ].filter(Boolean);
+  return pieces.join(' · ');
+};
+
+const formatNumber = (value) => {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return '-';
+  if (number >= 1000000) return `${(number / 1000000).toFixed(1)}M`;
+  if (number >= 1000) return `${Math.round(number / 1000)}K`;
+  return String(number);
 };
 
 const getPublishJobLabel = (job) => {
@@ -1065,6 +1212,62 @@ h3 {
   justify-self: stretch;
 }
 
+.detail-modal {
+  width: min(720px, 100%);
+}
+
+.detail-title {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.detail-title strong {
+  color: var(--strong-text);
+  font-size: 18px;
+  line-height: 1.45;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.detail-grid div,
+.detail-copy {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.detail-grid span,
+.detail-copy span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.detail-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--strong-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-copy p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .partition-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -1153,6 +1356,7 @@ h3 {
 }
 
 .hot-list,
+.source-hot-list,
 .step-list,
 .plan-list,
 .issue-list,
@@ -1162,7 +1366,48 @@ h3 {
   gap: 8px;
 }
 
+.source-toolbar {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) auto auto;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.partition-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  padding: 7px 10px;
+}
+
+.partition-select span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.partition-select select {
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--strong-text);
+  font-weight: 850;
+}
+
+.source-hot-list {
+  max-height: 268px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
 .hot-row,
+.source-hot-card,
 .step-row,
 .plan-row,
 .issue-row,
@@ -1176,6 +1421,65 @@ h3 {
   border-radius: 7px;
   background: var(--panel-soft);
   padding: 10px;
+}
+
+.source-hot-card {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+}
+
+.rank-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--input-bg);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.hot-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.hot-main strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--strong-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hot-main span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hot-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hot-stats em {
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--muted);
+  padding: 3px 6px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.hot-actions {
+  display: grid;
+  gap: 6px;
+  min-width: 104px;
 }
 
 .hot-row {
@@ -1370,6 +1674,10 @@ h3 {
   color: var(--brand-a);
 }
 
+.mini-button.subtle {
+  color: var(--muted);
+}
+
 .issue-row,
 .log-row {
   min-height: 42px;
@@ -1443,8 +1751,20 @@ h3 {
   .action-row,
   .result-actions,
   .output-summary,
-  .compact-stats {
+  .compact-stats,
+  .source-toolbar,
+  .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .source-hot-card {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .hot-actions {
+    grid-column: 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
   }
 
   .hot-row {
