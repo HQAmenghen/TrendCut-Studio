@@ -32,20 +32,18 @@
       </div>
 
       <div class="launch-pad">
-        <label class="source-picker" :class="{ disabled: sourceLocked }">
-          <Upload class="icon" aria-hidden="true" />
-          <span>{{ fileLabel }}</span>
-          <input
-            type="file"
-            accept="video/mp4,video/*"
-            hidden
-            :disabled="sourceLocked"
-            @change="handleFileSelect"
-          />
-        </label>
-
         <button
-          v-if="!jobId"
+          v-if="!jobId && !hasSource"
+          type="button"
+          class="primary-action"
+          :disabled="sourceLocked"
+          @click="openSourcePicker"
+        >
+          <Search class="icon" aria-hidden="true" />
+          从热门榜单选素材
+        </button>
+        <button
+          v-else-if="!jobId"
           type="button"
           class="primary-action"
           :disabled="!canStart"
@@ -76,10 +74,17 @@
         </button>
 
         <div class="action-row">
-          <button type="button" class="tool-button" :disabled="xaiLoading" @click="$emit('run-xai')">
-            <Search class="icon-sm" aria-hidden="true" />
-            {{ xaiLoading ? '抓取中' : '抓热点' }}
-          </button>
+          <label class="tool-button local-upload" :class="{ disabled: sourceLocked }">
+            <Upload class="icon-sm" aria-hidden="true" />
+            <span>{{ localUploadLabel }}</span>
+            <input
+              type="file"
+              accept="video/mp4,video/*"
+              hidden
+              :disabled="sourceLocked"
+              @change="handleFileSelect"
+            />
+          </label>
           <button type="button" class="tool-button" @click="$emit('refresh')">
             <RefreshCw class="icon-sm" aria-hidden="true" />
             刷新
@@ -91,6 +96,63 @@
         </div>
       </div>
     </section>
+
+    <div v-if="sourcePickerOpen" class="picker-backdrop" @click.self="closeSourcePicker">
+      <section class="source-modal" role="dialog" aria-modal="true" aria-label="选择热门素材">
+        <div class="modal-heading">
+          <div>
+            <span class="panel-kicker">Hot List</span>
+            <h3>从热门榜单选择素材</h3>
+          </div>
+          <button type="button" class="mini-button" @click="closeSourcePicker">关闭</button>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="tool-button" :disabled="xaiLoading" @click="$emit('run-xai')">
+            <Search class="icon-sm" aria-hidden="true" />
+            {{ xaiLoading ? '正在抓取热门榜单' : '抓取最新热门榜单' }}
+          </button>
+          <button type="button" class="tool-button" @click="$emit('refresh')">
+            <RefreshCw class="icon-sm" aria-hidden="true" />
+            刷新榜单
+          </button>
+        </div>
+
+        <div class="hot-list picker-list">
+          <button
+            v-for="item in xaiItems"
+            :key="itemKey(item)"
+            type="button"
+            class="hot-row"
+            :disabled="sourceLocked"
+            @click="useHotItem(item)"
+          >
+            <span>{{ item.rank || '-' }}</span>
+            <strong>{{ hotTitle(item) }}</strong>
+            <em>{{ item.views_display || item.hot_score || activePartitionLabel }}</em>
+          </button>
+          <div v-if="!xaiItems.length" class="empty-row picker-empty">
+            <strong>当前还没有可选热门素材</strong>
+            <button type="button" class="primary-action" :disabled="xaiLoading" @click="$emit('run-xai')">
+              <Search class="icon-sm" aria-hidden="true" />
+              {{ xaiLoading ? '正在抓取' : '立即抓取热门榜单' }}
+            </button>
+          </div>
+        </div>
+
+        <label class="tool-button local-upload modal-upload" :class="{ disabled: sourceLocked }">
+          <Upload class="icon-sm" aria-hidden="true" />
+          <span>没有合适热点时，本地上传备用</span>
+          <input
+            type="file"
+            accept="video/mp4,video/*"
+            hidden
+            :disabled="sourceLocked"
+            @change="handleFileSelect"
+          />
+        </label>
+      </section>
+    </div>
 
     <div class="cockpit-layout">
       <section class="ops-panel intake-panel">
@@ -117,7 +179,13 @@
             <strong>{{ hotTitle(item) }}</strong>
             <em>{{ item.views_display || item.hot_score || activePartitionLabel }}</em>
           </button>
-          <div v-if="!hotItems.length" class="empty-row">暂无热点素材</div>
+          <div v-if="!hotItems.length" class="empty-row picker-empty">
+            <strong>暂无热门榜单</strong>
+            <button type="button" class="tool-button" :disabled="xaiLoading" @click="$emit('run-xai')">
+              <Search class="icon-sm" aria-hidden="true" />
+              {{ xaiLoading ? '抓取中' : '抓取热门榜单' }}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -384,6 +452,7 @@ const emit = defineEmits([
 ]);
 
 const selectedFile = ref(null);
+const sourcePickerOpen = ref(false);
 
 const steps = [
   { id: 1, title: '接入素材', desc: '本地文件或热点素材' },
@@ -458,6 +527,7 @@ const verticalLogs = computed(() => readValue(props.standalone, 'recentLogs', []
 
 const isBusy = computed(() => uploading.value || rebuildingPlan.value || rerenderingVideo.value);
 const sourceLocked = computed(() => Boolean(isBusy.value || jobId.value));
+const hasSource = computed(() => Boolean(selectedFile.value || materialUrl.value));
 const scriptUnitCount = computed(() => Array.isArray(scriptUnits.value) ? scriptUnits.value.length : 0);
 const autoPilotEnabled = computed(() => Boolean(publishConfig.value?.global?.autoPilotEnabled));
 const hasRecoverableFailure = computed(() => Boolean(jobId.value && errorText.value && currentStep.value));
@@ -467,7 +537,7 @@ const statusState = computed(() => {
   if (errorText.value) return 'danger';
   if (finalVideoUrl.value) return 'ready';
   if (jobId.value) return 'running';
-  if (selectedFile.value || materialUrl.value) return 'staged';
+  if (hasSource.value) return 'staged';
   return 'idle';
 });
 
@@ -475,7 +545,7 @@ const statusTitle = computed(() => {
   if (errorText.value) return '当前任务需要处理';
   if (finalVideoUrl.value) return '成片已就绪';
   if (jobId.value) return '自动生产进行中';
-  if (selectedFile.value || materialUrl.value) return '素材已接入';
+  if (hasSource.value) return '素材已接入';
   return '选择素材后自动生产';
 });
 
@@ -515,17 +585,17 @@ const sourceLabel = computed(() => {
   return '尚未选择源素材';
 });
 
-const fileLabel = computed(() => {
+const localUploadLabel = computed(() => {
   if (jobId.value && !selectedFile.value && !materialUrl.value) return '任务已锁定素材';
   if (selectedFile.value) return selectedFile.value.name;
   if (materialUrl.value) return '已接入热点素材';
-  return '选择本地素材';
+  return '本地上传备用';
 });
 
-const canStart = computed(() => Boolean(!isBusy.value && !jobId.value && (selectedFile.value || materialUrl.value)));
+const canStart = computed(() => Boolean(!isBusy.value && !jobId.value && hasSource.value));
 const startActionLabel = computed(() => {
   if (isBusy.value) return '正在接入素材';
-  if (selectedFile.value || materialUrl.value) return '一键自动生产';
+  if (hasSource.value) return '一键自动生产';
   return '先选择素材';
 });
 
@@ -583,16 +653,30 @@ const visibleLogs = computed(() => {
 
 const handleFileSelect = (event) => {
   selectedFile.value = event.target.files?.[0] || null;
+  if (selectedFile.value) {
+    sourcePickerOpen.value = false;
+  }
 };
 
 const useHotItem = (item) => {
   selectedFile.value = null;
   emit('use-xai-material', item);
+  sourcePickerOpen.value = false;
 };
 
 const resetWorkflow = () => {
   selectedFile.value = null;
+  sourcePickerOpen.value = false;
   emit('reset-workflow');
+};
+
+const openSourcePicker = () => {
+  if (sourceLocked.value) return;
+  sourcePickerOpen.value = true;
+};
+
+const closeSourcePicker = () => {
+  sourcePickerOpen.value = false;
 };
 
 const emitStart = () => {
@@ -878,11 +962,82 @@ h3 {
   gap: 8px;
 }
 
+.local-upload {
+  min-width: 0;
+}
+
+.local-upload span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-upload.disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
 .danger-button {
   min-height: 34px;
   color: var(--danger);
   background: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.32);
+}
+
+.picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 6, 12, 0.68);
+  backdrop-filter: blur(10px);
+}
+
+.source-modal {
+  display: grid;
+  gap: 14px;
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+  padding: 16px;
+}
+
+.modal-heading,
+.modal-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modal-actions {
+  align-items: stretch;
+}
+
+.picker-list {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.picker-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.picker-empty strong {
+  color: var(--strong-text);
+}
+
+.modal-upload {
+  justify-self: stretch;
 }
 
 .cockpit-layout {
