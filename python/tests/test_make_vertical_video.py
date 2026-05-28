@@ -17,6 +17,7 @@ from pipeline.make_vertical_video import (  # noqa: E402
     append_outro,
     clamp_subtitle_timeline_for_render,
     close_active_audio_subtitle_gaps,
+    deduplicate_subtitles,
     get_text_llm_provider,
     normalize_subtitles_for_display,
     parse_silencedetect_ranges,
@@ -238,6 +239,32 @@ class SubtitleSplitTest(unittest.TestCase):
 
         self.assertEqual([item["time"] for item in prepared], [[29.8, 33.9], [33.9, 37.96]])
         self.assertEqual([item["zh"] for item in prepared], [item["zh"] for item in subtitles])
+
+    def test_render_preparation_preserves_adjacent_repeated_reference_text(self):
+        subtitles = [
+            {
+                "time": [10.24, 16.24],
+                "zh": "他在视频中说，再投入500亿美元也只能买到1%的份额。要拿到7.5%，意味着价格需暴涨至当前水平的百倍",
+            },
+            {
+                "time": [16.24, 18.8],
+                "zh": "他在视频中说，再投入500亿美元也只能买到1%的份额。要拿到7.5%，意味着价格需暴涨至当前水平的百倍",
+            },
+        ]
+
+        prepared = prepare_subtitles_for_render(subtitles)
+
+        self.assertEqual([item["time"] for item in prepared], [[10.24, 16.24], [16.24, 18.8]])
+
+    def test_deduplicate_subtitles_still_merges_true_overlapping_duplicates(self):
+        subtitles = [
+            {"time": [1.0, 3.0], "zh": "重复字幕"},
+            {"time": [1.02, 3.1], "zh": "重复字幕"},
+        ]
+
+        deduplicated = deduplicate_subtitles(subtitles)
+
+        self.assertEqual(deduplicated, [{"time": [1.0, 3.1], "zh": "重复字幕"}])
 
     def test_render_preparation_only_splits_when_explicitly_requested(self):
         subtitles = [

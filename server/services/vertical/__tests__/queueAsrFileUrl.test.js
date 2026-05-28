@@ -42,6 +42,148 @@ describe('vertical queue ASR file URL handoff', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
+  test('recovers DB task with completed artifact as a completed runtime job', () => {
+    const taskUpdates = [];
+    const appendedLogs = [];
+    const taskStore = {
+      listTasks: jest.fn(() => [{
+        id: 'queue_recovered',
+        type: 'vertical_queue',
+        status: 'reviewing',
+        progress: 92,
+        message: '正在执行 AI 审核...',
+        metadata: {
+          sourceType: 'xai_top10_cached',
+          title: 'Recovered title',
+          summary: 'Recovered summary',
+          videoUrl: 'https://cdn.example.com/source.mp4',
+          postId: 'post-recovered',
+          author: 'author-a',
+          originalItem: {
+            sourceType: 'xai_top10_cached',
+            title: 'Recovered title',
+            summary: 'Recovered summary',
+            videoUrl: 'https://cdn.example.com/source.mp4',
+            postId: 'post-recovered',
+            author: 'author-a'
+          }
+        },
+        logs: [],
+        createdAt: '2026-04-27T00:00:00.000Z',
+        updatedAt: '2026-04-27T00:10:00.000Z',
+        startedAt: '2026-04-27T00:00:00.000Z'
+      }]),
+      updateTask: jest.fn((id, updates) => {
+        taskUpdates.push({ id, updates });
+        return { id, ...updates };
+      }),
+      appendLog: jest.fn((id, message) => {
+        appendedLogs.push({ id, message });
+      })
+    };
+
+    fs.mkdirSync(path.join(verticalPublicDir, 'queue_recovered'), { recursive: true });
+    fs.writeFileSync(path.join(verticalPublicDir, 'queue_recovered', 'vertical_output.mp4'), 'video');
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_1',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript: jest.fn(),
+      spawnScriptCancellable: jest.fn(),
+      writeJsonFile: (filePath, payload) => fs.writeFileSync(filePath, JSON.stringify(payload)),
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata: jest.fn(),
+      taskStore,
+      triggerAutoReview: null
+    });
+
+    const result = service.recoverPersistedJobs();
+    const recovered = service.getJob('queue_recovered');
+
+    expect(result).toEqual({ recovered: 1, completed: 1, requeued: 0 });
+    expect(recovered).toEqual(expect.objectContaining({
+      id: 'queue_recovered',
+      status: 'completed',
+      progress: 100,
+      resultVideoUrl: expect.stringContaining('/xai_vertical_queue/queue_recovered/vertical_output.mp4')
+    }));
+    expect(taskStore.updateTask).toHaveBeenCalledWith('queue_recovered', expect.objectContaining({
+      status: 'completed',
+      progress: 100
+    }));
+    expect(appendedLogs.map((entry) => entry.message).join('\n')).toContain('启动恢复');
+    expect(taskUpdates[0].updates.message).toContain('启动时从已生成成片恢复');
+  });
+
+  test('can skip completed artifact recovery for scheduler autopilot scans', () => {
+    const taskStore = {
+      listTasks: jest.fn(() => [{
+        id: 'queue_recovered',
+        type: 'vertical_queue',
+        status: 'reviewing',
+        progress: 92,
+        message: '正在执行 AI 审核...',
+        metadata: {
+          sourceType: 'xai_top10_cached',
+          title: 'Recovered title',
+          videoUrl: 'https://cdn.example.com/source.mp4',
+          originalItem: {
+            sourceType: 'xai_top10_cached',
+            title: 'Recovered title',
+            videoUrl: 'https://cdn.example.com/source.mp4'
+          }
+        },
+        logs: [],
+        createdAt: '2026-04-27T00:00:00.000Z',
+        updatedAt: '2026-04-27T00:10:00.000Z',
+        startedAt: '2026-04-27T00:00:00.000Z'
+      }]),
+      updateTask: jest.fn(),
+      appendLog: jest.fn()
+    };
+
+    fs.mkdirSync(path.join(verticalPublicDir, 'queue_recovered'), { recursive: true });
+    fs.writeFileSync(path.join(verticalPublicDir, 'queue_recovered', 'vertical_output.mp4'), 'video');
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_1',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript: jest.fn(),
+      spawnScriptCancellable: jest.fn(),
+      writeJsonFile: (filePath, payload) => fs.writeFileSync(filePath, JSON.stringify(payload)),
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata: jest.fn(),
+      taskStore,
+      triggerAutoReview: null
+    });
+
+    const result = service.recoverPersistedJobs({ includeCompletedArtifacts: false });
+
+    expect(result).toEqual({ recovered: 0, completed: 0, requeued: 0 });
+    expect(service.getJob('queue_recovered')).toBeNull();
+    expect(taskStore.updateTask).not.toHaveBeenCalled();
+  });
+
   test('passes original public video URL to run_asr for Filetrans-capable jobs', async () => {
     const calls = [];
     const runPythonScript = jest.fn(async () => '测试标题');
@@ -181,7 +323,7 @@ describe('vertical queue ASR file URL handoff', () => {
     ]));
   });
 
-  test('passes material-driven final timeline subtitles as ASR reference for avatar queue jobs', async () => {
+  test('passes material-driven full narration as ASR reference for avatar queue jobs', async () => {
     const calls = [];
     const projectsDir = path.join(tempRoot, 'projects');
     const materialDir = path.join(projectsDir, 'material_1778543460029_582511b3');
@@ -194,6 +336,9 @@ describe('vertical queue ASR file URL handoff', () => {
           text: 'Vivek4real 刚刚爆料：美国参议院今天将对亲比特币的联储主席提名人凯文·沃什进行首次程序性投票。'
         }
       ]
+    }));
+    fs.writeFileSync(path.join(materialDir, 'narration.json'), JSON.stringify({
+      full_text: '完整口播稿用于一次性全局对齐'
     }));
     fs.writeFileSync(path.join(materialDir, 'execution_plan.json'), JSON.stringify([
       {
@@ -280,6 +425,98 @@ describe('vertical queue ASR file URL handoff', () => {
     ]));
     const referencePath = asrCall.args[referenceArgIndex + 1];
     expect(path.basename(referencePath)).toBe('reference_subtitles.json');
+    expect(JSON.parse(fs.readFileSync(referencePath, 'utf8'))).toEqual([
+      expect.objectContaining({
+        time: [0, 6],
+        zh: '完整口播稿用于一次性全局对齐',
+        text: '完整口播稿用于一次性全局对齐'
+      })
+    ]);
+  });
+
+  test('falls back to execution plan reference when narration is unavailable for avatar queue jobs', async () => {
+    const calls = [];
+    const projectsDir = path.join(tempRoot, 'projects');
+    const materialDir = path.join(projectsDir, 'material_1778543460029_582511b3');
+    fs.mkdirSync(materialDir, { recursive: true });
+    fs.writeFileSync(path.join(materialDir, 'execution_plan.json'), JSON.stringify([
+      {
+        start_time: 0,
+        end_time: 5.2,
+        subtitle_text: '最终时间线开头'
+      },
+      {
+        start_time: 5.2,
+        end_time: 12.37,
+        subtitle_text: '最终时间线结尾'
+      }
+    ]));
+
+    const runPythonScript = jest.fn(async () => '测试标题');
+    const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
+      calls.push({ scriptPath, args, cwd: options.cwd });
+      const promise = Promise.resolve().then(() => {
+        if (scriptPath.endsWith('run_asr.py')) {
+          fs.writeFileSync(path.join(options.cwd, 'subtitles.json'), JSON.stringify([
+            { time: [0, 1.2], zh: '最终时间线开头' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'audio.json'), JSON.stringify([
+            { start: 0, end: 1.2, text: '最终时间线开头' }
+          ]));
+          fs.writeFileSync(path.join(options.cwd, 'speaker_scene.json'), JSON.stringify({ timeline: [] }));
+        }
+        if (scriptPath.endsWith('make_vertical_video.py')) {
+          const outputPath = args[args.indexOf('--output') + 1];
+          fs.writeFileSync(outputPath, 'vertical video');
+        }
+      });
+      return {
+        promise,
+        cancel: jest.fn()
+      };
+    });
+
+    const service = createVerticalQueueService({
+      baseDir: tempRoot,
+      verticalQueueRoot,
+      verticalPublicDir,
+      pipelineDir,
+      projectsDir,
+      ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+      makeJobId: () => 'job_material_execution_plan',
+      slugifyText: (value) => String(value || 'video').replace(/[^a-z0-9]+/gi, '_'),
+      sanitizeProcessLogLines: (chunk) => String(chunk || '').split(/\r?\n/).filter(Boolean),
+      formatElapsedSeconds: (seconds) => `${seconds}s`,
+      stopProcessTree: jest.fn(),
+      removeDirIfExists: jest.fn(),
+      buildFallbackTitleFromSubtitles: () => '测试任务',
+      runPythonScript,
+      spawnScriptCancellable,
+      writeJsonFile: (filePath, payload) => {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+      },
+      readMediaMetadata: () => ({}),
+      writeMediaMetadata: jest.fn(),
+      taskStore: null,
+      triggerAutoReview: null
+    });
+
+    const originalVideoPath = path.join(tempRoot, 'avatar-output.mp4');
+    fs.writeFileSync(originalVideoPath, 'source video');
+    const job = service.enqueue({
+      sourceType: 'material_driven_avatar',
+      title: '测试任务',
+      videoUrl: 'http://localhost:3001/projects/material_1778543460029_582511b3/output_final.mp4',
+      renderOptions: {
+        originalVideoPath
+      }
+    });
+
+    await waitFor(() => job.status === 'completed');
+
+    const asrCall = calls.find((call) => call.scriptPath.endsWith('run_asr.py'));
+    const referencePath = asrCall.args[asrCall.args.indexOf('--reference-subtitles-json') + 1];
     expect(JSON.parse(fs.readFileSync(referencePath, 'utf8'))).toEqual([
       expect.objectContaining({
         time: [0, 5.2],

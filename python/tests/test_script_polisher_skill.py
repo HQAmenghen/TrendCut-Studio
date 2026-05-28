@@ -123,6 +123,47 @@ class ScriptPolisherSkillTest(unittest.TestCase):
         self.assertIn("当前分区是「金融」", prompt)
         self.assertEqual(result.meta["partition_prompt_profile"]["profile_key"], "finance")
 
+    def test_polish_prompt_includes_fresh_context_to_prevent_stale_years(self):
+        skill = ScriptPolisherSkill()
+        payload = {
+            **self.payload,
+            "fresh_context": {
+                "required": True,
+                "status": "ready",
+                "searched": True,
+                "current_date": "2026-05-28",
+                "current_year": 2026,
+                "query": "特朗普 比特币 美元压力",
+                "summary": "特朗普近期称比特币可以减轻美元压力。",
+                "verified_facts": [
+                    {
+                        "fact": "特朗普称比特币可以减轻美元压力。",
+                        "published_at": "2026-05-28",
+                        "source": "X search",
+                        "url": "https://x.com/example/status/1",
+                    }
+                ],
+                "stale_phrases_to_avoid": ["不要把当前事件写成2025年开年"],
+                "date_guidance": "使用2026年当前语境，避免旧年份开年表述。",
+            },
+        }
+
+        with patch("pipeline.skills.script_polisher_skill.create_llm_client", return_value=object()), patch(
+            "pipeline.skills.script_polisher_skill.get_llm_provider",
+            return_value="qwen",
+        ), patch(
+            "pipeline.skills.script_polisher_skill.generate_content",
+            return_value=_response(_valid_blackrock_units()),
+        ) as generate:
+            result = skill.run(payload)
+
+        self.assertEqual(result.meta["status"], "ready")
+        prompt = generate.call_args_list[0].kwargs["contents"]
+        self.assertIn("【联网事实保鲜】", prompt)
+        self.assertIn("2026-05-28", prompt)
+        self.assertIn("2025年开年", prompt)
+        self.assertEqual(result.meta["fresh_context"]["current_year"], 2026)
+
     def test_retries_once_when_first_output_is_off_topic(self):
         skill = ScriptPolisherSkill()
         off_topic = {

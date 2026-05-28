@@ -131,7 +131,8 @@ function parsePythonProtocolLine(line) {
   }
 }
 
-function applyPythonProtocolEvent(jobId, task, event = {}) {
+function applyPythonProtocolEvent(jobId, task, event = {}, options = {}) {
+  const syncTaskState = typeof options.syncTaskState === 'function' ? options.syncTaskState : null;
   if (!task || !event || typeof event !== 'object') return;
   const type = String(event.type || '').trim();
   if (type === 'stage') {
@@ -145,6 +146,7 @@ function applyPythonProtocolEvent(jobId, task, event = {}) {
     task.statusText = message;
     task.updatedAt = nowIso();
     addTaskLog(task, message, 'info');
+    if (syncTaskState) syncTaskState(task);
     if (stageMeta) {
       emitTaskEvent(jobId, 'step', { step: stageMeta.step, message });
       emitTaskEvent(jobId, 'progress', { percent: task.progress, message });
@@ -157,6 +159,7 @@ function applyPythonProtocolEvent(jobId, task, event = {}) {
     task.statusText = message;
     task.updatedAt = nowIso();
     addTaskLog(task, message, 'success');
+    if (syncTaskState) syncTaskState(task);
     emitTaskEvent(jobId, 'status', { message });
     return;
   }
@@ -165,11 +168,13 @@ function applyPythonProtocolEvent(jobId, task, event = {}) {
     task.statusText = message;
     task.updatedAt = nowIso();
     addTaskLog(task, message, 'error');
+    if (syncTaskState) syncTaskState(task, { error: message });
     emitTaskEvent(jobId, 'status', { message });
   }
 }
 
-function parseAndEmitProgress(jobId, output) {
+function parseAndEmitProgress(jobId, output, options = {}) {
+  const syncTaskState = typeof options.syncTaskState === 'function' ? options.syncTaskState : null;
   const task = activeTasks.get(jobId);
   const lines = output.split('\n');
 
@@ -178,13 +183,14 @@ function parseAndEmitProgress(jobId, output) {
     if (!message) continue;
     const protocolEvent = parsePythonProtocolLine(message);
     if (protocolEvent) {
-      applyPythonProtocolEvent(jobId, task, protocolEvent);
+      applyPythonProtocolEvent(jobId, task, protocolEvent, { syncTaskState });
       continue;
     }
     if (task) {
       task.statusText = message;
       task.updatedAt = nowIso();
       addTaskLog(task, message, 'info');
+      if (syncTaskState) syncTaskState(task);
     }
 
     const stepMatch = line.match(/步骤(\d+):/);
@@ -196,6 +202,7 @@ function parseAndEmitProgress(jobId, output) {
         if (Number.isFinite(mappedPercent)) {
           task.progress = Math.max(Number(task.progress || 0), mappedPercent);
         }
+        if (syncTaskState) syncTaskState(task);
       }
       emitTaskEvent(jobId, 'step', {
         step,
@@ -214,6 +221,7 @@ function parseAndEmitProgress(jobId, output) {
     if (progressMatch) {
       const percent = parseInt(progressMatch[1], 10);
       if (task) task.progress = percent;
+      if (task && syncTaskState) syncTaskState(task);
       emitTaskEvent(jobId, 'progress', {
         percent,
         message

@@ -410,6 +410,34 @@ describe('prepareAvatarExternalAudioWorkflow', () => {
     expect(prepared['291']).toBeUndefined();
     expect(workflow['9'].inputs.audio).toEqual(['291', 0]);
   });
+
+  test('injects pose input when a pose node is configured', () => {
+    const workflow = {
+      '6': {
+        class_type: 'LoadAudio',
+        inputs: { audio: 'old.wav' }
+      },
+      '180': {
+        class_type: 'LoadImage',
+        inputs: { image: 'old.png' }
+      },
+      '301': {
+        class_type: 'LoadPoseSequence',
+        inputs: { pose: 'old_pose.json' }
+      }
+    };
+
+    const prepared = prepareAvatarExternalAudioWorkflow(workflow, {
+      audioName: 'speech.wav',
+      imageName: 'avatar.png',
+      poseName: 'avatar_motion_source.mp4',
+      poseNodeId: '301',
+      poseFieldName: 'pose'
+    });
+
+    expect(prepared['301'].inputs.pose).toBe('avatar_motion_source.mp4');
+    expect(workflow['301'].inputs.pose).toBe('old_pose.json');
+  });
 });
 
 describe('resolveAvatarSeed', () => {

@@ -62,6 +62,8 @@ function normalizePartitions(config = {}) {
 
 export function useXaiTop10() {
   const loading = ref(false);
+  const progressPercent = ref(0);
+  const progressMessage = ref('');
   const queueing = ref(false);
   const error = ref('');
   const savingConfig = ref(false);
@@ -96,6 +98,61 @@ export function useXaiTop10() {
     localErrors.value = [...localErrors.value, line].slice(-20);
   };
 
+  const normalizeProgressPercent = (value, fallback = progressPercent.value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(0, Math.min(100, Math.round(numeric)));
+  };
+
+  const applyProgressEvent = (payload = {}) => {
+    const type = String(payload?.type || '').trim();
+    const message = String(payload?.msg || payload?.message || '').trim();
+    if (type === 'progress') {
+      progressPercent.value = normalizeProgressPercent(payload.percent);
+      if (message) {
+        progressMessage.value = message;
+        appendLog(message);
+      }
+      return;
+    }
+    if (type === 'status' && message) {
+      progressMessage.value = message;
+      appendLog(message);
+    }
+  };
+
+  const createProgressStream = (clientId) => {
+    progressPercent.value = 1;
+    progressMessage.value = '正在连接榜单进度通道';
+    const stream = new EventSource(`/api/progress?clientId=${clientId}`);
+    stream.onmessage = (event) => {
+      try {
+        applyProgressEvent(JSON.parse(event.data));
+      } catch (_err) {
+        // Ignore malformed progress frames and keep the task request alive.
+      }
+    };
+    return stream;
+  };
+
+  const waitForProgressStream = (stream) => new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const timer = window.setTimeout(finish, 300);
+    stream.onopen = () => {
+      window.clearTimeout(timer);
+      finish();
+    };
+    stream.onerror = () => {
+      window.clearTimeout(timer);
+      finish();
+    };
+  });
+
   const activePartition = computed(() => partitions.value.find((item) => item.id === activePartitionId.value) || partitions.value[0] || DEFAULT_PARTITIONS[0]);
   const activePartitionLabel = computed(() => activePartition.value?.label || activePartitionId.value || '默认分区');
   const activePartitionAccountsCount = computed(() => parseAccountsText(accountsText.value).length);
@@ -109,7 +166,9 @@ export function useXaiTop10() {
       since: timeRange?.since || '-',
       until: timeRange?.until || '-',
       running: !!status.value?.running,
-      stage: status.value?.stage || 'idle'
+      stage: status.value?.stage || 'idle',
+      progress: progressPercent.value,
+      message: progressMessage.value
     };
   });
 
@@ -222,6 +281,8 @@ export function useXaiTop10() {
     if (!silent) {
       loading.value = true;
       error.value = '';
+      progressPercent.value = 15;
+      progressMessage.value = '正在同步榜单结果与状态';
       appendLog('刷新榜单结果与状态');
     }
     try {
@@ -240,7 +301,10 @@ export function useXaiTop10() {
       error.value = err.response?.data?.error || err.message;
       if (!silent) appendError(error.value);
     } finally {
-      if (!silent) loading.value = false;
+      if (!silent) {
+        progressPercent.value = 100;
+        loading.value = false;
+      }
     }
   };
 
@@ -273,21 +337,34 @@ export function useXaiTop10() {
   };
 
   const run = async () => {
+    if (loading.value) return;
     const clientId = `xai_${Math.random().toString(36).slice(2)}`;
-    const stream = new EventSource(`/api/progress?clientId=${clientId}`);
+    const stream = createProgressStream(clientId);
     loading.value = true;
     error.value = '';
+    progressPercent.value = 1;
+    progressMessage.value = `正在准备「${activePartitionLabel.value}」榜单任务`;
+    status.value = {
+      ...(status.value || {}),
+      running: true,
+      runningPartitionId: activePartitionId.value,
+      stage: 'starting'
+    };
     appendLog(`启动「${activePartitionLabel.value}」过去 24 小时 Top10 榜单任务`);
     try {
+      await waitForProgressStream(stream);
       const res = await axios.post('/api/xai-top10/run', { clientId, partitionId: activePartitionId.value });
       result.value = res.data?.result || result.value;
       status.value = res.data?.status || status.value;
-      appendLog('榜单任务执行完成，开始刷新结果');
-      await refresh();
+      progressPercent.value = 100;
+      progressMessage.value = '榜单任务执行完成，开始同步结果';
+      appendLog(progressMessage.value);
+      await refresh(true);
     } catch (err) {
       error.value = err.response?.data?.error || err.message;
+      progressMessage.value = '榜单任务执行失败';
       appendError(error.value);
-      await refresh();
+      await refresh(true);
     } finally {
       stream.close();
       loading.value = false;
@@ -369,6 +446,8 @@ export function useXaiTop10() {
 
   return {
     loading,
+    progressPercent,
+    progressMessage,
     queueing,
     error,
     savingConfig,

@@ -1,27 +1,11 @@
 <template>
   <main class="shell">
-    <header class="page-header">
-      <div>
-        <div class="header-kicker">Unified Video Console</div>
-        <h1>自动生产驾驶舱</h1>
-      </div>
-      <div class="status-card">
-        <div class="theme-toggle">
-          <button type="button" :class="{ active: themeMode === 'dark' }" @click="setThemeMode('dark')">
-            <Moon class="status-icon" aria-hidden="true" />
-            暗色
-          </button>
-          <button type="button" :class="{ active: themeMode === 'light' }" @click="setThemeMode('light')">
-            <Sun class="status-icon" aria-hidden="true" />
-            亮色
-          </button>
-        </div>
-        <div class="status-online" :class="engineStatusClass">
-          <span class="dot"></span>
-          <strong>{{ engineStatusLabel }}</strong>
-        </div>
-      </div>
-    </header>
+    <AppHeader
+      :theme-mode="themeMode"
+      :engine-status-label="engineStatusLabel"
+      :engine-status-class="engineStatusClass"
+      @update-theme="setThemeMode"
+    />
 
     <AutomationDashboard
       :material-driven="materialDriven"
@@ -37,7 +21,8 @@
       @run-xai="xaiTop10.run"
       @create-publish-job="handleCreatePublishJob"
       @run-publish-draft="handleRunPublishDraft"
-      @make-vertical="handleMakeVertical"
+      @retry-vertical="handleMakeVertical({ automatic: false })"
+      @resume-material-task="materialDriven.resumeMaterialTask"
       @check-login="handleCheckLogin"
     />
   </main>
@@ -45,7 +30,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { Moon, Sun } from 'lucide-vue-next';
+import AppHeader from './components/AppHeader.vue';
 import AutomationDashboard from './components/AutomationDashboard.vue';
 import { usePublishCenter } from './composables/usePublishCenter';
 import { useXaiTop10 } from './composables/useXaiTop10';
@@ -69,6 +54,8 @@ const publishCenter = usePublishCenter();
 const xaiTop10 = useXaiTop10();
 const standalone = useStandalone();
 const materialDriven = useMaterialDriven();
+const autoVerticalInFlightKey = ref('');
+const standaloneAssetTypes = new Set(['standalone_runtime', 'standalone']);
 
 const engineStatusLabel = computed(() => {
   const status = publishCenter.selfCheckSummary.value?.status;
@@ -94,6 +81,7 @@ const refreshDashboard = async () => {
     xaiTop10.refresh(true),
     standalone.loadQueue(true),
     standalone.loadMaterialTasks(true),
+    materialDriven.refreshActiveTasks(true),
     materialDriven.refreshTaskSnapshot()
   ]);
 };
@@ -113,16 +101,85 @@ const handleUseXaiMaterial = (item) => {
   materialDriven.applyXaiMaterial(item);
 };
 
-const findCurrentAsset = async () => {
-  if (!materialDriven.finalVideoUrl.value) return null;
-  if (typeof publishCenter.fetchAssets === 'function') {
-    await publishCenter.fetchAssets(true);
-  } else {
-    await publishCenter.refresh(true, { silent: true, preserveEditor: true });
+const normalizeUrlPath = (url) => {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw, window.location.origin).pathname;
+  } catch (_err) {
+    return raw.split('?')[0];
   }
+};
+
+const normalizeTaskDirReference = (value) => {
+  const normalized = String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '');
+  if (!normalized) return '';
+  const projectsMarker = '/projects/';
+  const projectsIndex = normalized.lastIndexOf(projectsMarker);
+  if (projectsIndex >= 0) {
+    return normalized.slice(projectsIndex + projectsMarker.length).split('/')[0] || '';
+  }
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || normalized;
+};
+
+const getAutoVerticalKey = () => {
+  const taskDir = getCurrentMaterialTaskDir();
+  const videoPath = normalizeUrlPath(materialDriven.finalVideoUrl.value);
+  return taskDir && videoPath ? `${taskDir}|${videoPath}` : '';
+};
+
+const getCurrentMaterialTaskDir = () => normalizeTaskDirReference(materialDriven.outputPath.value);
+
+const isStandaloneForCurrentMaterial = () => {
+  const taskDir = getCurrentMaterialTaskDir();
+  return Boolean(
+    taskDir &&
+    normalizeTaskDirReference(standalone.lastSourceTaskDir.value) === taskDir &&
+    standalone.finalVideoUrl.value
+  );
+};
+
+const refreshPublishAssets = async () => {
+  await publishCenter.refresh(true, { silent: true, preserveEditor: true });
+};
+
+const findVerticalAssetForCurrentMaterial = () => {
+  const taskDir = getCurrentMaterialTaskDir();
+  if (!taskDir) return null;
   return publishCenter.assets.value.find((asset) =>
-    asset.url === materialDriven.finalVideoUrl.value ||
-    materialDriven.finalVideoUrl.value.includes(asset.path)
+    standaloneAssetTypes.has(asset.sourceType) &&
+    normalizeTaskDirReference(asset.metadata?.sourceTaskDir) === taskDir
+  ) || null;
+};
+
+const restoreStandaloneFromAsset = (asset) => {
+  const taskDir = getCurrentMaterialTaskDir();
+  if (!asset || !taskDir) return;
+  standalone.finalVideoUrl.value = asset.url || standalone.finalVideoUrl.value;
+  standalone.lastSourceTaskDir.value = taskDir;
+  standalone.form.value.sourceTaskDir = taskDir;
+  standalone.form.value.sourceTaskTitle = asset.metadata?.title || asset.compactLabel || taskDir;
+  standalone.setPreviewSelection('current');
+  standalone.progress.value = 100;
+  standalone.statusText.value = '已检测到已有竖屏成片，跳过重复合成';
+};
+
+const findCurrentAsset = async () => {
+  if (!materialDriven.finalVideoUrl.value && !standalone.finalVideoUrl.value) return null;
+  await refreshPublishAssets();
+
+  if (isStandaloneForCurrentMaterial()) {
+    const standaloneAsset = findVerticalAssetForCurrentMaterial() || publishCenter.assets.value.find((asset) =>
+      standaloneAssetTypes.has(asset.sourceType)
+    );
+    if (standaloneAsset) return standaloneAsset;
+  }
+
+  const finalPath = normalizeUrlPath(materialDriven.finalVideoUrl.value);
+  return publishCenter.assets.value.find((asset) =>
+    normalizeUrlPath(asset.url) === finalPath ||
+    finalPath.includes(String(asset.path || '').replace(/\\/g, '/'))
   ) || null;
 };
 
@@ -139,6 +196,16 @@ const handleRunPublishDraft = async () => {
 };
 
 const normalizeSubtitlesPayload = (payload) => {
+  const narrationText = String(payload?.full_text || payload?.fullText || '').trim();
+  if (narrationText) {
+    const duration = Number(payload?.target_duration_sec ?? payload?.duration ?? payload?.duration_sec);
+    return [{
+      time: [0, Number.isFinite(duration) && duration > 0 ? duration : Math.max(6, Math.ceil(narrationText.length / 4))],
+      zh: narrationText,
+      text: narrationText
+    }];
+  }
+
   const source = Array.isArray(payload)
     ? payload
     : Array.isArray(payload?.segments)
@@ -163,19 +230,33 @@ const normalizeSubtitlesPayload = (payload) => {
   }).filter(Boolean);
 };
 
-const handleMakeVertical = async () => {
-  if (!materialDriven.finalVideoUrl.value || standalone.loading.value) return;
-  try {
-    const response = await fetch(materialDriven.finalVideoUrl.value);
-    const blob = await response.blob();
-    const file = new File([blob], 'output_final.mp4', { type: 'video/mp4' });
-    standalone.handleFile('video', file);
+const handleMakeVertical = async ({ automatic = false } = {}) => {
+  if (!materialDriven.finalVideoUrl.value || standalone.loading.value) return false;
+  if (automatic && !getCurrentMaterialTaskDir()) return false;
+  const verticalKey = getAutoVerticalKey();
+  if (automatic && (
+    autoVerticalInFlightKey.value === verticalKey ||
+    isStandaloneForCurrentMaterial()
+  )) {
+    return false;
+  }
 
-    const projectDir = materialDriven.outputPath.value;
+  autoVerticalInFlightKey.value = verticalKey;
+  try {
+    if (automatic) {
+      await refreshPublishAssets();
+      const existingVerticalAsset = findVerticalAssetForCurrentMaterial();
+      if (existingVerticalAsset) {
+        restoreStandaloneFromAsset(existingVerticalAsset);
+        return false;
+      }
+    }
+
+    const projectDir = getCurrentMaterialTaskDir();
     if (projectDir) {
+      standalone.selectMaterialTask(projectDir);
       const candidates = [
-        `/projects/${projectDir}/execution_plan.json`,
-        `/projects/${projectDir}/avatar_segments.json`,
+        `/projects/${projectDir}/narration.json`,
         `/projects/${projectDir}/aiman_subtitles.json`,
         `/projects/${projectDir}/subtitles.json`
       ];
@@ -190,6 +271,12 @@ const handleMakeVertical = async () => {
           break;
         }
       }
+    } else {
+      const response = await fetch(materialDriven.finalVideoUrl.value);
+      if (!response.ok) throw new Error('读取素材成片失败');
+      const blob = await response.blob();
+      const file = new File([blob], 'output_final.mp4', { type: 'video/mp4' });
+      standalone.handleFile('video', file);
     }
 
     if (materialDriven.narrationFullText.value) {
@@ -202,13 +289,36 @@ const handleMakeVertical = async () => {
       });
     }
     await standalone.submit();
+    await Promise.allSettled([
+      standalone.loadQueue(true),
+      refreshPublishAssets()
+    ]);
+    if (!standalone.error.value && standalone.finalVideoUrl.value) {
+      return true;
+    }
   } catch (err) {
     console.warn('Failed to create vertical version from cockpit', err);
+    standalone.setErrorState({
+      message: err?.message || '自动竖屏合成失败',
+      code: 'AUTO_VERTICAL_FAILED',
+      stage: 'frontend.auto_vertical',
+      hint: '请确认素材任务目录和成片文件仍然存在',
+      details: err?.stack || err?.message || ''
+    });
+  } finally {
+    if (autoVerticalInFlightKey.value === verticalKey) {
+      autoVerticalInFlightKey.value = '';
+    }
   }
+  return false;
 };
 
 const handleCheckLogin = ({ platformKey, accountId }) => {
   if (!platformKey || !accountId) return;
+  if (platformKey === 'wechatChannels') {
+    publishCenter.testWechatLogin(accountId);
+    return;
+  }
   publishCenter.checkPlatformAccountLogin(platformKey, accountId);
 };
 
@@ -220,13 +330,15 @@ onMounted(() => {
   standalone.loadMaterialTasks(true);
   standalone.startAutoRefresh();
   materialDriven.loadPresets();
-  materialDriven.restoreActiveJob();
+  materialDriven.restoreActiveJob().then(() => materialDriven.restoreLatestCompletedTask({ silent: true }));
+  materialDriven.startActiveTasksRefresh();
 });
 
 onBeforeUnmount(() => {
   publishCenter.stopAutoRefresh();
   xaiTop10.stopAutoRefresh();
   standalone.stopAutoRefresh();
+  materialDriven.stopActiveTasksRefresh();
 });
 
 watch(themeMode, (value) => {
@@ -238,6 +350,17 @@ watch(themeMode, (value) => {
     // ignore storage write errors
   }
 }, { immediate: true });
+
+watch(
+  () => [materialDriven.finalVideoUrl.value, materialDriven.outputPath.value],
+  ([finalVideoUrl, outputPath]) => {
+    if (!finalVideoUrl || !outputPath) return;
+    window.setTimeout(() => {
+      handleMakeVertical({ automatic: true });
+    }, 0);
+  },
+  { immediate: true }
+);
 </script>
 
 <style scoped>
@@ -250,110 +373,9 @@ watch(themeMode, (value) => {
   gap: 16px;
 }
 
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.header-kicker {
-  color: var(--brand-a);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-weight: 850;
-}
-
-h1 {
-  margin: 8px 0 0;
-  font-size: 28px;
-  line-height: 1.12;
-  color: var(--strong-text);
-}
-
-.status-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  border-radius: 8px;
-  border: 1px solid var(--line-soft);
-  background: var(--panel);
-  padding: 10px 14px;
-  box-shadow: var(--shadow);
-}
-
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 7px;
-  border: 1px solid var(--line-soft);
-  background: var(--input-bg);
-  padding: 4px;
-}
-
-.theme-toggle button {
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 6px 10px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.theme-toggle button.active {
-  color: #04110f;
-  background: var(--brand-a);
-}
-
-.status-online {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--ok);
-  font-weight: 800;
-}
-
-.status-online.warn {
-  color: var(--warn);
-}
-
-.status-online.danger {
-  color: var(--danger);
-}
-
-.dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  background: currentColor;
-  box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 16%, transparent);
-}
-
-.status-icon {
-  width: 15px;
-  height: 15px;
-}
-
 @media (max-width: 760px) {
   .shell {
     padding: 16px 12px 32px;
-  }
-
-  .page-header {
-    flex-direction: column;
-  }
-
-  .status-card {
-    width: 100%;
-    justify-content: space-between;
-    flex-wrap: wrap;
   }
 }
 </style>

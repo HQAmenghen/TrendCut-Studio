@@ -15,7 +15,8 @@ function createSystemHandlers(deps) {
     writeWorkflow,
     runPythonScript,
     readProjectEnv,
-    updateProjectEnv
+    updateProjectEnv,
+    unifiedTaskView
   } = deps;
 
   const getEnvValue = (values, key, fallback = '') => values[key] ?? process.env[key] ?? fallback;
@@ -60,6 +61,22 @@ function createSystemHandlers(deps) {
           error: '启动自检执行失败',
           details: err.message,
           hint: '请检查 Python、FFmpeg 与关键脚本路径配置'
+        });
+      }
+    },
+    getUnifiedTasks: (req, res) => {
+      try {
+        const tasks = unifiedTaskView && typeof unifiedTaskView.listTasks === 'function'
+          ? unifiedTaskView.listTasks({ limit: req.query?.limit })
+          : [];
+        res.json({ success: true, tasks });
+      } catch (err) {
+        sendError(res, {
+          status: 500,
+          code: 'SYSTEM_TASKS_READ_FAILED',
+          stage: 'system.tasks',
+          error: '读取统一任务视图失败',
+          details: err.message
         });
       }
     },

@@ -1,0 +1,12 @@
+{
+  "provider": "runninghub",
+  "status": "polling_interrupted",
+  "resumeKey": "resume-key",
+  "taskId": "rh_task_1",
+  "videoUrl": "",
+  "remoteAudioName": "audio.wav",
+  "remoteImageName": "image.png",
+  "remotePoseName": "",
+  "nodeInfoList": [],
+  "error": ""
+}

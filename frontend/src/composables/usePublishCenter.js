@@ -213,6 +213,7 @@ export function usePublishCenter() {
   const creatingStatusMessage = ref('');
   const generatingDescription = ref(false);
   const regeneratingDescriptionJobId = ref('');
+  const deletingAssetId = ref('');
   const assets = ref([]);
   const jobs = ref([]);
   const config = ref({});
@@ -459,6 +460,50 @@ export function usePublishCenter() {
     }
   };
 
+  const openWechatContentManager = async (accountId) => {
+    clearErrorState();
+    appendLog(`打开视频号内容管理：${accountId}`);
+    try {
+      const res = await axios.post(`/api/publish/wechat/content-manager/${accountId}`);
+      if (res.data?.success === false) {
+        throw new Error(res.data?.error || res.data?.message || '打开内容管理失败');
+      }
+      appendLog(res.data?.message || `已打开账号 ${accountId} 的内容管理页`);
+      return res.data || null;
+    } catch (err) {
+      setErrorState(normalizeApiError(err, '打开视频号内容管理失败'));
+      return null;
+    }
+  };
+
+  const openPlatformContentManager = async (platformKey, accountId) => {
+    clearErrorState();
+    appendLog(`打开${getPlatformLabel(platformKey)}内容管理：${accountId}`);
+    try {
+      const res = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/content-manager`);
+      if (res.data?.success === false) {
+        throw new Error(res.data?.error || res.data?.message || '打开内容管理失败');
+      }
+      appendLog(res.data?.message || `已打开${getPlatformLabel(platformKey)}内容管理页`);
+      return res.data || null;
+    } catch (err) {
+      setErrorState(normalizeApiError(err, `打开${getPlatformLabel(platformKey)}内容管理失败`));
+      return null;
+    }
+  };
+
+  const retryQrLogin = async () => {
+    const accountKey = String(qrCodeData.value.accountId || '').trim();
+    const source = String(qrCodeData.value.source || '').trim();
+    if (!accountKey) return;
+    if (source === 'platform-account-login' && accountKey.includes(':')) {
+      const [platformKey, accountId] = accountKey.split(':');
+      await checkPlatformAccountLogin(platformKey, accountId);
+      return;
+    }
+    await testWechatLogin(accountKey);
+  };
+
   const closeQrCodeModal = () => {
     stopWechatLoginPolling();
     qrCodeData.value.show = false;
@@ -567,6 +612,12 @@ export function usePublishCenter() {
     }
     return [];
   };
+  const getPlatformAccountLabel = (platformKey, accountId) => {
+    const normalizedId = String(accountId || '').trim();
+    if (!normalizedId) return '未指定账号';
+    const account = getPlatformAccountOptions(platformKey).find((item) => item.id === normalizedId);
+    return account?.label || normalizedId;
+  };
   const ensureEditorPlatformSelection = (platformKey) => {
     if (!editor.value.platformSelections[platformKey]) {
       editor.value.platformSelections[platformKey] = { accountId: '' };
@@ -659,6 +710,7 @@ export function usePublishCenter() {
     const maxLen = Math.max(accountIds.length, times.length, partitionIds.length, sourceRanks.length, platforms.length, audioPresets.length, imagePresets.length);
     for (let i = 0; i < maxLen; i++) {
       const selectedPlatforms = normalizePlatformSelection(platforms[i]);
+      const platformKey = selectedPlatforms[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
       const hasConfiguredSlot = Boolean(
         String(accountIds[i] || '').trim()
         || String(times[i] || '').trim()
@@ -687,6 +739,8 @@ export function usePublishCenter() {
           partitionId,
           partitionLabel: partition?.label || partitionId,
           platforms: selectedPlatforms,
+          platformKey,
+          platformLabel: getPlatformLabel(platformKey),
           platformLabels: getPlatformLabels(selectedPlatforms),
           audioPreset,
           imagePreset
@@ -712,8 +766,8 @@ export function usePublishCenter() {
   });
 
   const autoPilotConfiguredPlans = computed(() => activeAutoPilotMappings.value.map((mapping) => {
-    const account = wechatAccounts.value.find((item) => item.id === mapping.accountId);
-    const accountLabel = account?.displayName || account?.helperAccount || account?.finderUserName || mapping.accountId || '未指定账号';
+    const platformKey = mapping.platformKey || mapping.platforms?.[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
+    const accountLabel = getPlatformAccountLabel(platformKey, mapping.accountId);
     return {
       id: `plan_${mapping.pipelineMode}_${mapping.slot}`,
       title: `${mapping.pipelineLabel}自动化计划`,
@@ -725,8 +779,10 @@ export function usePublishCenter() {
       scheduledLabel: `每天 ${mapping.time || config.value?.global?.autoPilotTime || '08:00'}`,
       status: 'configured',
       statusLabel: '计划已配置',
-      accountLabel: mapping.platforms.includes('wechatChannels') ? accountLabel : '无需视频号账号',
+      accountLabel,
       platforms: mapping.platforms,
+      platformKey,
+      platformLabel: getPlatformLabel(platformKey),
       platformLabels: mapping.platformLabels,
       partitionId: mapping.partitionId,
       partitionLabel: mapping.partitionLabel,
@@ -792,11 +848,10 @@ export function usePublishCenter() {
       .map((item) => item.label);
     
     const assignedAccounts = activeAutoPilotMappings.value.map(m => {
-      const account = wechatAccounts.value.find((item) => item.id === m.accountId);
-      const label = account?.displayName || account?.helperAccount || account?.finderUserName || m.accountId || '未知账号';
-      const target = m.platforms.includes('wechatChannels') ? label : '无需视频号账号';
+      const platformKey = m.platformKey || m.platforms?.[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
+      const target = getPlatformAccountLabel(platformKey, m.accountId);
       const avatarPreset = m.pipelineMode === 'avatar' ? ` -> ${getAutoPilotAvatarPresetSummary(m)}` : '';
-      return `${m.pipelineLabel}: ${m.partitionLabel || '默认分区'} Top ${m.sourceRank || 1} -> ${m.platformLabels.join(' / ')} -> ${target}${avatarPreset} @ ${m.time}`;
+      return `${m.pipelineLabel}: ${m.partitionLabel || '默认分区'} Top ${m.sourceRank || 1} -> ${getPlatformLabel(platformKey)} -> ${target}${avatarPreset} @ ${m.time}`;
     });
 
     if (!assignedAccounts.length) {
@@ -972,10 +1027,58 @@ export function usePublishCenter() {
     }
   };
 
+  const refreshAssets = async (force = true, options = {}) => {
+    const preserveEditor = options.preserveEditor !== false;
+    try {
+      const res = await axios.get('/api/publish/assets', { params: { refresh: force ? 1 : 0 } });
+      const keepId = selectedAssetId.value;
+      assets.value = res.data?.assets || [];
+      const nextSelected = assets.value.find((asset) => asset.id === keepId)?.id || assets.value[0]?.id || '';
+      selectedAssetId.value = nextSelected;
+      if (nextSelected && !preserveEditor) {
+        fillEditorFromAsset(assets.value.find((asset) => asset.id === nextSelected) || null);
+      }
+    } catch (err) {
+      setErrorState(normalizeApiError(err, '刷新成品库失败'));
+    }
+  };
+
   const selectAsset = async (assetId) => {
     selectedAssetId.value = assetId;
     appendLog(`切换发布素材：${assetId || '未选择'}`);
     await refresh(true);
+  };
+
+  const deleteAsset = async (asset) => {
+    const assetId = String(asset?.id || '').trim();
+    if (!assetId) {
+      setErrorState({ message: '缺少素材 ID，无法删除', code: 'PUBLISH_ASSET_ID_MISSING', stage: 'publish.assets', hint: '', details: '' });
+      return false;
+    }
+    clearErrorState();
+    deletingAssetId.value = assetId;
+    appendLog(`删除成品素材：${asset.displayLabel || asset.label || assetId}`);
+    try {
+      const res = await axios.delete(`/api/publish/assets/${encodeURIComponent(assetId)}`);
+      assets.value = res.data?.assets || [];
+      if (selectedAssetId.value === assetId) {
+        selectedAssetId.value = assets.value[0]?.id || '';
+        if (selectedAssetId.value) {
+          fillEditorFromAsset(assets.value[0]);
+        } else {
+          editor.value.title = '';
+          editor.value.description = '';
+          editor.value.tags = '';
+          editor.value.coverUrl = '';
+        }
+      }
+      return true;
+    } catch (err) {
+      setErrorState(normalizeApiError(err, '删除成品素材失败'));
+      return false;
+    } finally {
+      deletingAssetId.value = '';
+    }
   };
 
   const applySuggestedTitle = () => {
@@ -1131,7 +1234,7 @@ export function usePublishCenter() {
       updateAutoPilotModeArray(mode, 'partitionIds', rIdx, config.value.global?.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
       updateAutoPilotModeArray(mode, 'sourceRanks', rIdx, 1);
     }
-    updateAutoPilotModeArray(mode, 'platforms', rIdx, DEFAULT_AUTO_PILOT_PLATFORMS);
+    updateAutoPilotModeArray(mode, 'platforms', rIdx, [DEFAULT_AUTO_PILOT_PLATFORMS[0]]);
     if (mode === 'avatar') {
       updateAutoPilotModeArray(mode, 'audioPresets', rIdx, getDefaultAvatarAudioPreset());
       updateAutoPilotModeArray(mode, 'imagePresets', rIdx, getDefaultAvatarImagePreset());
@@ -1333,8 +1436,10 @@ export function usePublishCenter() {
       });
       jobs.value = res.data?.jobs || jobs.value;
       creatingStatusMessage.value = '';
+      return res.data?.job || null;
     } catch (err) {
       setErrorState(normalizeApiError(err, '创建发布任务失败'));
+      return null;
     } finally {
       creating.value = false;
     }
@@ -1560,6 +1665,175 @@ export function usePublishCenter() {
     }
   });
 
+  const loadAllLoginStatus = async () => {
+    try {
+      const res = await axios.get('/api/login-status/all');
+      if (res.data?.success) {
+        const statuses = {};
+        res.data.statuses.forEach((status) => {
+          statuses[status.accountId] = status;
+        });
+        accountLoginStatus.value = statuses;
+      }
+    } catch (err) {
+      console.error('加载登录状态失败:', err);
+    }
+  };
+
+  const checkSingleAccountLogin = async (accountId) => {
+    checkingLoginAccounts.value.add(accountId);
+    try {
+      const res = await axios.post(`/api/login-status/check/${accountId}`);
+      if (res.data?.success) {
+        accountLoginStatus.value = {
+          ...accountLoginStatus.value,
+          [accountId]: res.data.result
+        };
+        return res.data.result;
+      }
+      throw new Error(res.data?.error || '检测登录状态失败');
+    } catch (err) {
+      const normalized = normalizeApiError(err, '检测登录状态失败');
+      accountLoginStatus.value = {
+        ...accountLoginStatus.value,
+        [accountId]: {
+          status: 'error',
+          message: normalized.message,
+          lastCheckedAt: new Date().toISOString()
+        }
+      };
+      qrCodeData.value = {
+        show: true,
+        accountId,
+        accountLabel: accountId,
+        source: 'login-check',
+        base64: '',
+        qrCodePath: '',
+        status: 'error',
+        error: normalized.message,
+        message: ''
+      };
+      appendError(`检测微信视频号登录状态失败: ${normalized.message}`);
+    } finally {
+      checkingLoginAccounts.value.delete(accountId);
+    }
+    return null;
+  };
+
+  const checkPlatformAccountLogin = async (platformKey, accountId) => {
+    const statusKey = `${platformKey}:${accountId}`;
+    checkingLoginAccounts.value.add(statusKey);
+    stopWechatLoginPolling();
+    qrCodeData.value = {
+      show: true,
+      accountId: statusKey,
+      accountLabel: getPlatformLabel(platformKey),
+      source: 'platform-account-login',
+      base64: '',
+      qrCodePath: '',
+      status: 'loading',
+      error: '',
+      message: `正在检测${getPlatformLabel(platformKey)}登录状态...`
+    };
+    accountLoginStatus.value = {
+      ...accountLoginStatus.value,
+      [statusKey]: {
+        status: 'checking',
+        message: '正在检测登录状态',
+        lastCheckedAt: new Date().toISOString()
+      }
+    };
+    appendLog(`检测${getPlatformLabel(platformKey)}登录状态：${accountId}`);
+    try {
+      const res = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
+      if (res.data?.success) {
+        const result = applyPlatformAccountLoginResponse(platformKey, accountId, res.data);
+        if (['need_scan', 'checking', 'checking_login', 'starting'].includes(res.data.status)) {
+          qrLoginPollTimer = window.setInterval(async () => {
+            if (!qrCodeData.value.show || qrCodeData.value.accountId !== statusKey) {
+              stopWechatLoginPolling();
+              return;
+            }
+            try {
+              const pollRes = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
+              if (!pollRes.data?.success) return;
+              applyPlatformAccountLoginResponse(platformKey, accountId, pollRes.data, { silentLoggedIn: true });
+              if (pollRes.data.status === 'logged_in') {
+                qrCodeData.value = {
+                  show: true,
+                  accountId: statusKey,
+                  accountLabel: pollRes.data.accountLabel || accountId,
+                  source: 'platform-account-login',
+                  base64: '',
+                  qrCodePath: '',
+                  status: 'logged_in',
+                  error: '',
+                  message: pollRes.data.message || '登录态可用'
+                };
+                stopWechatLoginPolling();
+                window.setTimeout(() => {
+                  if (qrCodeData.value.accountId === statusKey && qrCodeData.value.status === 'logged_in') {
+                    qrCodeData.value.show = false;
+                  }
+                }, 1800);
+              }
+            } catch (_err) {}
+          }, 4000);
+        }
+        return result;
+      }
+      throw new Error(res.data?.error || '检测平台账号登录状态失败');
+    } catch (err) {
+      const normalized = normalizeApiError(err, '检测平台账号登录状态失败');
+      accountLoginStatus.value = {
+        ...accountLoginStatus.value,
+        [statusKey]: {
+          status: 'error',
+          message: normalized.message,
+          lastCheckedAt: new Date().toISOString()
+        }
+      };
+      if (qrCodeData.value.accountId === statusKey) {
+        qrCodeData.value = {
+          ...qrCodeData.value,
+          show: true,
+          status: 'error',
+          error: normalized.message,
+          message: ''
+        };
+      }
+      appendError(`检测${getPlatformLabel(platformKey)}登录状态失败: ${normalized.message}`);
+    } finally {
+      checkingLoginAccounts.value.delete(statusKey);
+    }
+    return null;
+  };
+
+  const checkSelectedAccountsLogin = async (accountIds, notifyFeishu = false) => {
+    if (!accountIds || accountIds.length === 0) return null;
+    checkingBatchLogin.value = true;
+    try {
+      const res = await axios.post('/api/login-status/check-batch', {
+        accountIds,
+        notifyFeishu,
+        parallel: false
+      });
+      if (res.data?.success) {
+        const newStatuses = { ...accountLoginStatus.value };
+        res.data.summary.results.forEach((result) => {
+          newStatuses[result.accountId] = result;
+        });
+        accountLoginStatus.value = newStatuses;
+        return res.data.summary;
+      }
+    } catch (err) {
+      console.error('批量检测失败:', err);
+    } finally {
+      checkingBatchLogin.value = false;
+    }
+    return null;
+  };
+
   return {
     loading,
     error,
@@ -1569,6 +1843,7 @@ export function usePublishCenter() {
     creatingStatusMessage,
     generatingDescription,
     regeneratingDescriptionJobId,
+    deletingAssetId,
     assets,
     jobs,
     config,
@@ -1601,17 +1876,22 @@ export function usePublishCenter() {
     autoPilotSummaryItems,
     qrCodeData,
     testWechatLogin,
+    retryQrLogin,
+    openWechatContentManager,
+    openPlatformContentManager,
     closeQrCodeModal,
     filteredJobs,
     selfCheckSummary,
     selfCheckHighlights,
     refreshJobs,
     refreshPresets,
+    refreshAssets,
     refreshSelfCheck,
     refresh,
     startAutoRefresh,
     stopAutoRefresh,
     selectAsset,
+    deleteAsset,
     updateConfigField,
     updateAutoPilotArray,
     updateAutoPilotModeArray,
@@ -1650,6 +1930,7 @@ export function usePublishCenter() {
     getFieldLabel,
     isSecretField,
     getPlatformLabel,
+    getPlatformAccountLabel,
     getAvatarPresetLabel,
     getAutoPilotAvatarPresetSummary,
     getPlatformAccountOptions,
@@ -1667,148 +1948,9 @@ export function usePublishCenter() {
     checkingLoginAccounts,
     checkingBatchLogin,
     applyPlatformAccountLoginResponse,
-    loadAllLoginStatus: async () => {
-      try {
-        const res = await axios.get('/api/login-status/all');
-        if (res.data?.success) {
-          const statuses = {};
-          res.data.statuses.forEach(status => {
-            statuses[status.accountId] = status;
-          });
-          accountLoginStatus.value = statuses;
-        }
-      } catch (err) {
-        console.error('加载登录状态失败:', err);
-      }
-    },
-    checkSingleAccountLogin: async (accountId) => {
-      checkingLoginAccounts.value.add(accountId);
-      try {
-        const res = await axios.post(`/api/login-status/check/${accountId}`);
-        if (res.data?.success) {
-          accountLoginStatus.value = {
-            ...accountLoginStatus.value,
-            [accountId]: res.data.result
-          };
-          return res.data.result;
-        }
-      } catch (err) {
-        console.error('检测登录状态失败:', err);
-      } finally {
-        checkingLoginAccounts.value.delete(accountId);
-      }
-      return null;
-    },
-    checkPlatformAccountLogin: async (platformKey, accountId) => {
-      const statusKey = `${platformKey}:${accountId}`;
-      checkingLoginAccounts.value.add(statusKey);
-      stopWechatLoginPolling();
-      qrCodeData.value = {
-        show: true,
-        accountId: statusKey,
-        accountLabel: getPlatformLabel(platformKey),
-        source: 'platform-account-login',
-        base64: '',
-        qrCodePath: '',
-        status: 'loading',
-        error: '',
-        message: `正在检测${getPlatformLabel(platformKey)}登录状态...`
-      };
-      accountLoginStatus.value = {
-        ...accountLoginStatus.value,
-        [statusKey]: {
-          status: 'checking',
-          message: '正在检测登录状态',
-          lastCheckedAt: new Date().toISOString()
-        }
-      };
-      appendLog(`检测${getPlatformLabel(platformKey)}登录状态：${accountId}`);
-      try {
-        const res = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
-        if (res.data?.success) {
-          const result = applyPlatformAccountLoginResponse(platformKey, accountId, res.data);
-          if (['need_scan', 'checking', 'checking_login', 'starting'].includes(res.data.status)) {
-            qrLoginPollTimer = window.setInterval(async () => {
-              if (!qrCodeData.value.show || qrCodeData.value.accountId !== statusKey) {
-                stopWechatLoginPolling();
-                return;
-              }
-              try {
-                const pollRes = await axios.post(`/api/publish/platforms/${platformKey}/accounts/${accountId}/test-login`);
-                if (!pollRes.data?.success) return;
-                applyPlatformAccountLoginResponse(platformKey, accountId, pollRes.data, { silentLoggedIn: true });
-                if (pollRes.data.status === 'logged_in') {
-                  qrCodeData.value = {
-                    show: true,
-                    accountId: statusKey,
-                    accountLabel: pollRes.data.accountLabel || accountId,
-                    source: 'platform-account-login',
-                    base64: '',
-                    qrCodePath: '',
-                    status: 'logged_in',
-                    error: '',
-                    message: pollRes.data.message || '登录态可用'
-                  };
-                  stopWechatLoginPolling();
-                  window.setTimeout(() => {
-                    if (qrCodeData.value.accountId === statusKey && qrCodeData.value.status === 'logged_in') {
-                      qrCodeData.value.show = false;
-                    }
-                  }, 1800);
-                }
-              } catch (_err) {}
-            }, 4000);
-          }
-          return result;
-        }
-      } catch (err) {
-        const normalized = normalizeApiError(err, '检测平台账号登录状态失败');
-        accountLoginStatus.value = {
-          ...accountLoginStatus.value,
-          [statusKey]: {
-            status: 'error',
-            message: normalized.message,
-            lastCheckedAt: new Date().toISOString()
-          }
-        };
-        if (qrCodeData.value.accountId === statusKey) {
-          qrCodeData.value = {
-            ...qrCodeData.value,
-            show: true,
-            status: 'error',
-            error: normalized.message,
-            message: ''
-          };
-        }
-        appendError(`检测${getPlatformLabel(platformKey)}登录状态失败: ${normalized.message}`);
-      } finally {
-        checkingLoginAccounts.value.delete(statusKey);
-      }
-      return null;
-    },
-    checkSelectedAccountsLogin: async (accountIds, notifyFeishu = false) => {
-      if (!accountIds || accountIds.length === 0) return null;
-      checkingBatchLogin.value = true;
-      try {
-        const res = await axios.post('/api/login-status/check-batch', {
-          accountIds,
-          notifyFeishu,
-          parallel: false
-        });
-        if (res.data?.success) {
-          const newStatuses = { ...accountLoginStatus.value };
-          res.data.summary.results.forEach(result => {
-            newStatuses[result.accountId] = result;
-          });
-          accountLoginStatus.value = newStatuses;
-          return res.data.summary;
-        }
-      } catch (err) {
-        console.error('批量检测失败:', err);
-      } finally {
-        checkingBatchLogin.value = false;
-      }
-      return null;
-    }
+    loadAllLoginStatus,
+    checkSingleAccountLogin,
+    checkPlatformAccountLogin,
+    checkSelectedAccountsLogin
   };
 }

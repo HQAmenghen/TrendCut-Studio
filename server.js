@@ -12,6 +12,7 @@ const { loadProjectEnv, readProjectEnv, updateProjectEnv } = require('./scripts/
 const { sendError } = require('./server/core/http');
 const { createError } = require('./server/core/errorCodes');
 const { TaskStore } = require('./server/core/taskStore');
+const { createUnifiedTaskView } = require('./server/core/taskView');
 const { createRecoveryService } = require('./server/core/recovery');
 const { runPythonScript, runPythonScriptSync, runPythonScriptCancellable, summarizePythonError, stopProcessTree: stopPythonProcessTree } = require('./server/core/python');
 const {
@@ -155,13 +156,19 @@ function buildLlmEnvRequirements() {
 
 // 初始化统一任务存储
 const taskStore = new TaskStore(paths.TASK_STORE_DB_PATH);
-const materialDrivenTaskRegistry = createMaterialDrivenTaskRegistry(paths);
+let unifiedTaskView = null;
+const deferredUnifiedTaskView = {
+    listTasks: (options) => unifiedTaskView?.listTasks(options) || []
+};
+const materialDrivenTaskRegistry = createMaterialDrivenTaskRegistry(paths, { taskStore });
 const materialDrivenAvatarGeneration = createAvatarGenerationService({
     paths,
-    persistTaskStateSnapshot: materialDrivenTaskRegistry.persistTaskStateSnapshot
+    persistTaskStateSnapshot: materialDrivenTaskRegistry.persistTaskStateSnapshot,
+    taskStore
 });
 const materialDrivenPipelineRunner = createMaterialDrivenPipelineRunner({
-    autoGenerateAvatar: materialDrivenAvatarGeneration.autoGenerateAvatar
+    autoGenerateAvatar: materialDrivenAvatarGeneration.autoGenerateAvatar,
+    taskStore
 });
 
 app.use(express.static(paths.FRONTEND_DIST_DIR));
@@ -395,6 +402,7 @@ const {
     buildShortTitle,
     collectPublishAssets,
     getCachedPublishAssets,
+    deletePublishAsset,
     resetPublishAssetsCache
 } = publishAssetsService;
 
@@ -537,7 +545,8 @@ const {
         writeWorkflow,
         runPythonScript,
         readProjectEnv,
-        updateProjectEnv
+        updateProjectEnv,
+        unifiedTaskView: deferredUnifiedTaskView
     });
 
     function spawnScript(scriptPath, args, options = {}) {
@@ -659,6 +668,11 @@ const {
         sendProgressEvent,
         runPythonScript,
         runPythonScriptSync
+    });
+    unifiedTaskView = createUnifiedTaskView({
+        taskStore,
+        publishStore,
+        xaiService
     });
 
     registerXaiRoutes(app, {
@@ -800,7 +814,8 @@ const {
         writeJsonFile,
         writeMediaMetadata: utils.writeMediaMetadata,
         readJsonIfExists,
-        runPythonScript
+        runPythonScript,
+        taskStore
     });
 
     registerStandaloneRoute(app, standaloneHandler);
@@ -863,6 +878,7 @@ const {
         archivePublishJob,
         archiveCompletedPublishJobs,
         collectPublishAssets,
+        deletePublishAsset,
         makeJobId,
         buildShortTitle,
         generatePublishDescription,
@@ -900,7 +916,12 @@ const {
     });
     registerReviewRoutes(app, reviewHandlers);
     registerLoginStatusRoutes(app, loginStatusService, feishuService);
-    registerMaterialDrivenRoutes(app, paths);
+    registerMaterialDrivenRoutes(app, paths, {
+        taskStore,
+        taskRegistry: materialDrivenTaskRegistry,
+        avatarGeneration: materialDrivenAvatarGeneration,
+        pipelineRunner: materialDrivenPipelineRunner
+    });
 
     const agentHandlers = createAgentHandlers({
         sendError,
@@ -908,7 +929,7 @@ const {
         selfCheckService,
         xaiService,
         materialDrivenStarter: {
-            start: (params) => startMaterialDrivenFromUrl(paths, params),
+            start: (params) => startMaterialDrivenFromUrl(paths, { ...params, taskStore }),
             getStatus: (jobId, outputPath = '') => {
                 const runtimeStatus = getTaskStatus(jobId);
                 if (runtimeStatus) {
@@ -1061,6 +1082,27 @@ const {
         auditLogPath: path.join(paths.DATA_DIR, 'logs', 'agent_audit.log')
     });
 
+    const schedulerMaterialDrivenStarter = {
+        start: (params) => startMaterialDrivenFromUrl(paths, { ...params, taskStore }),
+        getStatus: getTaskStatus,
+        continueOneClick: async (jobId, outputPath = '', options = {}) => {
+            const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
+            if (!task) {
+                throw new Error('任务不存在');
+            }
+            if (options.avatarConfig && typeof options.avatarConfig === 'object') {
+                task.avatarConfig = { ...(task.avatarConfig || {}), ...options.avatarConfig };
+            }
+            if (typeof options.useCache === 'boolean') {
+                task.useCache = options.useCache;
+            }
+            task.autoGenerate = true;
+            materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+            materialDrivenPipelineRunner.continueFromAvatarStep(jobId, task);
+            return materialDrivenTaskRegistry.buildStatusPayload(task);
+        }
+    };
+
     schedulerService = startScheduler({
         publishStore,
         wechatRpaService,
@@ -1071,17 +1113,15 @@ const {
         publishAssetsService,
         loginStatusService,
         feishuService,
-        materialDrivenStarter: {
-            start: (params) => startMaterialDrivenFromUrl(paths, params),
-            getStatus: getTaskStatus
-        }
+        materialDrivenStarter: schedulerMaterialDrivenStarter
     });
 
     // 初始化恢复服务
     const recoveryService = createRecoveryService({
         taskStore,
         verticalQueueService,
-        publishStore
+        publishStore,
+        materialDrivenStarter: schedulerMaterialDrivenStarter
     });
 
     // 恢复 API 端点

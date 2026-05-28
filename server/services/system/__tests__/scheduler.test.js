@@ -121,6 +121,39 @@ describe('system scheduler autopilot safeguards', () => {
     };
   }
 
+  function createRecoveredAutoPilotTask(overrides = {}) {
+    return {
+      id: 'queue_recovered',
+      type: 'vertical_queue',
+      status: 'reviewing',
+      progress: 92,
+      message: 'recovering',
+      createdAt: '2026-04-27T00:00:00.000Z',
+      updatedAt: '2026-04-27T00:10:00.000Z',
+      startedAt: '2026-04-27T00:00:00.000Z',
+      completedAt: null,
+      logs: [],
+      metadata: {
+        sourceType: 'xai_top10_cached',
+        sourceRank: 1,
+        title: 'Recovered source',
+        summary: 'Recovered summary',
+        videoUrl: 'https://video.twimg.com/amplify_video/recovered/vid/avc1/source.mp4',
+        postId: 'post-recovered',
+        author: 'author-a',
+        autoPilot: {
+          rank: 0,
+          pipelineMode: 'vertical',
+          platforms: ['wechatChannels'],
+          sourceVideoUrl: 'https://video.twimg.com/amplify_video/recovered/vid/avc1/source.mp4',
+          sourcePostId: 'post-recovered',
+          sourceRank: 1
+        }
+      },
+      ...overrides
+    };
+  }
+
   test('dedupes current ranking items by source video URL and fills the next slot from lower results', async () => {
     const { startScheduler } = require('../scheduler');
     const config = createBaseConfig();
@@ -350,6 +383,111 @@ describe('system scheduler autopilot safeguards', () => {
     expect(publishStore.reconcileAndPersistPublishJobs).not.toHaveBeenCalled();
   });
 
+  test('recovers unfinished completed-artifact queue tasks without preexisting in-memory autopilot jobs', async () => {
+    const { startScheduler } = require('../scheduler');
+    const sourceVideoUrl = 'https://video.twimg.com/amplify_video/recovered/vid/avc1/source.mp4';
+    const config = createBaseConfig({ global: { autoPilotCount: 1, autoPilotAccountIds: ['wechat_a'] } });
+    const publishStore = createPublishStore(config, []);
+    const taskStore = {
+      listTasks: jest.fn()
+        .mockReturnValueOnce([createRecoveredAutoPilotTask()])
+        .mockReturnValueOnce([createRecoveredAutoPilotTask({ status: 'completed', progress: 100 })]),
+      updateTask: jest.fn(),
+      appendLog: jest.fn()
+    };
+    const verticalQueueService = {
+      recoverPersistedJobs: jest.fn(),
+      getJob: jest.fn(() => ({ id: 'queue_recovered', status: 'completed', title: 'Recovered source' }))
+    };
+    const publishAssetsService = {
+      resetPublishAssetsCache: jest.fn(),
+      collectPublishAssets: jest.fn(() => [{
+        label: 'Recovered asset',
+        compactLabel: 'Recovered asset',
+        path: 'C:\\out\\queue_recovered.mp4',
+        url: '/xai_vertical_queue/queue_recovered/vertical_output.mp4',
+        metadata: {
+          videoUrl: sourceVideoUrl,
+          postId: 'post-recovered',
+          sourceSummary: 'Recovered summary'
+        }
+      }])
+    };
+    const generatePublishDescription = jest.fn(async () => 'publish description');
+
+    startScheduler({
+      publishStore,
+      verticalQueueService,
+      taskStore,
+      publishAssetsService,
+      generatePublishDescription
+    });
+
+    await scheduledTasks[0].callback();
+
+    const jobs = publishStore.readPublishJobs().jobs;
+    expect(verticalQueueService.recoverPersistedJobs).toHaveBeenCalledTimes(1);
+    expect(publishAssetsService.resetPublishAssetsCache).toHaveBeenCalledTimes(1);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toEqual(expect.objectContaining({
+      status: 'scheduled_wait',
+      autoPilot: expect.objectContaining({
+        queueJobId: 'queue_recovered',
+        pipelineMode: 'vertical'
+      })
+    }));
+  });
+
+  test('does not recover historical completed vertical queue tasks into new publish jobs', async () => {
+    const { startScheduler } = require('../scheduler');
+    const config = createBaseConfig({ global: { autoPilotCount: 1, autoPilotAccountIds: ['wechat_a'] } });
+    const publishStore = createPublishStore(config, []);
+    const taskStore = {
+      listTasks: jest.fn(() => [createRecoveredAutoPilotTask({
+        id: 'queue_historical',
+        status: 'completed',
+        progress: 100,
+        completedAt: '2026-04-26T00:20:00.000Z'
+      })]),
+      updateTask: jest.fn(),
+      appendLog: jest.fn()
+    };
+    const verticalQueueService = {
+      recoverPersistedJobs: jest.fn(),
+      getJob: jest.fn(() => ({ id: 'queue_historical', status: 'completed', title: 'Old output' }))
+    };
+    const publishAssetsService = {
+      resetPublishAssetsCache: jest.fn(),
+      collectPublishAssets: jest.fn(() => [{
+        label: 'Old asset',
+        compactLabel: 'Old asset',
+        path: 'C:\\out\\queue_historical.mp4',
+        url: '/xai_vertical_queue/queue_historical/vertical_output.mp4',
+        metadata: {
+          videoUrl: 'https://video.twimg.com/amplify_video/old/vid/avc1/source.mp4',
+          sourceSummary: 'Old summary'
+        }
+      }])
+    };
+    const generatePublishDescription = jest.fn(async () => 'publish description');
+
+    startScheduler({
+      publishStore,
+      verticalQueueService,
+      taskStore,
+      publishAssetsService,
+      generatePublishDescription
+    });
+
+    await scheduledTasks[0].callback();
+
+    expect(verticalQueueService.recoverPersistedJobs).toHaveBeenCalledTimes(1);
+    expect(verticalQueueService.getJob).not.toHaveBeenCalled();
+    expect(publishAssetsService.resetPublishAssetsCache).not.toHaveBeenCalled();
+    expect(generatePublishDescription).not.toHaveBeenCalled();
+    expect(publishStore.readPublishJobs().jobs).toHaveLength(0);
+  });
+
   test('creates autopilot publish jobs even when AI review did not pass', async () => {
     const { startScheduler } = require('../scheduler');
     reviewConfig = {
@@ -510,6 +648,99 @@ describe('system scheduler autopilot safeguards', () => {
     expect(generatePublishDescription).toHaveBeenCalledWith('summary', expect.objectContaining({
       includeTags: true
     }));
+  });
+
+  test('replaces a failed avatar autopilot source with the next ranking item for the same slot', async () => {
+    const { startScheduler } = require('../scheduler');
+    const config = createBaseConfig({
+      global: {
+        autoPilotCount: 1,
+        autoPilotPipelineModes: ['avatar'],
+        autoPilotModeSchedules: {
+          avatar: { accountIds: ['wechat_a'], times: ['08:00'] }
+        }
+      }
+    });
+    const publishStore = createPublishStore(config, [], {
+      makeJobId: jest.fn(() => 'job_avatar_replacement')
+    });
+    const xaiService = {
+      ensureTranslatedResult: jest.fn(() => ({
+        items: [
+          {
+            title: 'bad avatar item',
+            video_url: 'https://video.twimg.com/amplify_video/11/vid/avc1/bad.mp4',
+            post_id: 'post-bad',
+            author: 'author-a',
+            author_summary: 'bad summary'
+          },
+          {
+            title: 'replacement avatar item',
+            video_url: 'https://video.twimg.com/amplify_video/12/vid/avc1/good.mp4',
+            post_id: 'post-good',
+            author: 'author-b',
+            author_summary: 'good summary'
+          }
+        ]
+      }))
+    };
+    const verticalQueueService = {
+      enqueue: jest.fn(() => ({ id: 'queue_avatar_good' })),
+      getJob: jest.fn(() => ({ id: 'queue_avatar_good', status: 'completed', title: 'replacement ready' }))
+    };
+    const materialDrivenStarter = {
+      start: jest.fn()
+        .mockResolvedValueOnce({ jobId: 'avatar_bad', outputPath: 'C:\\avatar\\bad' })
+        .mockResolvedValueOnce({ jobId: 'avatar_good', outputPath: 'C:\\avatar\\good' }),
+      getStatus: jest.fn((jobId) => {
+        if (jobId === 'avatar_bad') return { status: 'failed', error: 'script validation failed' };
+        return { status: 'completed', videoUrl: '/projects/avatar_good/output_final.mp4' };
+      })
+    };
+    const publishAssetsService = {
+      resetPublishAssetsCache: jest.fn(),
+      collectPublishAssets: jest.fn(() => [
+        {
+          label: 'Replacement asset',
+          compactLabel: 'Replacement asset',
+          path: 'C:\\out\\queue_avatar_good.mp4',
+          url: '/xai_vertical_queue/queue_avatar_good/vertical_output.mp4',
+          metadata: {
+            videoUrl: 'https://video.twimg.com/amplify_video/12/vid/avc1/good.mp4',
+            sourceSummary: 'good summary'
+          }
+        }
+      ])
+    };
+    const generatePublishDescription = jest.fn(async () => 'publish description');
+
+    const scheduler = startScheduler({
+      publishStore,
+      xaiService,
+      verticalQueueService,
+      publishAssetsService,
+      generatePublishDescription,
+      materialDrivenStarter
+    });
+
+    await scheduler.triggerAutoPilotNow(config, { reason: 'test' });
+    await scheduledTasks[0].callback();
+    await scheduledTasks[0].callback();
+
+    const jobs = publishStore.readPublishJobs().jobs;
+    expect(materialDrivenStarter.start).toHaveBeenCalledTimes(2);
+    expect(materialDrivenStarter.start.mock.calls[1][0]).toEqual(expect.objectContaining({
+      videoUrl: 'https://video.twimg.com/amplify_video/12/vid/avc1/good.mp4',
+      sourceRank: 2
+    }));
+    expect(verticalQueueService.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      sourceType: 'material_driven_avatar',
+      sourceRank: 2
+    }));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].id).toBe('job_avatar_replacement');
+    expect(jobs[0].autoPilot.sourceRank).toBe(2);
+    expect(jobs[0].status).toBe('scheduled_wait');
   });
 
   test('does not create autopilot publish jobs for skipped silent queue outputs', async () => {

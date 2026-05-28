@@ -22,8 +22,12 @@ function attachProgressRoute(app) {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive'
     });
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
 
     clients.set(String(clientId), res);
+    sendEvent(res, { type: 'status', msg: '进度通道已连接' });
 
     req.on('close', () => {
       clients.delete(String(clientId));

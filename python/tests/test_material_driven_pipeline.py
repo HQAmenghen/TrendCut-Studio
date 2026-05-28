@@ -228,6 +228,9 @@ class MaterialDrivenPipelineReuseTest(unittest.TestCase):
                 "pipeline.run_material_driven.ContentRouterSkill.run",
                 return_value=SkillResult(skill="content_router", output={"content_type": "fast_news"}, meta={"status": "ready"}),
             ), patch(
+                "pipeline.run_material_driven.build_fresh_context",
+                return_value={"enabled": False, "required": False, "status": "not_required", "current_date": "2026-05-28"},
+            ), patch(
                 "pipeline.run_material_driven.ScriptRewriterSkill.run",
                 return_value=SkillResult(
                     skill="script_rewriter_skill",
@@ -283,6 +286,9 @@ class MaterialDrivenPipelineReuseTest(unittest.TestCase):
             with patch(
                 "pipeline.run_material_driven.ContentRouterSkill.run",
                 return_value=SkillResult(skill="content_router", output={"content_type": "fast_news"}, meta={"status": "ready"}),
+            ), patch(
+                "pipeline.run_material_driven.build_fresh_context",
+                return_value={"enabled": False, "required": False, "status": "not_required", "current_date": "2026-05-28"},
             ), patch(
                 "pipeline.run_material_driven.ScriptRewriterSkill.is_script_context_compatible",
                 return_value=True,

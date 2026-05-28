@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from llm_client import create_llm_client, generate_content, get_text_llm_provider
 
 from .base import BaseSkill, SkillResult
+from .fresh_context import build_fresh_context, current_beijing_datetime, is_time_sensitive_source
 from .partition_prompt_profile import prepend_partition_prompt, resolve_partition_prompt_profile
 from .prompt_skill_loader import load_prompt_text
 
@@ -134,6 +135,10 @@ def get_enrich_stage_model() -> str:
     if provider == "deepseek":
         return os.getenv("DEEPSEEK_TEXT_MODEL", DEFAULT_DEEPSEEK_MODEL)
     return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
+
+def _current_beijing_date() -> str:
+    return current_beijing_datetime().date().isoformat()
 
 
 class ScriptRewriterSkill(BaseSkill):
@@ -350,6 +355,43 @@ class ScriptRewriterSkill(BaseSkill):
             for key, value in source_focus.items()
             if key != "forbidden_source_account_terms"
         }
+
+    def _needs_freshness_search(self, source_post_info: Dict[str, Any]) -> bool:
+        return is_time_sensitive_source(source_post_info)
+
+    def _fetch_freshness_context(self, source_post_info: Dict[str, Any]) -> Dict[str, Any]:
+        return build_fresh_context(source_post_info)
+
+    def _freshness_context_for_prompt(self, freshness_context: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(freshness_context, dict):
+            freshness_context = {}
+        return {
+            "current_date": freshness_context.get("current_date") or _current_beijing_date(),
+            "live_search_required": bool(freshness_context.get("required") or freshness_context.get("enabled")),
+            "live_search_performed": bool(freshness_context.get("searched") or freshness_context.get("status") == "ready"),
+            "search_query": str(freshness_context.get("query") or ""),
+            "verified_facts": freshness_context.get("verified_facts") or [],
+            "stale_or_unsafe_claims": (
+                freshness_context.get("stale_or_unsafe_claims")
+                or freshness_context.get("stale_phrases_to_avoid")
+                or []
+            ),
+            "date_guidance": str(freshness_context.get("date_guidance") or "").strip(),
+            "source_notes": freshness_context.get("source_notes") or [],
+            "search_status": str(freshness_context.get("status") or "").strip(),
+            "search_error": str(freshness_context.get("error") or "").strip(),
+        }
+
+    def _build_freshness_instruction(self, freshness_context: Dict[str, Any]) -> str:
+        context = self._freshness_context_for_prompt(freshness_context)
+        return (
+            f"当前日期（北京时间）：{context['current_date']}。\n"
+            "时间敏感事实约束：涉及新闻、金融、政策、市场、人物表态、监管和价格判断时，"
+            "必须以【实时检索与日期校准】为事实边界；不得凭模型记忆补旧年份或旧时点。\n"
+            "如果实时检索失败或没有确认具体日期，正文不要写具体年份、开年、年内等强时间锚，"
+            "改用“近期”“这次表态”“当前市场语境”等不会制造过期事实的表达。\n"
+            f"【实时检索与日期校准】\n{json.dumps(context, ensure_ascii=False, indent=2)}\n"
+        )
 
     def _tokenize(self, text: str) -> List[str]:
         cleaned = re.sub(r"[^\w\u4e00-\u9fff%.,+-]+", " ", str(text or "").lower())
@@ -1393,11 +1435,13 @@ class ScriptRewriterSkill(BaseSkill):
         segment_items: List[Dict[str, Any]],
         route: Dict[str, Any],
         outline: Dict[str, Any],
+        freshness_context: Dict[str, Any] | None = None,
     ) -> str:
         compact_outline = outline_items[:4]
         compact_audio = audio_snippets[:4]
         compact_segments = segment_items[:4]
         return (
+            f"{self._build_freshness_instruction(freshness_context or {})}\n"
             "你现在只做一件事：根据当前贴文和视频信息，写出 3 到 4 段适合数字人播报的口播正文。\n"
             "要求：\n"
             "1. 必须围绕当前贴文主题，不能套用量化交易、硬核交易员等无关模板。\n"
@@ -1438,6 +1482,7 @@ class ScriptRewriterSkill(BaseSkill):
         outline: Dict[str, Any],
         context_blob: str,
         partition_profile: Dict[str, Any] | None = None,
+        freshness_context: Dict[str, Any] | None = None,
     ) -> SkillResult | None:
         """尝试合并单次 LLM 调用生成 text + content_intent + evidence。
         成功返回 SkillResult，失败返回 None（由调用方 fallback 到两阶段模式）。
@@ -1452,6 +1497,7 @@ class ScriptRewriterSkill(BaseSkill):
                 source_post_json=json.dumps(self._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
                 source_focus_json=json.dumps(self._source_focus_for_prompt(source_focus), ensure_ascii=False, indent=2),
             ), partition_profile)
+            combined_prompt = f"{self._build_freshness_instruction(freshness_context or {})}\n{combined_prompt}"
             response = generate_content(
                 client,
                 model=model,
@@ -1563,6 +1609,7 @@ class ScriptRewriterSkill(BaseSkill):
                         "style_violations": style_violations,
                         "guardrail_mode": guardrail_mode,
                         "partition_prompt_profile": partition_profile or {},
+                        "freshness_context": self._freshness_context_for_prompt(freshness_context or {}),
                     },
                 },
                 meta={
@@ -1582,6 +1629,7 @@ class ScriptRewriterSkill(BaseSkill):
                     "style_violations": style_violations,
                     "guardrail_mode": guardrail_mode,
                     "partition_prompt_profile": partition_profile or {},
+                    "freshness_context": self._freshness_context_for_prompt(freshness_context or {}),
                 },
             )
         except Exception:
@@ -1593,6 +1641,7 @@ class ScriptRewriterSkill(BaseSkill):
         audio_items = payload.get("audio") or payload.get("audio_items") or []
         selected_segments = payload.get("selected_segments") or []
         source_post = payload.get("source_post") or {}
+        freshness_context = payload.get("fresh_context") if isinstance(payload.get("fresh_context"), dict) else None
 
         outline_items = self._normalize_outline(outline)
         audio_snippets = self._normalize_audio(audio_items)
@@ -1600,6 +1649,8 @@ class ScriptRewriterSkill(BaseSkill):
         source_post_info = self._normalize_source_post(source_post)
         partition_profile = resolve_partition_prompt_profile(source_post_info)
         source_focus = self._extract_source_focus(source_post_info)
+        if freshness_context is None:
+            freshness_context = self._fetch_freshness_context(source_post_info)
         context_blob = self._build_context_blob(source_post_info, outline_items, audio_snippets, segment_items)
 
         if not outline_items and not audio_snippets and not source_post_info.get("title") and not source_post_info.get("body"):
@@ -1612,6 +1663,7 @@ class ScriptRewriterSkill(BaseSkill):
                     "message": "No usable outline/audio facts for script rewriting.",
                     "decision_mode": "llm_failed",
                     "partition_prompt_profile": partition_profile,
+                    "freshness_context": self._freshness_context_for_prompt(freshness_context),
                 },
             )
 
@@ -1634,6 +1686,7 @@ class ScriptRewriterSkill(BaseSkill):
             outline=outline,
             context_blob=context_blob,
             partition_profile=partition_profile,
+            freshness_context=freshness_context,
         )
         if combined_result is not None:
             return combined_result
@@ -1648,6 +1701,7 @@ class ScriptRewriterSkill(BaseSkill):
             source_post_json=json.dumps(self._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
             source_focus_json=json.dumps(self._source_focus_for_prompt(source_focus), ensure_ascii=False, indent=2),
         ), partition_profile)
+        text_prompt = f"{self._build_freshness_instruction(freshness_context)}\n{text_prompt}"
 
         try:
             text_stage_mode = "full_prompt"
@@ -1672,6 +1726,7 @@ class ScriptRewriterSkill(BaseSkill):
                     segment_items=segment_items,
                     route=route,
                     outline=outline,
+                    freshness_context=freshness_context,
                 ), partition_profile)
                 response = generate_content(
                     client,
@@ -1766,6 +1821,7 @@ class ScriptRewriterSkill(BaseSkill):
                     indent=2,
                 ),
             ), partition_profile)
+            enrich_prompt = f"{self._build_freshness_instruction(freshness_context)}\n{enrich_prompt}"
             stage2_llm_used = False
             stage2_fallback_used = False
             stage2_error = None
@@ -1818,6 +1874,7 @@ class ScriptRewriterSkill(BaseSkill):
                         "style_violations": style_violations,
                         "guardrail_mode": guardrail_mode,
                         "partition_prompt_profile": partition_profile,
+                        "freshness_context": self._freshness_context_for_prompt(freshness_context),
                     },
                 },
                 meta={
@@ -1844,6 +1901,7 @@ class ScriptRewriterSkill(BaseSkill):
                     "enrichment_stage_llm_used": stage2_llm_used,
                     "enrichment_stage_fallback_used": stage2_fallback_used,
                     "enrichment_stage_error": stage2_error,
+                    "freshness_context": self._freshness_context_for_prompt(freshness_context),
                 },
             )
         except Exception as exc:
@@ -1861,5 +1919,6 @@ class ScriptRewriterSkill(BaseSkill):
                     "decision_mode": "llm_failed",
                     "source_anchor": source_focus,
                     "partition_prompt_profile": partition_profile,
+                    "freshness_context": self._freshness_context_for_prompt(freshness_context),
                 },
             )

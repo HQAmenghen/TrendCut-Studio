@@ -248,4 +248,57 @@ describe('发布任务定时调度', () => {
     // 不应该包含这个任务
     expect(dueJobs).toHaveLength(0);
   });
+
+  test('应该归档同一个自动化来源重复生成的待发布任务', () => {
+    const jobs = [
+      {
+        id: 'job-newer',
+        status: 'scheduled_wait',
+        scheduledAt: new Date('2026-04-01T10:00:00Z').toISOString(),
+        archived: false,
+        createdAt: new Date('2026-04-01T09:01:00Z').toISOString(),
+        updatedAt: new Date('2026-04-01T09:01:00Z').toISOString(),
+        asset: { url: '/xai_vertical_queue/queue-1/vertical_output.mp4' },
+        autoPilot: {
+          pipelineMode: 'avatar',
+          queueJobId: 'queue-1'
+        },
+        platformTasks: [
+          { platform: 'wechatChannels', status: 'scheduled_wait' }
+        ]
+      },
+      {
+        id: 'job-older',
+        status: 'scheduled_wait',
+        scheduledAt: new Date('2026-04-01T10:00:00Z').toISOString(),
+        archived: false,
+        createdAt: new Date('2026-04-01T09:00:00Z').toISOString(),
+        updatedAt: new Date('2026-04-01T09:00:00Z').toISOString(),
+        asset: { url: '/xai_vertical_queue/queue-1/vertical_output.mp4' },
+        autoPilot: {
+          pipelineMode: 'avatar',
+          queueJobId: 'queue-1'
+        },
+        platformTasks: [
+          { platform: 'wechatChannels', status: 'scheduled_wait' }
+        ]
+      }
+    ];
+
+    publishStore.writePublishJobs({ jobs });
+
+    const payload = publishStore.readPublishJobs();
+    const activeJobs = payload.jobs.filter((job) => !job.archived);
+    const archivedJobs = payload.jobs.filter((job) => job.archived);
+
+    expect(activeJobs).toHaveLength(1);
+    expect(activeJobs[0].id).toBe('job-newer');
+    expect(archivedJobs).toHaveLength(1);
+    expect(archivedJobs[0]).toEqual(expect.objectContaining({
+      id: 'job-older',
+      status: 'cancelled',
+      archived: true
+    }));
+    expect(archivedJobs[0].autoPilot.duplicateOfJobId).toBe('job-newer');
+  });
 });

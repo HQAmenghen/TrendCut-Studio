@@ -208,20 +208,24 @@ function createPublishAssetsService(deps) {
   }
 
   function buildStandaloneRuntimeMetadata(jobDir) {
+    const mediaMeta = readMediaMetadata(path.join(jobDir, 'standalone_output_vertical.mp4'));
     const content = readJsonIfExists(path.join(jobDir, 'content.json'), {});
     const context = readJsonIfExists(path.join(jobDir, 'original_context.json'), {});
     const subtitles = readJsonIfExists(path.join(jobDir, 'subtitles.json'), []);
-    const title = String(content?.title || context?.title || '').trim();
+    const title = String(content?.title || mediaMeta?.title || context?.title || '').trim();
     const summary = String(context?.body || context?.summary || '').trim();
 
-    return buildPublishMetadata({
-      title,
-      subtitles,
-      summary,
-      sourceType: 'standalone_runtime',
-      sourceUrl: context?.postUrl || context?.sourceUrl || '',
-      author: context?.author || ''
-    });
+    return {
+      ...buildPublishMetadata({
+        title,
+        subtitles: mediaMeta?.subtitles || subtitles,
+        summary,
+        sourceType: 'standalone_runtime',
+        sourceUrl: context?.postUrl || context?.sourceUrl || '',
+        author: context?.author || ''
+      }),
+      sourceTaskDir: mediaMeta?.sourceTaskDir || ''
+    };
   }
 
   function hasStandaloneRuntimeOutput(taskDir) {
@@ -433,12 +437,41 @@ function createPublishAssetsService(deps) {
     publishAssetsCache = { expiresAt: 0, assets: [] };
   }
 
+  function deletePublishAsset(assetId) {
+    const normalizedAssetId = String(assetId || '').trim();
+    if (!normalizedAssetId) return null;
+
+    const asset = collectPublishAssets().find((item) => item.id === normalizedAssetId);
+    if (!asset) return null;
+
+    const targetPath = path.resolve(asset.path);
+    if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+      resetPublishAssetsCache();
+      return null;
+    }
+
+    fs.rmSync(targetPath, { force: true });
+    const metadataPath = `${targetPath}.meta.json`;
+    const deletedMetadata = fs.existsSync(metadataPath) && fs.statSync(metadataPath).isFile();
+    if (deletedMetadata) {
+      fs.rmSync(metadataPath, { force: true });
+    }
+
+    resetPublishAssetsCache();
+    return {
+      asset,
+      deletedPath: targetPath,
+      deletedMetadata
+    };
+  }
+
   return {
     buildShortTitle,
     buildPublishMetadata,
     isReviewCenterHidden,
     collectPublishAssets,
     getCachedPublishAssets,
+    deletePublishAsset,
     resetPublishAssetsCache
   };
 }

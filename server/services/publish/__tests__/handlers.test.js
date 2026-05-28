@@ -16,6 +16,69 @@ function createMockResponse() {
 }
 
 describe('publish handlers', () => {
+  test('deleteAsset removes the selected publish asset and returns refreshed assets', () => {
+    const asset = {
+      id: 'asset_delete_1',
+      label: 'Delete me',
+      compactLabel: 'Delete me',
+      path: 'C:\\videos\\delete-me.mp4',
+      url: '/videos/delete-me.mp4',
+      metadata: {}
+    };
+    const deletePublishAsset = jest.fn(() => ({
+      asset,
+      deletedPath: asset.path,
+      deletedMetadata: true
+    }));
+    const getCachedPublishAssets = jest.fn(() => []);
+
+    const handlers = createPublishHandlers({
+      sendError: (res, options) => res.status(options.status || 500).json({ success: false, ...options }),
+      readPublishConfig: jest.fn(),
+      maskPlatformConfig: jest.fn(),
+      sanitizePlatformConfigInput: jest.fn(),
+      writePublishConfig: jest.fn(),
+      reconcileAndPersistPublishJobs: jest.fn(),
+      getCachedPublishAssets,
+      readPublishJobs: jest.fn(),
+      writePublishJobs: jest.fn(),
+      updatePublishJob: jest.fn(),
+      archivePublishJob: jest.fn(),
+      archiveCompletedPublishJobs: jest.fn(),
+      collectPublishAssets: jest.fn(),
+      deletePublishAsset,
+      makeJobId: jest.fn(),
+      buildShortTitle: jest.fn(),
+      generatePublishDescription: jest.fn(),
+      getWechatAccountMap: jest.fn(),
+      buildPublishTask: jest.fn(),
+      validateWechatTaskConfig: jest.fn(),
+      collectPlatformValidation: jest.fn(),
+      startWechatRpa: jest.fn(),
+      retryWechatRpa: jest.fn(),
+      cancelWechatRpa: jest.fn(),
+      checkWechatLogin: jest.fn(),
+      openWechatContentManager: jest.fn(),
+      triggerAutoPilotNow: jest.fn()
+    });
+
+    const req = { params: { assetId: asset.id } };
+    const res = createMockResponse();
+
+    handlers.deleteAsset(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(deletePublishAsset).toHaveBeenCalledWith(asset.id);
+    expect(getCachedPublishAssets).toHaveBeenCalledWith(true);
+    expect(res.body).toEqual(expect.objectContaining({
+      success: true,
+      deletedAsset: asset,
+      deletedPath: asset.path,
+      deletedMetadata: true,
+      assets: []
+    }));
+  });
+
   test('createJob defaults publish descriptions to model tags when strategy is omitted', async () => {
     const asset = {
       id: 'asset_model_default',

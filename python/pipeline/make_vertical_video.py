@@ -129,6 +129,26 @@ def probe_media(input_video: Path) -> dict:
     }
 
 
+def is_decodable_media(video_path: Path) -> bool:
+    if not video_path.exists() or video_path.stat().st_size <= 0:
+        return False
+    cmd = [
+        "ffmpeg",
+        "-v", "error",
+        "-xerror",
+        "-i", str(video_path),
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-f", "null",
+        "-"
+    ]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return True
+    except Exception:
+        return False
+
+
 def parse_silencedetect_ranges(output: str, duration: float | None = None) -> list[tuple[float, float]]:
     ranges = []
     open_start = None
@@ -751,6 +771,29 @@ def split_long_subtitles(subtitles: list[dict], max_chars: int = 32):
     return new_subs
 
 
+def should_merge_duplicate_subtitle(current: dict, next_sub: dict) -> bool:
+    if next_sub.get("zh") != current.get("zh"):
+        return False
+
+    try:
+        current_start, current_end = float(current["time"][0]), float(current["time"][1])
+        next_start, next_end = float(next_sub["time"][0]), float(next_sub["time"][1])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+
+    overlap = current_end - next_start
+    if overlap <= 0.02:
+        # Adjacent repeated text can be intentional when ASR split a long
+        # reference sentence across multiple timed speech spans.
+        return False
+
+    shorter_duration = max(0.0, min(current_end - current_start, next_end - next_start))
+    if shorter_duration <= 0:
+        return False
+
+    return overlap >= min(0.5, shorter_duration * 0.5)
+
+
 def deduplicate_subtitles(subtitles: list[dict]):
     if not subtitles: return []
     subtitles.sort(key=lambda x: x["time"][0])
@@ -759,8 +802,7 @@ def deduplicate_subtitles(subtitles: list[dict]):
     current = subtitles[0]
     for i in range(1, len(subtitles)):
         next_sub = subtitles[i]
-        # 如果文本相同且时间重叠或极度接近，则强力合并
-        if next_sub.get("zh") == current.get("zh") and next_sub["time"][0] <= current["time"][1] + 0.15:
+        if should_merge_duplicate_subtitle(current, next_sub):
             current["time"][1] = max(current["time"][1], next_sub["time"][1])
             if not current.get("en") and next_sub.get("en"):
                 current["en"] = next_sub["en"]
@@ -810,8 +852,7 @@ def prepare_subtitles_for_render(subtitles: list[dict], split_long: bool = False
     subtitles = translate_subtitles_batch(subtitles)
     if split_long:
         subtitles = split_long_subtitles(subtitles, max_chars=24)
-    subtitles = clamp_subtitle_timeline_for_render(deduplicate_subtitles(subtitles))
-    return clamp_subtitle_timeline_for_render(close_active_audio_subtitle_gaps(subtitles, input_video=input_video))
+    return subtitles
 
 
 
@@ -940,9 +981,27 @@ def run_ffmpeg(background: Path, input_video: Path, subtitle_cards: list[dict], 
     if duration > 0:
         cmd.extend(["-t", f"{duration:.3f}"])
     
-    cmd.append(str(output_video))
+    tmp_output = output_video.with_name(f"{output_video.stem}.rendering{output_video.suffix}")
+    if tmp_output.exists():
+        tmp_output.unlink()
+    if output_video.exists() and not is_decodable_media(output_video):
+        output_video.unlink()
+
+    cmd.append(str(tmp_output))
     print("Running FFmpeg command...")
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+        if not tmp_output.exists() or tmp_output.stat().st_size <= 0:
+            raise RuntimeError("FFmpeg finished but did not create a usable output file")
+        os.replace(tmp_output, output_video)
+    except subprocess.CalledProcessError as exc:
+        if tmp_output.exists():
+            tmp_output.unlink()
+        raise RuntimeError(f"FFmpeg 合成中断，输出文件未生成完整（退出码 {exc.returncode}）") from exc
+    except Exception:
+        if tmp_output.exists():
+            tmp_output.unlink()
+        raise
 
 
 def append_outro(output_video: Path, outro_video: Path | None):
@@ -1120,7 +1179,13 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        emit_error("VERTICAL_RENDER_FAILED", "竖屏视频生成失败", stage="vertical_render", details=str(e), hint="请检查输入视频、字幕文件、字体和 FFmpeg")
+        emit_error(
+            "VERTICAL_RENDER_FAILED",
+            "竖屏视频生成失败",
+            stage="vertical_render",
+            details=str(e),
+            hint="合成中断了，请重试一次；如果连续失败，请重新生成源视频后再合成"
+        )
         print(f"\n\n--- [FATAL ERROR] ---")
         print(f"An error occurred: {e}")
         import traceback

@@ -45,15 +45,18 @@ function readSourceMetaFromBody(body = {}) {
 /**
  * 注册素材驱动工作流路由
  */
-function registerMaterialDrivenRoutes(app, paths) {
+function registerMaterialDrivenRoutes(app, paths, deps = {}) {
   const upload = multer({ dest: paths.UPLOADS_DIR });
-  const taskRegistry = createMaterialDrivenTaskRegistry(paths);
-  const avatarGeneration = createAvatarGenerationService({
+  const taskStore = deps.taskStore || null;
+  const taskRegistry = deps.taskRegistry || createMaterialDrivenTaskRegistry(paths, { taskStore });
+  const avatarGeneration = deps.avatarGeneration || createAvatarGenerationService({
     paths,
-    persistTaskStateSnapshot: taskRegistry.persistTaskStateSnapshot
+    persistTaskStateSnapshot: taskRegistry.persistTaskStateSnapshot,
+    taskStore
   });
-  const pipelineRunner = createMaterialDrivenPipelineRunner({
-    autoGenerateAvatar: avatarGeneration.autoGenerateAvatar
+  const pipelineRunner = deps.pipelineRunner || createMaterialDrivenPipelineRunner({
+    autoGenerateAvatar: avatarGeneration.autoGenerateAvatar,
+    taskStore
   });
 
   app.post('/api/material-driven/test-comfy', async (req, res) => {
@@ -226,6 +229,20 @@ function registerMaterialDrivenRoutes(app, paths) {
     res.json(taskRegistry.buildStatusPayload(task));
   });
 
+  app.get('/api/material-driven/active', (_req, res) => {
+    res.json({
+      success: true,
+      tasks: taskRegistry.listActiveStatusPayloads()
+    });
+  });
+
+  app.get('/api/material-driven/latest-completed', (_req, res) => {
+    res.json({
+      success: true,
+      task: taskRegistry.getLatestCompletedStatusPayload()
+    });
+  });
+
   // SSE进度监听
   app.get('/api/material-driven/progress/:jobId', (req, res) => {
     taskRegistry.attachProgressClient(req.params.jobId, req, res);
@@ -241,15 +258,15 @@ function registerMaterialDrivenRoutes(app, paths) {
         return res.status(404).json({ error: '任务不存在' });
       }
 
-      pipelineRunner.spawnPipeline(jobId, task, 6, {
-        step: 6,
-        progressValue: 80,
-        statusText: '继续处理数字人映射并执行混剪',
-        startLog: '从步骤6继续执行新链路',
-        stepMessage: '步骤6: 生成数字人/切分映射'
-      });
+      const runState = pipelineRunner.continueFromAvatarStep(jobId, task) || {};
 
-      res.json({ message: '继续执行' });
+      res.json({
+        success: true,
+        reused: Boolean(runState.reused),
+        alreadyRunning: Boolean(runState.alreadyRunning),
+        message: runState.message || '继续执行',
+        task: taskRegistry.buildStatusPayload(task).task
+      });
     } catch (error) {
       console.error('继续工作流失败:', error);
       res.status(500).json({ error: error.message });
@@ -273,9 +290,15 @@ function registerMaterialDrivenRoutes(app, paths) {
         addTaskLog(task, `重试配置已更新: ${req.body.avatarConfig.serverUrl || '保持原地址'}`, 'info');
       }
 
-      pipelineRunner.startRetryPipeline(jobId, task, step);
+      const runState = pipelineRunner.startRetryPipeline(jobId, task, step) || {};
 
-      res.json({ message: '重试已启动' });
+      res.json({
+        success: true,
+        reused: Boolean(runState.reused),
+        alreadyRunning: Boolean(runState.alreadyRunning),
+        message: runState.message || '重试已启动',
+        task: taskRegistry.buildStatusPayload(task).task
+      });
     } catch (error) {
       console.error('重试失败:', error);
       res.status(500).json({ error: error.message });
@@ -290,14 +313,20 @@ function registerMaterialDrivenRoutes(app, paths) {
         return res.status(404).json({ error: '任务不存在' });
       }
       task.useCache = req.body?.useCache !== false && req.body?.useCache !== 'false';
-      pipelineRunner.spawnPipeline(jobId, task, 5, {
+      const runState = pipelineRunner.spawnPipeline(jobId, task, 5, {
         step: 5,
         progressValue: 76,
         statusText: '正在从口播脚本开始重建剪辑计划',
         startLog: '手动触发：从步骤5重建脚本、映射与执行计划',
         stepMessage: '步骤5: 重建脚本与执行计划'
+      }) || {};
+      res.json({
+        success: true,
+        reused: Boolean(runState.reused),
+        alreadyRunning: Boolean(runState.alreadyRunning),
+        message: runState.message || '已开始重建剪辑计划',
+        task: taskRegistry.buildStatusPayload(task).task
       });
-      res.json({ success: true, message: '已开始重建剪辑计划' });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -311,14 +340,20 @@ function registerMaterialDrivenRoutes(app, paths) {
         return res.status(404).json({ error: '任务不存在' });
       }
       task.useCache = req.body?.useCache !== false && req.body?.useCache !== 'false';
-      pipelineRunner.spawnPipeline(jobId, task, 7, {
+      const runState = pipelineRunner.spawnPipeline(jobId, task, 7, {
         step: 7,
         progressValue: 90,
         statusText: '正在根据当前执行计划重新渲染',
         startLog: '手动触发：重新渲染成片',
         stepMessage: '步骤7: 重新渲染成片'
+      }) || {};
+      res.json({
+        success: true,
+        reused: Boolean(runState.reused),
+        alreadyRunning: Boolean(runState.alreadyRunning),
+        message: runState.message || '已开始重新渲染成片',
+        task: taskRegistry.buildStatusPayload(task).task
       });
-      res.json({ success: true, message: '已开始重新渲染成片' });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

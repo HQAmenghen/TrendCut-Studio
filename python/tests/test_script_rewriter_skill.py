@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT):
         sys.path.insert(0, candidate_str)
 
 from pipeline.skills.partition_prompt_profile import format_partition_addendum, resolve_partition_prompt_profile  # noqa: E402
+from pipeline.skills.fresh_context import build_fresh_context, is_time_sensitive_source  # noqa: E402
 from pipeline.skills.script_rewriter_skill import ScriptRewriterSkill  # noqa: E402
 
 
@@ -138,6 +140,40 @@ class ScriptRewriterStyleGuardTest(unittest.TestCase):
         self.assertIn("BMNRBullz", prompt)
         self.assertIn("括号英文注释", prompt)
         self.assertIn("THE BIGGEST RALLY", prompt)
+
+    def test_time_sensitive_trump_bitcoin_source_requires_fresh_context(self):
+        source_post = {
+            "title": "特朗普总统：比特币减轻了美元的压力",
+            "body": "President Trump: Bitcoin takes a lot of pressure off the dollar.",
+        }
+
+        self.assertTrue(is_time_sensitive_source(source_post))
+
+        with patch.dict("os.environ", {"XAI_API_KEY": ""}, clear=False):
+            context = build_fresh_context(
+                source_post,
+                now=datetime(2026, 5, 28, tzinfo=timezone(timedelta(hours=8))),
+            )
+
+        self.assertTrue(context["required"])
+        self.assertEqual(context["status"], "skipped_missing_key")
+        self.assertEqual(context["current_year"], 2026)
+        self.assertIn("2025年开年", "".join(context["stale_phrases_to_avoid"]))
+
+    def test_freshness_instruction_forbids_stale_year_when_search_unavailable(self):
+        prompt = self.skill._build_freshness_instruction({
+            "required": True,
+            "status": "skipped_missing_key",
+            "current_date": "2026-05-28",
+            "current_year": 2026,
+            "query": "特朗普 比特币 美元压力",
+            "stale_phrases_to_avoid": ["不要把当前事件写成2025年开年"],
+            "error": "Missing XAI_API_KEY",
+        })
+
+        self.assertIn("2026-05-28", prompt)
+        self.assertIn("不得凭模型记忆补旧年份", prompt)
+        self.assertIn("2025年开年", prompt)
 
     def test_combined_rewrite_rejects_if_repair_keeps_source_account_or_parenthetical(self):
         source_post = {
@@ -473,6 +509,86 @@ class ScriptRewriterStyleGuardTest(unittest.TestCase):
         self.assertIn("人工智能赛道", script_units[0]["text"])
         self.assertLess(result.meta["source_coverage"]["coverage_ratio"], 0.40)
         self.assertIn("硬件基建", result.meta["out_of_scope_terms"])
+
+    def test_time_sensitive_source_triggers_freshness_search(self):
+        source_post_info = self.skill._normalize_source_post({
+            "title": "特朗普总统：比特币减轻了美元的压力，比我们投资的任何东西都重要得多。",
+            "body": "President Trump: Bitcoin takes a lot of pressure off the dollar.",
+        })
+
+        self.assertTrue(self.skill._needs_freshness_search(source_post_info))
+
+    def test_freshness_instruction_warns_against_stale_year_when_search_fails(self):
+        prompt = self.skill._build_freshness_instruction({
+            "enabled": True,
+            "current_date": "2026-05-28",
+            "searched": False,
+            "query": "特朗普 比特币 美元 压力",
+            "error": "Missing XAI_API_KEY",
+        })
+
+        self.assertIn("2026-05-28", prompt)
+        self.assertIn("不得凭模型记忆补旧年份", prompt)
+        self.assertIn("改用“近期”“这次表态”", prompt)
+
+    def test_run_passes_freshness_context_into_combined_prompt_and_meta(self):
+        source_post = {
+            "title": "特朗普总统：比特币减轻了美元的压力，比我们投资的任何东西都重要得多。",
+            "body": "President Trump: Bitcoin takes a lot of pressure off the dollar.",
+        }
+        response_payload = {
+            "script_units": [
+                {
+                    "unit_id": 1,
+                    "role": "hook",
+                    "text": "特朗普这次把比特币和美元压力放在同一句话里，信号确实不轻。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+                {
+                    "unit_id": 2,
+                    "role": "explain",
+                    "text": "但这类表态要放回当前政策和市场语境里看，不能直接当成投资信号。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+                {
+                    "unit_id": 3,
+                    "role": "ending",
+                    "text": "真正要观察的，是美国政界对数字资产的态度，会不会继续改变监管预期。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+            ]
+        }
+
+        class FakeResponse:
+            text = __import__("json").dumps(response_payload, ensure_ascii=False)
+
+        captured_prompts = []
+
+        def fake_generate_content(_client, **kwargs):
+            captured_prompts.append(kwargs["contents"])
+            return FakeResponse()
+
+        with patch.object(self.skill, "_fetch_freshness_context", return_value={
+            "enabled": True,
+            "current_date": "2026-05-28",
+            "searched": True,
+            "query": "特朗普 比特币 美元 压力",
+            "verified_facts": ["2026-05-28 context verified"],
+            "stale_or_unsafe_claims": ["不要写2025年开年"],
+            "date_guidance": "这次表态按2026年当前语境处理。",
+            "source_notes": ["x_search"],
+        }), \
+             patch("pipeline.skills.script_rewriter_skill.create_llm_client", return_value=object()), \
+             patch("pipeline.skills.script_rewriter_skill.generate_content", side_effect=fake_generate_content):
+            result = self.skill.run({"source_post": source_post})
+
+        self.assertEqual(result.meta["status"], "ready")
+        self.assertIn("2026-05-28", captured_prompts[0])
+        self.assertIn("不要写2025年开年", captured_prompts[0])
+        self.assertTrue(result.meta["freshness_context"]["live_search_performed"])
 
 
 if __name__ == "__main__":

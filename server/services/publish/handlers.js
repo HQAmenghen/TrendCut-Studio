@@ -13,6 +13,7 @@ function createPublishHandlers(deps) {
     archivePublishJob,
     archiveCompletedPublishJobs,
     collectPublishAssets,
+    deletePublishAsset,
     makeJobId,
     buildShortTitle,
     generatePublishDescription,
@@ -127,6 +128,28 @@ function createPublishHandlers(deps) {
         res.json({ success: true, assets: getCachedPublishAssets(forceRefresh) });
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_ASSETS_READ_FAILED', stage: 'publish.assets', error: '读取发布素材失败', details: err.message });
+      }
+    },
+    deleteAsset: (req, res) => {
+      try {
+        const assetId = String(req.params.assetId || '').trim();
+        if (!assetId) return sendError(res, { status: 400, code: 'PUBLISH_ASSET_ID_MISSING', stage: 'publish.assets', error: '缺少素材 ID' });
+        if (typeof deletePublishAsset !== 'function') {
+          return sendError(res, { status: 500, code: 'PUBLISH_ASSET_DELETE_UNAVAILABLE', stage: 'publish.assets', error: '成品删除服务未初始化' });
+        }
+
+        const result = deletePublishAsset(assetId);
+        if (!result) return sendError(res, { status: 404, code: 'PUBLISH_ASSET_NOT_FOUND', stage: 'publish.assets', error: '所选视频素材不存在' });
+
+        res.json({
+          success: true,
+          deletedAsset: result.asset,
+          deletedPath: result.deletedPath,
+          deletedMetadata: result.deletedMetadata,
+          assets: getCachedPublishAssets(true)
+        });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_ASSET_DELETE_FAILED', stage: 'publish.assets', error: '删除成品素材失败', details: err.message });
       }
     },
     generateDescription: async (req, res) => {

@@ -12,6 +12,7 @@ class TaskStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
+        taskKey TEXT,
         type TEXT NOT NULL,
         status TEXT NOT NULL,
         progress INTEGER DEFAULT 0,
@@ -28,35 +29,81 @@ class TaskStore {
       CREATE INDEX IF NOT EXISTS idx_tasks_updatedAt ON tasks(updatedAt DESC);
       CREATE INDEX IF NOT EXISTS idx_tasks_type_updatedAt ON tasks(type, updatedAt DESC);
     `);
+    this.ensureColumn('tasks', 'taskKey', 'TEXT');
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_type_taskKey ON tasks(type, taskKey) WHERE taskKey IS NOT NULL AND taskKey != '';
+    `);
   }
 
-  createTask(type, metadata = {}) {
+  ensureColumn(tableName, columnName, definition) {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+    if (columns.some((column) => column.name === columnName)) return;
+    this.db.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
+  }
+
+  rowToTask(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      logs: JSON.parse(row.logs || '[]'),
+      metadata: JSON.parse(row.metadata || '{}')
+    };
+  }
+
+  createTask(type, metadata = {}, options = {}) {
+    const now = new Date().toISOString();
     const task = {
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: options.id || `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      taskKey: String(options.taskKey || '').trim() || null,
       type,
-      status: 'queued',
-      progress: 0,
-      message: '',
-      logs: [],
+      status: options.status || 'queued',
+      progress: Number.isFinite(Number(options.progress)) ? Number(options.progress) : 0,
+      message: options.message || '',
+      logs: Array.isArray(options.logs) ? options.logs : [],
       metadata,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      startedAt: null,
-      completedAt: null,
-      durationSeconds: null
+      createdAt: options.createdAt || now,
+      updatedAt: options.updatedAt || now,
+      startedAt: options.startedAt || null,
+      completedAt: options.completedAt || null,
+      durationSeconds: options.durationSeconds || null
     };
 
     this.db.prepare(`
-      INSERT INTO tasks (id, type, status, progress, message, logs, metadata, createdAt, updatedAt, startedAt, completedAt, durationSeconds)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, taskKey, type, status, progress, message, logs, metadata, createdAt, updatedAt, startedAt, completedAt, durationSeconds)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      task.id, task.type, task.status, task.progress, task.message,
+      task.id, task.taskKey, task.type, task.status, task.progress, task.message,
       JSON.stringify(task.logs), JSON.stringify(task.metadata),
       task.createdAt, task.updatedAt, task.startedAt, task.completedAt, task.durationSeconds
     );
 
     this.memoryCache.set(task.id, task);
     return task;
+  }
+
+  createOrReuseTask(type, taskKey, metadata = {}, options = {}) {
+    const normalizedKey = String(taskKey || '').trim();
+    if (!normalizedKey) {
+      return { task: this.createTask(type, metadata, options), created: true };
+    }
+
+    const existing = this.findTaskByKey(type, normalizedKey);
+    if (existing) {
+      const nextMetadata = options.mergeMetadata === false
+        ? existing.metadata
+        : { ...existing.metadata, ...metadata };
+      const task = this.updateTask(existing.id, {
+        metadata: nextMetadata,
+        message: options.message || existing.message,
+        updatedAt: options.updatedAt
+      });
+      return { task, created: false };
+    }
+
+    return {
+      task: this.createTask(type, metadata, { ...options, taskKey: normalizedKey }),
+      created: true
+    };
   }
 
   updateTask(id, updates) {
@@ -75,11 +122,11 @@ class TaskStore {
     }
 
     this.db.prepare(`
-      UPDATE tasks SET status = ?, progress = ?, message = ?, logs = ?,
+      UPDATE tasks SET taskKey = ?, status = ?, progress = ?, message = ?, logs = ?,
                        metadata = ?, updatedAt = ?, startedAt = ?, completedAt = ?, durationSeconds = ?
       WHERE id = ?
     `).run(
-      task.status, task.progress, task.message,
+      task.taskKey || null, task.status, task.progress, task.message,
       JSON.stringify(task.logs), JSON.stringify(task.metadata),
       task.updatedAt, task.startedAt, task.completedAt, task.durationSeconds,
       id
@@ -96,11 +143,7 @@ class TaskStore {
     const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
     if (!row) return null;
 
-    const task = {
-      ...row,
-      logs: JSON.parse(row.logs || '[]'),
-      metadata: JSON.parse(row.metadata || '{}')
-    };
+    const task = this.rowToTask(row);
 
     // 缓存活跃任务
     if (['queued', 'running'].includes(task.status)) {
@@ -110,16 +153,36 @@ class TaskStore {
     return task;
   }
 
+  findTaskByKey(type, taskKey, options = {}) {
+    const normalizedKey = String(taskKey || '').trim();
+    if (!normalizedKey) return null;
+    const statuses = Array.isArray(options.statuses) ? options.statuses.filter(Boolean) : [];
+    const cacheMatch = Array.from(this.memoryCache.values()).find((task) =>
+      task.type === type &&
+      task.taskKey === normalizedKey &&
+      (statuses.length === 0 || statuses.includes(task.status))
+    );
+    if (cacheMatch) return cacheMatch;
+
+    const statusClause = statuses.length
+      ? ` AND status IN (${statuses.map(() => '?').join(', ')})`
+      : '';
+    const row = this.db.prepare(`
+      SELECT * FROM tasks WHERE type = ? AND taskKey = ?${statusClause} ORDER BY updatedAt DESC LIMIT 1
+    `).get(type, normalizedKey, ...statuses);
+    const task = this.rowToTask(row);
+    if (task && ['queued', 'running'].includes(task.status)) {
+      this.memoryCache.set(task.id, task);
+    }
+    return task;
+  }
+
   listTasks(type, limit = 50) {
     const rows = this.db.prepare(`
       SELECT * FROM tasks WHERE type = ? ORDER BY updatedAt DESC LIMIT ?
     `).all(type, limit);
 
-    return rows.map(row => ({
-      ...row,
-      logs: JSON.parse(row.logs || '[]'),
-      metadata: JSON.parse(row.metadata || '{}')
-    }));
+    return rows.map(row => this.rowToTask(row));
   }
 
   listActiveTasks(type) {
@@ -138,11 +201,7 @@ class TaskStore {
 
     const rows = this.db.prepare(query).all(...params);
 
-    return rows.map(row => ({
-      ...row,
-      logs: JSON.parse(row.logs || '[]'),
-      metadata: JSON.parse(row.metadata || '{}')
-    }));
+    return rows.map(row => this.rowToTask(row));
   }
 
   appendLog(id, message) {
