@@ -15,13 +15,14 @@ function createSystemHandlers(deps) {
     writeWorkflow,
     runPythonScript,
     readProjectEnv,
-    updateProjectEnv
+    updateProjectEnv,
+    unifiedTaskView
   } = deps;
 
   const getEnvValue = (values, key, fallback = '') => values[key] ?? process.env[key] ?? fallback;
   const normalizeProvider = (value, fallback = 'gemini') => {
     const provider = String(value || '').toLowerCase();
-    return ['gemini', 'qwen', 'vertex'].includes(provider) ? provider : fallback;
+    return ['gemini', 'qwen', 'vertex', 'deepseek'].includes(provider) ? provider : fallback;
   };
   const normalizeVertexAuthMode = (value) => {
     const mode = String(value || '').toLowerCase();
@@ -60,6 +61,22 @@ function createSystemHandlers(deps) {
           error: '启动自检执行失败',
           details: err.message,
           hint: '请检查 Python、FFmpeg 与关键脚本路径配置'
+        });
+      }
+    },
+    getUnifiedTasks: (req, res) => {
+      try {
+        const tasks = unifiedTaskView && typeof unifiedTaskView.listTasks === 'function'
+          ? unifiedTaskView.listTasks({ limit: req.query?.limit })
+          : [];
+        res.json({ success: true, tasks });
+      } catch (err) {
+        sendError(res, {
+          status: 500,
+          code: 'SYSTEM_TASKS_READ_FAILED',
+          stage: 'system.tasks',
+          error: '读取统一任务视图失败',
+          details: err.message
         });
       }
     },
@@ -265,6 +282,11 @@ function createSystemHandlers(deps) {
             apiKey: getEnvValue(values, 'VERTEX_AI_API_KEY', ''),
             project: getEnvValue(values, 'VERTEX_AI_PROJECT', getEnvValue(values, 'GCP_PROJECT', '')),
             location: getEnvValue(values, 'VERTEX_AI_LOCATION', 'us-central1')
+          },
+          deepseek: {
+            apiKey: getEnvValue(values, 'DEEPSEEK_API_KEY', ''),
+            baseUrl: getEnvValue(values, 'DEEPSEEK_API_BASE_URL', 'https://api.deepseek.com/v1'),
+            textModel: getEnvValue(values, 'DEEPSEEK_TEXT_MODEL', 'deepseek-v4-pro')
           }
         };
         res.json({ success: true, config });
@@ -289,6 +311,7 @@ function createSystemHandlers(deps) {
         const gemini = req.body?.gemini || {};
         const qwen = req.body?.qwen || {};
         const vertex = req.body?.vertex || {};
+        const deepseek = req.body?.deepseek || {};
         updateProjectEnv(baseDir, {
           LLM_PROVIDER: provider,
           TEXT_LLM_PROVIDER: textProvider,
@@ -308,7 +331,10 @@ function createSystemHandlers(deps) {
           VERTEX_AI_AUTH_MODE: normalizeVertexAuthMode(vertex.authMode || getEnvValue(values, 'VERTEX_AI_AUTH_MODE', 'adc')),
           VERTEX_AI_API_KEY: vertex.apiKey || getEnvValue(values, 'VERTEX_AI_API_KEY', ''),
           VERTEX_AI_PROJECT: vertex.project || getEnvValue(values, 'VERTEX_AI_PROJECT', getEnvValue(values, 'GCP_PROJECT', '')),
-          VERTEX_AI_LOCATION: vertex.location || getEnvValue(values, 'VERTEX_AI_LOCATION', 'us-central1')
+          VERTEX_AI_LOCATION: vertex.location || getEnvValue(values, 'VERTEX_AI_LOCATION', 'us-central1'),
+          DEEPSEEK_API_KEY: deepseek.apiKey || '',
+          DEEPSEEK_API_BASE_URL: deepseek.baseUrl || 'https://api.deepseek.com/v1',
+          DEEPSEEK_TEXT_MODEL: deepseek.textModel || 'deepseek-v4-pro'
         });
 
         res.json({

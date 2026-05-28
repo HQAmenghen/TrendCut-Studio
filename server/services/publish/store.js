@@ -109,6 +109,73 @@ function createPublishStore(deps) {
     return { payload: next, changed };
   }
 
+  function normalizeAutoPilotIdentityValue(value) {
+    return String(value || '').trim().split('?')[0];
+  }
+
+  function getAutoPilotJobIdentity(job) {
+    const autoPilot = job?.autoPilot || {};
+    if (!autoPilot || typeof autoPilot !== 'object') return '';
+    const pipelineMode = String(autoPilot.pipelineMode || '').trim();
+    const queueJobId = String(autoPilot.queueJobId || '').trim();
+    const assetPath = normalizeAutoPilotIdentityValue(job?.asset?.path);
+    const assetUrl = normalizeAutoPilotIdentityValue(job?.asset?.url);
+    const sourceVideoUrl = normalizeAutoPilotIdentityValue(autoPilot.sourceVideoUrl || job?.asset?.metadata?.videoUrl);
+    const accountId = String(job?.platformSelections?.wechatChannels?.accountId || '').trim();
+    const identity = queueJobId || assetPath || assetUrl || sourceVideoUrl;
+    if (!identity) return '';
+    return [pipelineMode, identity, accountId].join('|');
+  }
+
+  function isMutableAutoPilotPublishJob(job) {
+    if (!job?.autoPilot || job.archived) return false;
+    const status = String(job.status || '').trim();
+    if (!['scheduled_wait', 'pending', 'ready', 'partial_ready'].includes(status)) return false;
+    const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];
+    return !tasks.some((task) => ['publishing', 'published'].includes(String(task?.status || '').trim()));
+  }
+
+  function archiveDuplicateAutoPilotJobs(payload) {
+    const next = deepClone(payload || { jobs: [] });
+    next.jobs = Array.isArray(next.jobs) ? next.jobs : [];
+    const seen = new Map();
+    let changed = false;
+    const now = new Date().toISOString();
+
+    for (const job of next.jobs) {
+      const identity = getAutoPilotJobIdentity(job);
+      if (!identity || !isMutableAutoPilotPublishJob(job)) continue;
+      const existing = seen.get(identity);
+      if (!existing) {
+        seen.set(identity, job);
+        continue;
+      }
+
+      job.archived = true;
+      job.archivedAt = job.archivedAt || now;
+      job.scheduledAt = null;
+      job.updatedAt = now;
+      job.status = 'cancelled';
+      job.platformTasks = (Array.isArray(job.platformTasks) ? job.platformTasks : []).map((task) => {
+        const status = String(task?.status || '').trim();
+        if (!['scheduled_wait', 'pending', 'ready', 'rpa_available', 'pending_integration'].includes(status)) return task;
+        return {
+          ...task,
+          status: 'cancelled',
+          updatedAt: now
+        };
+      });
+      job.autoPilot = {
+        ...job.autoPilot,
+        duplicateArchivedAt: now,
+        duplicateOfJobId: existing.id || ''
+      };
+      changed = true;
+    }
+
+    return { payload: next, changed };
+  }
+
   const SCHEDULABLE_PLATFORM_TASK_STATUSES = new Set([
     'pending',
     'pending_integration',
@@ -170,15 +237,16 @@ function createPublishStore(deps) {
       const jobs = rows.map(r => JSON.parse(r.data));
       const raw = { jobs };
       const { payload, changed } = sanitizePublishJobPayload(raw);
+      const deduped = archiveDuplicateAutoPilotJobs(payload);
       let normalizedChanged = false;
       const normalizedPayload = {
-        jobs: (payload.jobs || []).map((job) => {
+        jobs: (deduped.payload.jobs || []).map((job) => {
           const normalized = normalizeScheduledJobStatus(job);
           if (normalized.changed) normalizedChanged = true;
           return normalized.job;
         })
       };
-      if (changed || normalizedChanged) {
+      if (changed || deduped.changed || normalizedChanged) {
         writePublishJobs(normalizedPayload);
       }
       return normalizedPayload;
@@ -341,7 +409,7 @@ function createPublishStore(deps) {
   }
 
   function reconcilePlatformTask(platformKey, existingTask, publishData, assetUrl, platformConfig, selection = {}) {
-    const preservedOptions = ['wechatChannels', 'douyin', 'xiaohongshu'].includes(platformKey)
+    const preservedOptions = ['wechatChannels', 'douyin', 'xiaohongshu', 'x'].includes(platformKey)
       ? {
         accountId: String(selection?.accountId || existingTask?.accountId || '').trim(),
         accountLabel: String(selection?.accountLabel || existingTask?.accountLabel || '').trim(),

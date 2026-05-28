@@ -210,37 +210,7 @@
                         <div class="plan-slot">
                           <span>计划 {{ m.slot }}</span>
                           <strong>{{ m.partitionLabel }} Top {{ m.sourceRank }}</strong>
-                        </div>
-
-                        <label class="plan-field plan-field-platforms">
-                          <span>目标平台</span>
-                          <div class="plan-platform-picks">
-                            <label v-for="platform in center.autoPilotPlatformDefs" :key="`${mode.key}_${m.slot}_${platform.key}`">
-                              <input
-                                type="checkbox"
-                                :checked="m.platforms.includes(platform.key)"
-                                @change="center.toggleAutoPilotModePlatform(mode.key, m.slot, platform.key, $event.target.checked)"
-                              />
-                              {{ platform.label }}
-                            </label>
-                          </div>
-                        </label>
-
-                        <label v-if="m.platforms.includes('wechatChannels')" class="plan-field plan-field-account">
-                          <span>发布账号</span>
-                          <select
-                            class="input-dark"
-                            :value="m.accountId"
-                            @change="center.updateAutoPilotModeArray(mode.key, 'accountIds', m.slot - 1, $event.target.value)"
-                          >
-                            <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
-                              {{ account.label }}
-                            </option>
-                          </select>
-                        </label>
-                        <div v-else class="plan-field plan-field-account">
-                          <span>发布账号</span>
-                          <div class="plan-static-field">无需视频号账号</div>
+                          <small v-if="mode.key === 'avatar'">{{ center.getAutoPilotAvatarPresetSummary({ ...m, pipelineMode: mode.key }) }}</small>
                         </div>
 
                         <label class="plan-field">
@@ -269,6 +239,11 @@
                           </select>
                         </label>
 
+                        <div class="plan-summary-pill">
+                          <span>平台</span>
+                          <strong>{{ m.platformLabels.join(' / ') || '未选择' }}</strong>
+                        </div>
+
                         <label class="plan-field plan-field-time">
                           <span>发布时间</span>
                           <input
@@ -278,6 +253,70 @@
                             @input="center.updateAutoPilotModeArray(mode.key, 'times', m.slot - 1, $event.target.value)"
                           />
                         </label>
+
+                        <div class="plan-details">
+                          <div class="plan-details-title">发布配置</div>
+                          <div class="plan-details-grid">
+                            <label class="plan-field plan-field-platforms">
+                              <span>目标平台</span>
+                              <div class="plan-platform-picks">
+                                <label v-for="platform in center.autoPilotPlatformDefs" :key="`${mode.key}_${m.slot}_${platform.key}`">
+                                  <input
+                                    type="checkbox"
+                                    :checked="m.platforms.includes(platform.key)"
+                                    @change="center.toggleAutoPilotModePlatform(mode.key, m.slot, platform.key, $event.target.checked)"
+                                  />
+                                  {{ platform.label }}
+                                </label>
+                              </div>
+                            </label>
+
+                            <label v-if="m.platforms.includes('wechatChannels')" class="plan-field plan-field-account">
+                              <span>视频号账号</span>
+                              <select
+                                class="input-dark"
+                                :value="m.accountId"
+                                @change="center.updateAutoPilotModeArray(mode.key, 'accountIds', m.slot - 1, $event.target.value)"
+                              >
+                                <option v-for="account in center.getWechatAccountOptions()" :key="account.id" :value="account.id">
+                                  {{ account.label }}
+                                </option>
+                              </select>
+                            </label>
+                            <div v-else class="plan-field plan-field-account">
+                              <span>视频号账号</span>
+                              <div class="plan-static-field">当前计划不发视频号</div>
+                            </div>
+
+                            <template v-if="mode.key === 'avatar'">
+                              <label class="plan-field">
+                                <span>数字人音色</span>
+                                <select
+                                  class="input-dark"
+                                  :value="m.audioPreset"
+                                  @change="center.updateAutoPilotModeArray(mode.key, 'audioPresets', m.slot - 1, $event.target.value)"
+                                >
+                                  <option v-for="preset in center.avatarAudioPresetOptions.value" :key="`${mode.key}_${m.slot}_audio_${preset}`" :value="preset">
+                                    {{ center.getAvatarPresetLabel(preset) }}
+                                  </option>
+                                </select>
+                              </label>
+
+                              <label class="plan-field">
+                                <span>数字人形象</span>
+                                <select
+                                  class="input-dark"
+                                  :value="m.imagePreset"
+                                  @change="center.updateAutoPilotModeArray(mode.key, 'imagePresets', m.slot - 1, $event.target.value)"
+                                >
+                                  <option v-for="preset in center.avatarImagePresetOptions.value" :key="`${mode.key}_${m.slot}_image_${preset}`" :value="preset">
+                                    {{ center.getAvatarPresetLabel(preset) }}
+                                  </option>
+                                </select>
+                              </label>
+                            </template>
+                          </div>
+                        </div>
 
                         <button
                           type="button"
@@ -333,6 +372,7 @@
                       <span v-if="task.partitionLabel">{{ task.partitionLabel }} Top {{ task.sourceRank || task.rank }}</span>
                       <span v-else-if="task.rank">Top {{ task.rank }}</span>
                       <span>{{ task.accountLabel }}</span>
+                      <span v-if="task.avatarPresetLabel">{{ task.avatarPresetLabel }}</span>
                     </div>
                     <div class="autopilot-task-time">
                       {{ task.scheduledLabel || center.formatAutoPilotJobTime(task.scheduledAt) }}
@@ -431,7 +471,7 @@
                   <div class="account-manager">
                     <div class="account-manager-head">
                       <div class="platform-tip">为每个视频号账号分配独立浏览器登录环境，避免账号互串。</div>
-                      <div style="display: flex; gap: 8px; align-items: center;">
+                      <div class="account-toolbar">
                         <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
                           <input v-model="batchNotifyFeishu" type="checkbox" style="width: 16px; height: 16px; cursor: pointer;" />
                           <span>发送飞书</span>
@@ -445,12 +485,12 @@
                         >
                           {{ checkingBatchLogin ? '检测中...' : `检测选中 (${selectedWechatAccounts.length})` }}
                         </button>
-                        <button type="button" class="ghost-btn compact-btn" @click="center.addWechatAccount">新增账号</button>
+                        <button type="button" class="ghost-btn compact-btn" @click="center.addWechatAccount">添加配置</button>
                       </div>
                     </div>
                     <div v-if="!center.wechatAccounts.value.length" class="issue-box">还没有配置任何视频号账号。</div>
                     <div v-for="account in center.wechatAccounts.value" :key="account.id" class="account-card">
-                      <div class="account-card-head" @click="toggleAccountExpand(account.id)" style="cursor: pointer;">
+                      <div class="account-card-head">
                         <div style="display: flex; align-items: center; gap: 12px;">
                           <input
                             type="checkbox"
@@ -458,7 +498,6 @@
                             @change.stop="toggleWechatAccountSelection(account.id)"
                             style="width: 18px; height: 18px; cursor: pointer;"
                           />
-                          <span class="expand-icon" :class="{ expanded: expandedAccounts.has(account.id) }">▶</span>
                           <strong>{{ account.displayName || account.helperAccount || account.finderUserName || account.id }}</strong>
                           <span
                             v-if="accountLoginStatus[account.id]"
@@ -468,7 +507,7 @@
                             {{ getLoginStatusText(accountLoginStatus[account.id].status) }}
                           </span>
                         </div>
-                        <div style="display: flex; gap: 8px;" @click.stop>
+                        <div class="account-toolbar">
                           <button
                             type="button"
                             class="ghost-btn compact-btn"
@@ -477,11 +516,14 @@
                           >
                             {{ checkingLoginAccounts.has(account.id) ? '检测中...' : '检测登录' }}
                           </button>
-                          <button type="button" class="ghost-btn compact-btn" @click="center.testWechatLogin(account.id)">扫码登录</button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.testWechatLogin(account.id)">
+                            {{ statusRequiresLogin(accountLoginStatus[account.id]?.status) ? '重新登录' : '扫码登录' }}
+                          </button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.openWechatContentManager(account.id)">管理</button>
                           <button type="button" class="ghost-btn compact-btn" @click="center.removeWechatAccount(account.id)">删除</button>
                         </div>
                       </div>
-                      <div v-show="expandedAccounts.has(account.id)" class="platform-fields">
+                      <div class="platform-fields account-card-body">
                         <input
                           class="input-dark text-sm"
                           :value="account.displayName || ''"
@@ -505,7 +547,7 @@
                   </div>
                 </template>
                 <template v-else-if="isSauPlatform(platform.key)">
-                  <div v-if="isSauPlatform(platform.key)" class="setup-guide">
+                  <div class="setup-guide">
                     <div class="guide-row">
                       <span class="guide-step" :class="{ done: !!center.config.value?.[platform.key]?.enabled }">1</span>
                       <div>
@@ -531,16 +573,22 @@
                   <div class="account-manager">
                     <div class="account-manager-head">
                       <div class="platform-tip">首次检测会弹出二维码；扫码后复用 <code>data/social-auto-upload-runtime/cookies</code> 中的登录态。</div>
-                      <button type="button" class="ghost-btn compact-btn" @click="center.addSauAccount(platform.key)">新增账号</button>
+                      <button type="button" class="ghost-btn compact-btn" @click="center.addSauAccount(platform.key)">添加配置</button>
                     </div>
                     <div v-if="!sauAccounts(platform.key).length" class="issue-box">还没有配置{{ platform.label }}账号。</div>
                     <div v-for="account in sauAccounts(platform.key)" :key="account.id" class="account-card">
-                      <div class="account-card-head" @click="toggleAccountExpand(account.id)" style="cursor: pointer;">
+                      <div class="account-card-head">
                         <div style="display: flex; align-items: center; gap: 12px;">
-                          <span class="expand-icon" :class="{ expanded: expandedAccounts.has(account.id) }">▶</span>
                           <strong>{{ account.displayName || account.sauAccountName || account.accountId || account.openId || account.id }}</strong>
+                          <span
+                            v-if="accountLoginStatus[`${platform.key}:${account.id}`]"
+                            class="login-status-badge"
+                            :class="`status-${accountLoginStatus[`${platform.key}:${account.id}`].status}`"
+                          >
+                            {{ getLoginStatusText(accountLoginStatus[`${platform.key}:${account.id}`].status) }}
+                          </span>
                         </div>
-                        <div style="display: flex; gap: 8px;" @click.stop>
+                        <div class="account-toolbar">
                           <button
                             type="button"
                             class="ghost-btn compact-btn"
@@ -549,10 +597,19 @@
                           >
                             {{ checkingLoginAccounts.has(`${platform.key}:${account.id}`) ? '检测中...' : '检测登录' }}
                           </button>
+                          <button
+                            type="button"
+                            class="ghost-btn compact-btn"
+                            :disabled="checkingLoginAccounts.has(`${platform.key}:${account.id}`)"
+                            @click="center.checkPlatformAccountLogin(platform.key, account.id)"
+                          >
+                            {{ statusRequiresLogin(accountLoginStatus[`${platform.key}:${account.id}`]?.status) ? '重新登录' : '扫码登录' }}
+                          </button>
+                          <button type="button" class="ghost-btn compact-btn" @click="center.openPlatformContentManager(platform.key, account.id)">管理</button>
                           <button type="button" class="ghost-btn compact-btn" @click="center.removeSauAccount(platform.key, account.id)">删除</button>
                         </div>
                       </div>
-                      <div v-show="expandedAccounts.has(account.id)" class="platform-fields">
+                      <div class="platform-fields account-card-body">
                         <input
                           class="input-dark text-sm"
                           :value="account.displayName || ''"
@@ -588,6 +645,134 @@
                           :value="account.notes || ''"
                           placeholder="备注"
                           @input="center.updateSauAccountField(platform.key, account.id, 'notes', $event.target.value)"
+                        ></textarea>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template v-else-if="platform.key === 'x'">
+                  <div class="setup-guide">
+                    <div class="guide-row">
+                      <span class="guide-step" :class="{ done: !!center.config.value?.x?.enabled }">1</span>
+                      <div>
+                        <strong>启用 X</strong>
+                        <p>开启后，新建发布任务时可以选择 X。X API 没有远程草稿箱接口，这里只启用自动发表。</p>
+                      </div>
+                    </div>
+                    <div class="guide-row">
+                      <span class="guide-step" :class="{ done: xAccounts.length > 0 }">2</span>
+                      <div>
+                        <strong>添加 OAuth2 授权账号</strong>
+                        <p>后续把 X Developer App 的 Client、用户 Access Token 和 Refresh Token 填到账号里即可。</p>
+                      </div>
+                    </div>
+                    <div class="guide-row">
+                      <span class="guide-step">3</span>
+                      <div>
+                        <strong>保存后先小流量测试</strong>
+                        <p>系统会通过 X API v2 上传视频并创建 Post，默认把内容标记为 Made with AI。</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="account-manager">
+                    <div class="account-manager-head">
+                      <div class="platform-tip">需要 OAuth scopes: tweet.read users.read tweet.write media.write offline.access。</div>
+                      <button type="button" class="ghost-btn compact-btn" @click="center.addXAccount">添加配置</button>
+                    </div>
+                    <div v-if="!xAccounts.length" class="issue-box">还没有配置 X 授权账号。</div>
+                    <div v-for="account in xAccounts" :key="account.id" class="account-card">
+                      <div class="account-card-head">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                          <strong>{{ account.displayName || account.username || account.userId || account.id }}</strong>
+                        </div>
+                        <div class="account-toolbar">
+                          <button type="button" class="ghost-btn compact-btn" @click="center.removeXAccount(account.id)">删除</button>
+                        </div>
+                      </div>
+                      <div class="platform-fields account-card-body">
+                        <input
+                          class="input-dark text-sm"
+                          :value="account.displayName || ''"
+                          placeholder="账号备注 / Account Alias"
+                          @input="center.updateXAccountField(account.id, 'displayName', $event.target.value)"
+                        />
+                        <div>
+                          <label class="control-label field-label">
+                            <span>X 用户名</span>
+                          </label>
+                          <input
+                            class="input-dark text-sm"
+                            :value="account.username || ''"
+                            placeholder="不带 @，例如 comfy_ops"
+                            @input="center.updateXAccountField(account.id, 'username', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>OAuth2 Client ID</span>
+                          </label>
+                          <input
+                            class="input-dark text-sm"
+                            :value="account.clientId || ''"
+                            @input="center.updateXAccountField(account.id, 'clientId', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>OAuth2 Client Secret</span>
+                          </label>
+                          <input
+                            type="password"
+                            class="input-dark text-sm"
+                            :value="account.clientSecret || ''"
+                            @input="center.updateXAccountField(account.id, 'clientSecret', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>OAuth2 Access Token</span>
+                            <span class="required-tag">Required</span>
+                          </label>
+                          <input
+                            type="password"
+                            :class="['input-dark text-sm', !(account.accessToken || '').trim() ? 'missing-field' : '']"
+                            @input="center.updateXAccountField(account.id, 'accessToken', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>OAuth2 Refresh Token</span>
+                          </label>
+                          <input
+                            type="password"
+                            class="input-dark text-sm"
+                            @input="center.updateXAccountField(account.id, 'refreshToken', $event.target.value)"
+                          />
+                        </div>
+                        <div>
+                          <label class="control-label field-label">
+                            <span>授权范围</span>
+                          </label>
+                          <input
+                            class="input-dark text-sm"
+                            :value="account.scopes || ''"
+                            @input="center.updateXAccountField(account.id, 'scopes', $event.target.value)"
+                          />
+                        </div>
+                        <label class="toggle" style="justify-content: space-between;">
+                          标记 Made with AI
+                          <input
+                            type="checkbox"
+                            :checked="account.markMadeWithAi !== false"
+                            @change="center.updateXAccountField(account.id, 'markMadeWithAi', $event.target.checked)"
+                          />
+                        </label>
+                        <textarea
+                          class="input-dark text-sm"
+                          rows="2"
+                          :value="account.notes || ''"
+                          placeholder="备注"
+                          @input="center.updateXAccountField(account.id, 'notes', $event.target.value)"
                         ></textarea>
                       </div>
                     </div>
@@ -786,6 +971,21 @@
                     </select>
                   </div>
 
+                  <div v-show="center.editor.value.platforms.includes('x')">
+                    <label class="control-label">X 发布账号</label>
+                    <select
+                      class="input-dark text-sm"
+                      :value="center.editor.value.platformSelections.x?.accountId || ''"
+                      @change="setEditorPlatformAccount('x', $event.target.value)"
+                    >
+                      <option value="">请选择 X 授权账号</option>
+                      <option v-for="account in center.getPlatformAccountOptions('x')" :key="account.id" :value="account.id">
+                        {{ account.label }}
+                      </option>
+                    </select>
+                    <div class="summary-meta" style="margin-top: 8px;">X 会直接创建 Post，不会停留在草稿页。</div>
+                  </div>
+
                   <div>
                     <div class="field-row">
                       <label class="control-label">定时发布（选填）</label>
@@ -849,8 +1049,8 @@
                       <div class="summary-meta">{{ center.editor.value.platforms.length ? center.editor.value.platforms.map(platformLabel).join(' / ') : '尚未选择平台' }}</div>
                     </div>
 
-                    <details class="asset-drawer">
-                      <summary>展开侧边素材库（{{ center.assets.value.length }}）</summary>
+                    <div class="asset-drawer">
+                      <div class="asset-drawer-title">侧边素材库（{{ center.assets.value.length }}）</div>
                       <div class="asset-drawer-list">
                         <div v-if="!center.assets.value.length" class="empty-note">当前还没有可发布的成片。</div>
                         <div v-for="asset in center.assets.value" :key="`drawer_${asset.id}`" class="asset-drawer-card">
@@ -874,6 +1074,14 @@
                             <a :href="asset.url" target="_blank" rel="noreferrer">打开视频</a>
                             <button type="button" @click="useAsset(asset)">用于发布</button>
                             <button
+                              type="button"
+                              class="danger-link"
+                              @click="deleteAsset(asset)"
+                              :disabled="center.deletingAssetId.value === asset.id"
+                            >
+                              {{ center.deletingAssetId.value === asset.id ? '删除中...' : '删除' }}
+                            </button>
+                            <button
                               v-if="review.isEnabled"
                               type="button"
                               class="review-btn"
@@ -896,7 +1104,7 @@
                           />
                         </div>
                       </div>
-                    </details>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -971,16 +1179,31 @@
                   <div v-if="isSauPlatform(task.platform)" class="summary-note compact-note safe-test-note">
                     第一次建议点“草稿测试”：系统会打开浏览器，完成登录和内容填充后停在发布前。
                   </div>
+                  <div v-if="task.platform === 'x'" class="summary-note compact-note safe-test-note">
+                    X API 当前只支持直接发表，执行前请确认账号、正文和素材无误。
+                  </div>
                   <div v-if="task.automationModes?.length" class="job-actions">
-                    <button type="button" class="primary-btn compact-btn" @click="center.runPlatform(job, task.platform, 'draft')" :disabled="!center.canRunPlatform(job, task.platform)">草稿测试</button>
+                    <button
+                      v-if="task.automationModes.includes('draft')"
+                      type="button"
+                      class="primary-btn compact-btn"
+                      @click="center.runPlatform(job, task.platform, 'draft')"
+                      :disabled="!center.canRunPlatform(job, task.platform)"
+                    >草稿测试</button>
                     <button type="button" class="ghost-btn compact-btn danger-action" @click="center.runPlatform(job, task.platform, 'publish')" :disabled="!center.canRunPlatform(job, task.platform)">自动发表</button>
                     <button type="button" class="ghost-btn compact-btn" @click="center.retryPlatform(job, task.platform)">失败后重试</button>
+                    <button
+                      v-if="String(task.runtime?.state || task.status || '') === 'failed'"
+                      type="button"
+                      class="primary-btn compact-btn"
+                      @click="center.retryPlatform(job, task.platform, 'publish')"
+                    >手动重新发布</button>
                     <button type="button" class="ghost-btn compact-btn" @click="center.cancelPlatform(job, task.platform)">取消任务</button>
                   </div>
-                  <details v-if="task.runtime?.logs?.length" class="log-box">
-                    <summary>查看运行日志</summary>
+                  <div v-if="task.runtime?.logs?.length" class="log-box">
+                    <div class="log-box-title">运行日志</div>
                     <pre>{{ task.runtime?.logs?.slice(-18).join('\n') }}</pre>
-                  </details>
+                  </div>
                 </div>
 
                 <div class="job-actions">
@@ -1034,6 +1257,7 @@
           <template v-else-if="center.qrCodeData.value.status === 'error'">
             <strong>❌ 检测失败</strong>
             <div>{{ center.qrCodeData.value.error || '请稍后重试' }}</div>
+            <button type="button" class="primary-btn compact-btn" @click="center.retryQrLogin">重新登录</button>
           </template>
         </div>
         <div class="qr-modal-actions">
@@ -1052,7 +1276,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, reactive } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import RunLogPanel from './RunLogPanel.vue';
 import ReviewResultCard from './ReviewResultCard.vue';
 import { useVideoReview } from '../composables/useVideoReview';
@@ -1072,16 +1296,11 @@ const review = useVideoReview();
 
 // 登录状态检测
 const selectedWechatAccounts = ref([]);
-const expandedAccounts = reactive(new Set());
 const batchNotifyFeishu = ref(false);  // 批量检测时是否发送飞书通知
 
 onMounted(() => {
   review.loadConfig();
   loadAllLoginStatus();
-  // 默认展开第一个账号
-  if (props.center.wechatAccounts.value.length > 0) {
-    expandedAccounts.add(props.center.wechatAccounts.value[0].id);
-  }
 });
 
 // 加载所有账号的登录状态
@@ -1096,15 +1315,6 @@ function toggleWechatAccountSelection(accountId) {
     selectedWechatAccounts.value.splice(index, 1);
   } else {
     selectedWechatAccounts.value.push(accountId);
-  }
-}
-
-// 切换账号展开/折叠
-function toggleAccountExpand(accountId) {
-  if (expandedAccounts.has(accountId)) {
-    expandedAccounts.delete(accountId);
-  } else {
-    expandedAccounts.add(accountId);
   }
 }
 
@@ -1147,7 +1357,7 @@ async function reviewAsset(asset) {
     } else {
       alert(`审核完成！得分: ${result.result.overall_score}/100`);
       // 刷新素材列表以显示审核结果
-      props.center.refreshAssets();
+      props.center.refreshAssets(true, { preserveEditor: true });
     }
   } else {
     alert(`审核失败: ${result.error}`);
@@ -1162,9 +1372,20 @@ async function skipAssetReview(asset) {
   const result = await review.skipReview(asset.path, asset.id, 'manual_skip');
   if (result.success) {
     alert('已跳过审核');
-    props.center.refreshAssets();
+    props.center.refreshAssets(true, { preserveEditor: true });
   } else {
     alert(`跳过失败: ${result.error}`);
+  }
+}
+
+async function deleteAsset(asset) {
+  const label = asset.displayLabel || asset.label || '该成品';
+  if (!confirm(`确定要从成品库删除「${label}」吗？\n\n这会删除对应的视频文件，已创建的发布任务不会自动删除。`)) {
+    return;
+  }
+  const success = await props.center.deleteAsset(asset);
+  if (success) {
+    alert('已从成品库删除');
   }
 }
 
@@ -1186,7 +1407,7 @@ const requiredFieldMap = {
   wechatChannels: ['finderUserName', 'helperAccount'],
   douyin: [],
   xiaohongshu: [],
-  x: [],
+  x: ['accessToken'],
   youtube: []
 };
 
@@ -1194,7 +1415,7 @@ const platformTips = {
   wechatChannels: '使用视频号助手浏览器 RPA，首次运行需要扫码登录；每个账号使用独立浏览器环境。',
   douyin: '已内置抖音上传脚本。先保存账号别名，再用草稿测试确认页面填充。',
   xiaohongshu: '已内置小红书上传脚本。先保存账号别名，再用草稿测试确认页面填充。',
-  x: '预留 X 平台 API 字段，便于后续接入。',
+  x: '已接入 X API v2 视频上传和发帖。保存 OAuth2 授权账号后可自动发表。',
   youtube: '预留 YouTube 频道 OAuth 字段。'
 };
 
@@ -1202,6 +1423,9 @@ const sauPlatformKeys = new Set(['douyin', 'xiaohongshu']);
 const sauAccounts = (platformKey) => Array.isArray(props.center.config.value?.[platformKey]?.accounts)
   ? props.center.config.value[platformKey].accounts
   : [];
+const xAccounts = computed(() => Array.isArray(props.center.config.value?.x?.accounts)
+  ? props.center.config.value.x.accounts
+  : []);
 
 const editorHealth = computed(() => {
   let score = 0;
@@ -1219,6 +1443,9 @@ const editableFields = (platformKey) => {
   if (platformKey === 'wechatChannels') {
     return ['finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'];
   }
+  if (platformKey === 'x') {
+    return [];
+  }
   const source = props.center.config.value?.[platformKey] || {};
   return Object.keys(source).filter((field) => !['enabled', 'displayName', 'notes', 'accounts'].includes(field));
 };
@@ -1228,6 +1455,9 @@ const requiredFields = (platformKey) => requiredFieldMap[platformKey] || [];
 const isMissing = (platformKey, field, account = null) => {
   if (!requiredFields(platformKey).includes(field)) return false;
   if (platformKey === 'wechatChannels' && account) {
+    return !String(account?.[field] || '').trim();
+  }
+  if (platformKey === 'x' && account) {
     return !String(account?.[field] || '').trim();
   }
   return !String(props.center.config.value?.[platformKey]?.[field] || '').trim();
@@ -1241,12 +1471,20 @@ const missingLabels = (platformKey) => {
     if (!firstBroken) return [];
     return requiredFields(platformKey).filter((field) => isMissing(platformKey, field, firstBroken)).map((field) => props.center.getFieldLabel(platformKey, field));
   }
+  if (platformKey === 'x') {
+    const accounts = xAccounts.value || [];
+    if (!accounts.length) return ['至少配置一个 X 授权账号'];
+    const firstBroken = accounts.find((account) => requiredFields(platformKey).some((field) => isMissing(platformKey, field, account)));
+    if (!firstBroken) return [];
+    return requiredFields(platformKey).filter((field) => isMissing(platformKey, field, firstBroken)).map((field) => props.center.getFieldLabel(platformKey, field));
+  }
   return requiredFields(platformKey).filter((field) => isMissing(platformKey, field)).map((field) => props.center.getFieldLabel(platformKey, field));
 };
 const hasIssue = (platformKey) => !!props.center.config.value?.[platformKey]?.enabled && missingLabels(platformKey).length > 0;
 const platformTip = (platformKey) => platformTips[platformKey] || '平台接入说明';
 const platformLabel = (key) => props.center.platformDefs.find((platform) => platform.key === key)?.label || key;
 const isSauPlatform = (platformKey) => sauPlatformKeys.has(platformKey);
+const statusRequiresLogin = (status) => ['need_login', 'need_scan', 'error', 'expired', 'unknown'].includes(String(status || ''));
 const defaultSauAccountName = (platformKey) => (platformKey === 'douyin' ? 'douyin_main' : 'xhs_main');
 const wechatTask = (job) => props.center.getTask(job, 'wechatChannels');
 const platformTasks = (job) => Array.isArray(job?.platformTasks) ? job.platformTasks : [];
@@ -1558,7 +1796,7 @@ function selfCheckStatusLabel(status) {
   border-radius: 16px;
   display: grid;
   gap: 10px;
-  grid-template-columns: 118px minmax(160px, 1.1fr) minmax(150px, 1.15fr) minmax(118px, 0.9fr) 108px 112px 34px;
+  grid-template-columns: 118px minmax(150px, 1fr) 108px minmax(118px, 0.8fr) minmax(132px, 0.9fr) 34px;
   padding: 12px;
 }
 
@@ -1589,6 +1827,17 @@ function selfCheckStatusLabel(status) {
   color: var(--strong-text);
   font-size: 13px;
   line-height: 1.3;
+}
+
+.plan-slot small {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  line-height: 1.45;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-field {
@@ -1636,6 +1885,61 @@ function selfCheckStatusLabel(status) {
   padding: 10px 12px;
 }
 
+.plan-summary-pill {
+  align-items: center;
+  align-self: stretch;
+  background: var(--input-bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 46px;
+  padding: 8px 12px;
+}
+
+.plan-summary-pill span {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.plan-summary-pill strong {
+  color: var(--strong-text);
+  font-size: 12px;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-details {
+  align-self: stretch;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--input-bg);
+  grid-column: 1 / -1;
+}
+
+.plan-details-title {
+  color: var(--strong-text);
+  font-size: 12px;
+  font-weight: 850;
+  padding: 12px 12px 0;
+}
+
+.plan-details-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 12px;
+}
+
 .plan-remove-btn {
   align-items: center;
   background: rgba(239, 68, 68, 0.08);
@@ -1648,6 +1952,8 @@ function selfCheckStatusLabel(status) {
   height: 46px;
   justify-content: center;
   line-height: 1;
+  grid-column: -2 / -1;
+  grid-row: 1;
   transition: background 0.16s ease, border-color 0.16s ease;
   width: 34px;
 }
@@ -2159,11 +2465,25 @@ function selfCheckStatusLabel(status) {
   gap: 12px;
 }
 
+.account-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .account-card {
   border: 1px solid var(--line-soft);
   border-radius: 16px;
   padding: 14px;
   background: var(--card-subtle-bg);
+}
+
+.account-card-body {
+  border-top: 1px solid var(--line-soft);
+  margin-top: 4px;
+  padding-top: 12px;
 }
 
 .field-label {
@@ -2372,6 +2692,15 @@ function selfCheckStatusLabel(status) {
   color: #38bdf8;
 }
 
+.asset-links button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.asset-links .danger-link {
+  color: #ef4444;
+}
+
 .empty-note {
   color: var(--muted);
   font-size: 14px;
@@ -2384,23 +2713,18 @@ function selfCheckStatusLabel(status) {
   overflow: hidden;
 }
 
-.asset-drawer summary {
-  cursor: pointer;
-  list-style: none;
+.asset-drawer-title {
   padding: 12px 14px;
   color: var(--strong-text);
   font-size: 12px;
   font-weight: 700;
-}
-
-.asset-drawer summary::-webkit-details-marker {
-  display: none;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .asset-drawer-list {
   display: grid;
   gap: 10px;
-  padding: 0 12px 12px;
+  padding: 12px;
 }
 
 .asset-drawer-card {
@@ -2489,18 +2813,6 @@ function selfCheckStatusLabel(status) {
   color: #3b82f6;
 }
 
-.expand-icon {
-  display: inline-block;
-  font-size: 10px;
-  color: var(--muted);
-  transition: transform 0.2s ease;
-  user-select: none;
-}
-
-.expand-icon.expanded {
-  transform: rotate(90deg);
-}
-
 .account-card-head {
   transition: background-color 0.15s ease;
 }
@@ -2529,10 +2841,10 @@ function selfCheckStatusLabel(status) {
   margin-top: 12px;
 }
 
-.log-box summary {
-  cursor: pointer;
+.log-box-title {
   color: var(--brand-a);
   font-size: 12px;
+  font-weight: 800;
 }
 
 .log-box pre {
@@ -2571,11 +2883,18 @@ function selfCheckStatusLabel(status) {
 
   .plan-slot,
   .plan-field-platforms,
-  .plan-field-account {
+  .plan-field-account,
+  .plan-details {
     grid-column: 1 / -1;
   }
 
+  .plan-details-grid {
+    grid-template-columns: 1fr;
+  }
+
   .plan-remove-btn {
+    grid-column: 1 / -1;
+    grid-row: auto;
     width: 100%;
   }
 

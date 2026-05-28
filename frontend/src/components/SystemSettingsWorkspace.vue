@@ -11,23 +11,53 @@
         <div class="card-header">
           <div>
             <h3>🧠 模型提供商配置</h3>
-            <p class="card-subtitle">支持 Gemini 与 Qwen 双配置常驻保存，通过当前提供商切换实际调用链路。</p>
+            <p class="card-subtitle">支持 Gemini、Qwen、Vertex 与 DeepSeek 配置常驻保存，通过当前提供商切换实际调用链路。</p>
           </div>
         </div>
 
-        <div class="provider-switch">
-          <label class="provider-option" :class="{ active: llmConfig.provider === 'gemini' }">
-            <input v-model="llmConfig.provider" type="radio" value="gemini" />
-            <span>Gemini</span>
-          </label>
-          <label class="provider-option" :class="{ active: llmConfig.provider === 'qwen' }">
-            <input v-model="llmConfig.provider" type="radio" value="qwen" />
-            <span>Qwen / 千问</span>
-          </label>
+        <div class="provider-rows">
+          <div class="provider-row">
+            <div class="provider-label">全局链路</div>
+            <div class="provider-switch">
+              <label class="provider-option" :class="{ active: llmConfig.provider === 'gemini' }">
+                <input v-model="llmConfig.provider" type="radio" value="gemini" />
+                <span>Gemini</span>
+              </label>
+              <label class="provider-option" :class="{ active: llmConfig.provider === 'qwen' }">
+                <input v-model="llmConfig.provider" type="radio" value="qwen" />
+                <span>Qwen / 千问</span>
+              </label>
+              <label class="provider-option" :class="{ active: llmConfig.provider === 'vertex' }">
+                <input v-model="llmConfig.provider" type="radio" value="vertex" />
+                <span>Vertex AI</span>
+              </label>
+            </div>
+          </div>
+          <div class="provider-row">
+            <div class="provider-label">文本链路</div>
+            <div class="provider-switch">
+              <label class="provider-option" :class="{ active: llmConfig.textProvider === 'gemini' }">
+                <input v-model="llmConfig.textProvider" type="radio" value="gemini" />
+                <span>Gemini</span>
+              </label>
+              <label class="provider-option" :class="{ active: llmConfig.textProvider === 'qwen' }">
+                <input v-model="llmConfig.textProvider" type="radio" value="qwen" />
+                <span>Qwen / 千问</span>
+              </label>
+              <label class="provider-option" :class="{ active: llmConfig.textProvider === 'vertex' }">
+                <input v-model="llmConfig.textProvider" type="radio" value="vertex" />
+                <span>Vertex AI</span>
+              </label>
+              <label class="provider-option" :class="{ active: llmConfig.textProvider === 'deepseek' }">
+                <input v-model="llmConfig.textProvider" type="radio" value="deepseek" />
+                <span>DeepSeek</span>
+              </label>
+            </div>
+          </div>
         </div>
 
         <div class="provider-panels">
-          <div class="provider-panel" :class="{ active: llmConfig.provider === 'gemini' }">
+          <div class="provider-panel" :class="{ active: isProviderActive('gemini') }">
             <div class="provider-title">Gemini 配置</div>
             <div class="form-grid">
               <div class="form-group">
@@ -35,7 +65,7 @@
                 <input
                   v-model="llmConfig.gemini.apiKey"
                   type="password"
-                  placeholder="AIza..."
+                  placeholder="AIza...；多个 Key 用英文分号或逗号分隔"
                   class="input-text"
                 />
               </div>
@@ -88,7 +118,7 @@
             </div>
           </div>
 
-          <div class="provider-panel" :class="{ active: llmConfig.provider === 'qwen' }">
+          <div class="provider-panel" :class="{ active: isProviderActive('qwen') }">
             <div class="provider-title">Qwen / 千问配置</div>
             <div class="form-grid">
               <div class="form-group">
@@ -96,9 +126,10 @@
                 <input
                   v-model="llmConfig.qwen.apiKey"
                   type="password"
-                  placeholder="sk-..."
+                  placeholder="sk-...；多个 Key 用英文分号或逗号分隔"
                   class="input-text"
                 />
+                <div class="hint">某个 Key 欠费、限流或认证失败时，会自动切换到下一个 Key 重试。</div>
               </div>
               <div class="form-group">
                 <label>Qwen Base URL</label>
@@ -133,6 +164,80 @@
                   v-model="llmConfig.qwen.textModel"
                   type="text"
                   placeholder="qwen3.6-plus"
+                  class="input-text"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="provider-panel" :class="{ active: isProviderActive('vertex') }">
+            <div class="provider-title">Vertex AI Gemini 配置</div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>认证模式</label>
+                <select v-model="llmConfig.vertex.authMode" class="input-text">
+                  <option value="adc">ADC / Google 凭据</option>
+                  <option value="api_key">API Key</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Vertex API Key</label>
+                <input
+                  v-model="llmConfig.vertex.apiKey"
+                  type="password"
+                  placeholder="AQ..."
+                  class="input-text"
+                />
+              </div>
+              <div class="form-group">
+                <label>Project</label>
+                <input
+                  v-model="llmConfig.vertex.project"
+                  type="text"
+                  placeholder="gcp-project-id"
+                  class="input-text"
+                />
+              </div>
+              <div class="form-group">
+                <label>Location</label>
+                <input
+                  v-model="llmConfig.vertex.location"
+                  type="text"
+                  placeholder="us-central1"
+                  class="input-text"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="provider-panel" :class="{ active: isProviderActive('deepseek') }">
+            <div class="provider-title">DeepSeek 配置</div>
+            <div class="form-grid">
+              <div class="form-group full-span">
+                <label>DeepSeek API Key</label>
+                <input
+                  v-model="llmConfig.deepseek.apiKey"
+                  type="password"
+                  placeholder="sk-...；多个 Key 用英文分号或逗号分隔"
+                  class="input-text"
+                />
+                <div class="hint">某个 Key 欠费、限流或认证失败时，会自动切换到下一个 Key 重试。</div>
+              </div>
+              <div class="form-group">
+                <label>DeepSeek Base URL</label>
+                <input
+                  v-model="llmConfig.deepseek.baseUrl"
+                  type="text"
+                  placeholder="https://api.deepseek.com/v1"
+                  class="input-text"
+                />
+              </div>
+              <div class="form-group">
+                <label>文本模型</label>
+                <input
+                  v-model="llmConfig.deepseek.textModel"
+                  type="text"
+                  placeholder="deepseek-v4-pro"
                   class="input-text"
                 />
               </div>
@@ -393,6 +498,7 @@ const feishuConfig = ref({
 
 const llmConfig = ref({
   provider: 'gemini',
+  textProvider: 'gemini',
   gemini: {
     apiKey: '',
     googleApiKey: '',
@@ -407,6 +513,17 @@ const llmConfig = ref({
     vlModel: 'qwen3-vl-flash',
     asrModel: 'qwen3-asr-flash',
     textModel: 'qwen3.6-plus'
+  },
+  vertex: {
+    authMode: 'adc',
+    apiKey: '',
+    project: '',
+    location: 'us-central1'
+  },
+  deepseek: {
+    apiKey: '',
+    baseUrl: 'https://api.deepseek.com/v1',
+    textModel: 'deepseek-v4-pro'
   }
 });
 
@@ -440,6 +557,10 @@ const allSelected = computed(() => {
          selectedAccounts.value.length === loginStatuses.value.length;
 });
 
+function isProviderActive(provider) {
+  return llmConfig.value.provider === provider || llmConfig.value.textProvider === provider;
+}
+
 onMounted(() => {
   loadLlmConfig();
   loadFeishuConfig();
@@ -454,6 +575,7 @@ async function loadLlmConfig() {
     if (data.success && data.config) {
       llmConfig.value = {
         provider: data.config.provider || 'gemini',
+        textProvider: data.config.textProvider || data.config.provider || 'gemini',
         gemini: {
           ...llmConfig.value.gemini,
           ...(data.config.gemini || {})
@@ -461,6 +583,14 @@ async function loadLlmConfig() {
         qwen: {
           ...llmConfig.value.qwen,
           ...(data.config.qwen || {})
+        },
+        vertex: {
+          ...llmConfig.value.vertex,
+          ...(data.config.vertex || {})
+        },
+        deepseek: {
+          ...llmConfig.value.deepseek,
+          ...(data.config.deepseek || {})
         }
       };
     }
@@ -831,7 +961,8 @@ function formatTime(timestamp) {
 }
 
 .input-text,
-.input-number {
+.input-number,
+select.input-text {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--line-soft);
@@ -850,6 +981,31 @@ function formatTime(timestamp) {
   display: flex;
   gap: 12px;
   margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.provider-rows {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.provider-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  align-items: start;
+  gap: 12px;
+}
+
+.provider-row .provider-switch {
+  margin-bottom: 0;
+}
+
+.provider-label {
+  padding-top: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--strong-text);
 }
 
 .provider-option {
@@ -876,7 +1032,7 @@ function formatTime(timestamp) {
 
 .provider-panels {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px;
   margin-bottom: 20px;
 }
@@ -901,7 +1057,8 @@ function formatTime(timestamp) {
 }
 
 .input-text:focus,
-.input-number:focus {
+.input-number:focus,
+select.input-text:focus {
   outline: none;
   border-color: rgba(139, 92, 246, 0.6);
 }
@@ -1178,7 +1335,9 @@ function formatTime(timestamp) {
 
   .card-header,
   .batch-actions,
+  .provider-row,
   .provider-switch {
+    grid-template-columns: 1fr;
     flex-direction: column;
     align-items: stretch;
   }

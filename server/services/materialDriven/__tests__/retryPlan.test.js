@@ -43,4 +43,20 @@ describe('material-driven retry pipeline plan', () => {
     expect(plan.endAt).toBe(null);
     expect(plan.stopAfterNarration).toBe(false);
   });
+
+  test('can opt into rule fallback for unattended or manual material runs', () => {
+    const args = buildMaterialDrivenPipelineArgs({
+      scriptPath: 'run_material_driven.py',
+      materialPath: 'material.mp4',
+      outputPath: 'project',
+      startFrom: 1,
+      endAt: 5,
+      useSmartClip: true,
+      useCache: true,
+      allowRuleFallback: true,
+      unbuffered: true
+    });
+
+    expect(args).toContain('--allow-rule-fallback');
+  });
 });

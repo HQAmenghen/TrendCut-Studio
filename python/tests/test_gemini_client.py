@@ -13,6 +13,7 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT):
         sys.path.insert(0, candidate_str)
 
 from gemini_client import create_gemini_client, generate_content  # noqa: E402
+import vertex_ai_client  # noqa: E402
 
 
 class FlakyModels:
@@ -33,6 +34,43 @@ class FakeClient:
 
 
 class GeminiClientRetryTest(unittest.TestCase):
+    def test_minimum_five_attempts_applies_even_when_caller_requests_two(self):
+        client = FakeClient(fail_count=4)
+
+        with patch("gemini_client.time.sleep"):
+            response = generate_content(
+                client,
+                model="gemini-3.1-pro-preview",
+                contents="生成口播稿",
+                response_mime_type="application/json",
+                retries=2,
+            )
+
+        self.assertEqual(response["model"], "gemini-3.1-pro-preview")
+        self.assertEqual(client.models.calls, 5)
+
+    def test_remote_end_closed_disconnect_is_retryable(self):
+        client = FakeClient(fail_count=0)
+
+        def flaky_generate_content(*, model, contents, config=None):
+            client.models.calls += 1
+            if client.models.calls < 5:
+                raise RuntimeError("Remote end closed connection without response")
+            return {"model": model, "contents": contents, "config": config}
+
+        client.models.generate_content = flaky_generate_content
+
+        with patch("gemini_client.time.sleep"):
+            response = generate_content(
+                client,
+                model="gemini-3.1-pro-preview",
+                contents="生成口播稿",
+                retries=2,
+            )
+
+        self.assertEqual(response["model"], "gemini-3.1-pro-preview")
+        self.assertEqual(client.models.calls, 5)
+
     def test_min_retry_env_allows_vertex_disconnect_recovery_after_caller_limit(self):
         client = FakeClient(fail_count=2)
 
@@ -49,6 +87,41 @@ class GeminiClientRetryTest(unittest.TestCase):
 
         self.assertEqual(response["model"], "gemini-3.1-pro-preview")
         self.assertEqual(client.models.calls, 3)
+
+
+class FakeVertexModel:
+    def __init__(self):
+        self.calls = 0
+
+    def generate_content(self, *_args, **_kwargs):
+        self.calls += 1
+        if self.calls < 5:
+            raise RuntimeError("Remote end closed connection without response")
+        return type("VertexResponse", (), {"text": "ok"})()
+
+
+class FakeVertexClient:
+    def __init__(self, model):
+        self.model = model
+
+    def get_model(self, _model_name):
+        return self.model
+
+
+class VertexClientRetryTest(unittest.TestCase):
+    def test_min_retry_applies_even_when_caller_requests_two(self):
+        model = FakeVertexModel()
+
+        with patch("vertex_ai_client.time.sleep"):
+            response = vertex_ai_client.generate_content(
+                FakeVertexClient(model),
+                model="gemini-2.5-pro",
+                contents="生成口播稿",
+                retries=2,
+            )
+
+        self.assertEqual(response.text, "ok")
+        self.assertEqual(model.calls, 5)
 
 
 class GeminiClientVertexAuthTest(unittest.TestCase):

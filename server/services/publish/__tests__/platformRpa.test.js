@@ -62,7 +62,8 @@ function createService(overrides = {}) {
     updatePublishPlatformTask: overrides.updatePublishPlatformTask || jest.fn(),
     startWechatRpa: jest.fn(),
     retryWechatRpa: jest.fn(),
-    cancelWechatRpa: jest.fn()
+    cancelWechatRpa: jest.fn(),
+    xApiPublisher: overrides.xApiPublisher
   });
 }
 
@@ -239,6 +240,23 @@ describe('platform RPA service', () => {
     });
   });
 
+  test('routes X platform runs through X API publisher', async () => {
+    const xApiPublisher = {
+      startXPublish: jest.fn(async () => ({ started: true })),
+      retryXPublish: jest.fn(),
+      cancelXPublish: jest.fn()
+    };
+    const service = createService({ xApiPublisher });
+
+    await service.startPlatformRpa('job_x', 'x', 'publish');
+    service.retryPlatformRpa('job_x', 'x');
+    service.cancelPlatformRpa('job_x', 'x');
+
+    expect(xApiPublisher.startXPublish).toHaveBeenCalledWith('job_x', 'publish');
+    expect(xApiPublisher.retryXPublish).toHaveBeenCalledWith('job_x', 'publish');
+    expect(xApiPublisher.cancelXPublish).toHaveBeenCalledWith('job_x');
+  });
+
   test('reuses platform content manager session status while login is pending', async () => {
     const sauDir = path.join(tempRoot, 'social-auto-upload');
     const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
@@ -288,6 +306,41 @@ describe('platform RPA service', () => {
       status: 'already_open'
     });
     expect(service.checkPlatformLoginStatus('douyin', { id: 'dy_sau', sauAccountName: 'dy_sau' }).status).toBe('logged_in');
+  });
+
+  test('starts a new platform content manager session after the previous process was killed', async () => {
+    const sauDir = path.join(tempRoot, 'social-auto-upload');
+    const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
+    const payloadDir = path.join(tempRoot, 'payloads');
+    fs.mkdirSync(sauDir, { recursive: true });
+    fs.writeFileSync(adapterScript, 'print("ok")');
+
+    const processEntries = [
+      { process: { killed: false, exitCode: null, signalCode: null }, promise: new Promise(() => {}), cancel: jest.fn() },
+      { process: { killed: false, exitCode: null, signalCode: null }, promise: new Promise(() => {}), cancel: jest.fn() }
+    ];
+    let onStdout = null;
+    const runPythonScriptCancellable = jest.fn((_script, _args, options) => {
+      onStdout = options.onStdout;
+      return processEntries[runPythonScriptCancellable.mock.calls.length - 1];
+    });
+    const service = createService({
+      socialAutoUploadDir: sauDir,
+      socialAutoUploadAdapterScript: adapterScript,
+      platformRpaTaskDir: payloadDir,
+      runPythonScriptCancellable
+    });
+
+    const firstOpen = service.openPlatformContentManager('douyin', 'dy_sau');
+    onStdout('STATUS|opened|social-auto-upload|抖音创作中心已打开|{"percent":100}\n');
+    await expect(firstOpen).resolves.toMatchObject({ success: true, status: 'opened' });
+
+    processEntries[0].process.killed = true;
+
+    const secondOpen = service.openPlatformContentManager('douyin', 'dy_sau');
+    onStdout('STATUS|opened|social-auto-upload|抖音创作中心已打开|{"percent":100}\n');
+    await expect(secondOpen).resolves.toMatchObject({ success: true, status: 'opened' });
+    expect(runPythonScriptCancellable).toHaveBeenCalledTimes(2);
   });
 
   test('discovers external social-auto-upload directory and venv python from USERPROFILE when vendor is absent', async () => {

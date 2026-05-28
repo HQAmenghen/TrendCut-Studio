@@ -287,12 +287,15 @@ export function useMaterialDriven() {
   });
 
   const recentLogs = ref([]);
+  const activeTasks = ref([]);
+  const resumingTaskIds = ref([]);
   const uploading = ref(false);
   const rebuildingPlan = ref(false);
   const rerenderingVideo = ref(false);
   const outputPath = ref('');
 
   let eventSource = null;
+  let activeTasksTimer = null;
 
   const saveState = () => {
     try {
@@ -656,11 +659,16 @@ export function useMaterialDriven() {
         eventSource = null;
       }
       if (!finalVideoUrl.value && !error.value) {
-        finalizeCurrentStepTiming(Date.now());
-        error.value = '连接中断';
-        addLog('连接中断', 'error');
-        stopTimer();
+        statusText.value = '进度连接已断开，正在回查任务状态...';
+        addLog('进度连接已断开，正在回查任务状态', 'info');
         saveState();
+        refreshTaskSnapshot()
+          .catch(() => refreshActiveTasks(true))
+          .finally(() => {
+            if (!finalVideoUrl.value && !error.value && jobId.value) {
+              window.setTimeout(() => connectEventSource(jobId.value), 1500);
+            }
+          });
       }
     };
   };
@@ -735,11 +743,71 @@ export function useMaterialDriven() {
     return task || null;
   };
 
+  const restoreLatestCompletedTask = async ({ silent = false } = {}) => {
+    if (jobId.value || finalVideoUrl.value) return null;
+    try {
+      const response = await fetch('/api/material-driven/latest-completed');
+      if (!response.ok) {
+        throw new Error('恢复最近成片任务失败');
+      }
+      const payload = await response.json();
+      const task = payload?.task;
+      if (!task) return null;
+      jobId.value = task.id;
+      hydrateTaskPayload(task);
+      finalizeCurrentStepTiming(Date.now(), 7);
+      stopTimer();
+      error.value = '';
+      addLog(`已恢复最近完成任务：${task.outputPath || task.id}`, 'success');
+      saveState();
+      return task;
+    } catch (err) {
+      if (!silent) {
+        error.value = err.message || '恢复最近成片任务失败';
+        addLog(`错误: ${error.value}`, 'error');
+        saveState();
+      }
+      return null;
+    }
+  };
+
+  const refreshActiveTasks = async (silent = false) => {
+    try {
+      const response = await fetch('/api/material-driven/active');
+      if (!response.ok) {
+        throw new Error('读取素材任务队列失败');
+      }
+      const payload = await response.json();
+      activeTasks.value = Array.isArray(payload?.tasks) ? payload.tasks : [];
+      return activeTasks.value;
+    } catch (err) {
+      if (!silent) {
+        error.value = err.message || '读取素材任务队列失败';
+        addLog(`错误: ${error.value}`, 'error');
+      }
+      return activeTasks.value;
+    }
+  };
+
+  const startActiveTasksRefresh = () => {
+    if (activeTasksTimer) return;
+    refreshActiveTasks(true);
+    activeTasksTimer = window.setInterval(() => {
+      refreshActiveTasks(true);
+    }, 4000);
+  };
+
+  const stopActiveTasksRefresh = () => {
+    if (!activeTasksTimer) return;
+    window.clearInterval(activeTasksTimer);
+    activeTasksTimer = null;
+  };
+
   const restoreActiveJob = async () => {
-    if (!jobId.value) return;
+    if (!jobId.value) return false;
     try {
       const task = await refreshTaskSnapshot();
-      if (!task) return;
+      if (!task) return false;
 
       if (task.status === 'running') {
         const startedAt = task.startedAt ? new Date(task.startedAt).getTime() : Date.now();
@@ -758,11 +826,16 @@ export function useMaterialDriven() {
         stopTimer();
       }
       saveState();
+      return true;
     } catch (_err) {
+      jobId.value = null;
+      outputPath.value = '';
       progress.value = 0;
       statusText.value = '';
-      error.value = '后端已重启或任务未在内存中，可直接重建剪辑计划或重试当前步骤';
+      finalVideoUrl.value = '';
+      error.value = '';
       saveState();
+      return false;
     }
   };
 
@@ -789,6 +862,16 @@ export function useMaterialDriven() {
       }
 
       // 重新连接SSE
+      const payload = await response.json().catch(() => ({}));
+      if (payload?.task) {
+        activeTasks.value = [
+          payload.task,
+          ...activeTasks.value.filter((task) => String(task?.id || '') !== String(payload.task.id || ''))
+        ];
+      }
+      if (payload?.reused || payload?.alreadyRunning) {
+        addLog(payload.message || '任务已在运行，已切换为观察状态', 'info');
+      }
       if (currentStep.value >= 6 && currentStep.value <= 7) {
         restartStepTiming(currentStep.value, Date.now());
       }
@@ -799,6 +882,60 @@ export function useMaterialDriven() {
       error.value = err.message || '继续失败';
       addLog(`错误: ${error.value}`, 'error');
       saveState();
+    }
+  };
+
+  const resumeMaterialTask = async ({ jobId: targetJobId, outputPath: targetOutputPath } = {}) => {
+    const targetId = String(targetJobId || '').trim();
+    if (!targetId) return;
+    if (resumingTaskIds.value.includes(targetId)) return;
+    resumingTaskIds.value = [...resumingTaskIds.value, targetId];
+    activeTasks.value = activeTasks.value.map((task) => {
+      if (String(task?.id || '') !== targetId) return task;
+      return {
+        ...task,
+        progress: Math.max(Number(task.progress || 0), 87),
+        statusText: '正在恢复数字人合成结果...',
+        error: ''
+      };
+    });
+    try {
+      error.value = '';
+      addLog(`恢复素材任务 ${targetId}...`, 'info');
+      const response = await fetch(`/api/material-driven/continue/${targetId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputPath: targetOutputPath || '' })
+      });
+
+      if (!response.ok) {
+        let serverMessage = '恢复任务失败';
+        try {
+          const payload = await response.json();
+          if (payload?.error) serverMessage = payload.error;
+        } catch (_err) {}
+        throw new Error(serverMessage);
+      }
+
+      const payload = await response.json();
+      if (payload?.task) {
+        activeTasks.value = [
+          payload.task,
+          ...activeTasks.value.filter((task) => String(task?.id || '') !== targetId)
+        ];
+      }
+      await refreshActiveTasks(true);
+      if (payload?.reused || payload?.alreadyRunning) {
+        addLog(payload.message || `任务 ${targetId} 已在运行，已切换为观察状态`, 'info');
+      } else {
+        addLog(`恢复任务 ${targetId} 已启动`, 'success');
+      }
+    } catch (err) {
+      error.value = err.message || '恢复任务失败';
+      addLog(`错误: ${error.value}`, 'error');
+      saveState();
+    } finally {
+      resumingTaskIds.value = resumingTaskIds.value.filter((id) => id !== targetId);
     }
   };
 
@@ -820,6 +957,16 @@ export function useMaterialDriven() {
           if (payload?.error) serverMessage = payload.error;
         } catch (_err) {}
         throw new Error(serverMessage);
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (payload?.task) {
+        activeTasks.value = [
+          payload.task,
+          ...activeTasks.value.filter((task) => String(task?.id || '') !== String(payload.task.id || ''))
+        ];
+      }
+      if (payload?.reused || payload?.alreadyRunning) {
+        addLog(payload.message || '任务正在执行中，本次重建未新建进程', 'info');
       }
       connectEventSource(jobId.value);
       saveState();
@@ -850,6 +997,16 @@ export function useMaterialDriven() {
           if (payload?.error) serverMessage = payload.error;
         } catch (_err) {}
         throw new Error(serverMessage);
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (payload?.task) {
+        activeTasks.value = [
+          payload.task,
+          ...activeTasks.value.filter((task) => String(task?.id || '') !== String(payload.task.id || ''))
+        ];
+      }
+      if (payload?.reused || payload?.alreadyRunning) {
+        addLog(payload.message || '任务正在执行中，本次重渲染未新建进程', 'info');
       }
       connectEventSource(jobId.value);
       saveState();
@@ -892,6 +1049,16 @@ export function useMaterialDriven() {
           // ignore parse error
         }
         throw new Error(serverMessage);
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (payload?.task) {
+        activeTasks.value = [
+          payload.task,
+          ...activeTasks.value.filter((task) => String(task?.id || '') !== String(payload.task.id || ''))
+        ];
+      }
+      if (payload?.reused || payload?.alreadyRunning) {
+        addLog(payload.message || '任务正在执行中，本次重试未新建进程', 'info');
       }
 
       // 重新连接SSE
@@ -1016,6 +1183,8 @@ export function useMaterialDriven() {
     finalVideoUrl,
     error,
     recentLogs,
+    activeTasks,
+    resumingTaskIds,
     uploading,
     rebuildingPlan,
     rerenderingVideo,
@@ -1035,6 +1204,10 @@ export function useMaterialDriven() {
     materialSourceMeta,
     loadPresets,
     refreshTaskSnapshot,
+    restoreLatestCompletedTask,
+    refreshActiveTasks,
+    startActiveTasksRefresh,
+    stopActiveTasksRefresh,
     restoreActiveJob,
     activeDurationLabel,
     lastDurationLabel,
@@ -1043,6 +1216,7 @@ export function useMaterialDriven() {
     testComfyConnection,
     applyXaiMaterial,
     continueWorkflow,
+    resumeMaterialTask,
     rebuildPlan,
     rerenderVideo,
     retryStep,

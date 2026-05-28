@@ -32,6 +32,23 @@ function createSelfCheckService(deps) {
   }
 
   function runEnvCheck(check) {
+    if (typeof check.run === 'function') {
+      return check.run(process.env);
+    }
+
+    if (Array.isArray(check.anyOf) && check.anyOf.length > 0) {
+      const configuredKey = check.anyOf.find((key) => String(process.env[key] || '').trim());
+      const ok = !!configuredKey;
+      return {
+        key: check.key || check.anyOf.join('_or_'),
+        label: check.label || check.anyOf.join(' / '),
+        status: normalizeStatus(ok, check.level),
+        required: check.level !== 'warn',
+        details: ok ? `configured: ${configuredKey}` : 'missing',
+        hint: ok ? '' : String(check.hint || '')
+      };
+    }
+
     const value = String(process.env[check.key] || '').trim();
     const ok = !!value;
     return {
@@ -39,7 +56,7 @@ function createSelfCheckService(deps) {
       label: check.label || check.key,
       status: normalizeStatus(ok, check.level),
       required: check.level !== 'warn',
-      details: ok ? 'configured' : 'missing',
+      details: ok && check.exposeValue ? value : ok ? 'configured' : 'missing',
       hint: ok ? '' : String(check.hint || '')
     };
   }
@@ -70,11 +87,14 @@ function createSelfCheckService(deps) {
   }
 
   function run() {
+    const resolvedEnvRequirements = typeof envRequirements === 'function'
+      ? envRequirements()
+      : envRequirements;
     const groups = [
       {
         key: 'env',
         label: '环境变量',
-        items: envRequirements.map(runEnvCheck)
+        items: resolvedEnvRequirements.map(runEnvCheck)
       },
       {
         key: 'commands',

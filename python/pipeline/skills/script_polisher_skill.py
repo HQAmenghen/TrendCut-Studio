@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 from llm_client import create_llm_client, generate_content, get_llm_provider
 
 from .base import BaseSkill, SkillResult
+from .fresh_context import append_fresh_context_to_blob, fresh_context_for_prompt
 from .partition_prompt_profile import prepend_partition_prompt, resolve_partition_prompt_profile
 from .prompt_skill_loader import load_prompt_text
 from .script_rewriter_skill import ScriptRewriterSkill, _get_script_provider
@@ -132,6 +133,8 @@ class ScriptPolisherSkill(BaseSkill):
             + self.rewriter._detect_ai_cliche_phrases(script_units)
             + self._detect_banned_templates(script_units)
         )
+        source_account_mentions = self.rewriter._find_source_account_mentions(script_units, source_focus)
+        parenthetical_glosses = self.rewriter._detect_parenthetical_glosses(script_units)
         source_repair_required = self.rewriter._needs_source_repair(source_focus, coverage)
 
         if unit_count < 3 or unit_count > 4:
@@ -147,6 +150,10 @@ class ScriptPolisherSkill(BaseSkill):
             errors.append(f"出现输入材料外的疑似跑题词: {out_of_scope_terms}")
         if style_violations:
             errors.append(f"出现禁用模板或 AI 套话: {style_violations}")
+        if source_account_mentions:
+            errors.append(f"口播误包含监控来源账号: {source_account_mentions}")
+        if parenthetical_glosses:
+            errors.append(f"口播包含括号英文注释或翻译夹注: {parenthetical_glosses}")
 
         diagnostics = {
             "char_count": char_count,
@@ -155,6 +162,8 @@ class ScriptPolisherSkill(BaseSkill):
             "source_repair_required": source_repair_required,
             "out_of_scope_terms": out_of_scope_terms,
             "style_violations": style_violations,
+            "source_account_mentions": source_account_mentions,
+            "parenthetical_glosses": parenthetical_glosses,
         }
         return not errors, errors, diagnostics
 
@@ -168,12 +177,14 @@ class ScriptPolisherSkill(BaseSkill):
         draft_units: List[Dict[str, Any]],
         min_chars: int,
         max_chars: int,
+        fresh_context: Dict[str, Any] | None = None,
     ) -> str:
         return self.PROMPT.format(
             min_chars=min_chars,
             max_chars=max_chars,
-            source_post_json=json.dumps(source_post_info, ensure_ascii=False, indent=2),
-            source_focus_json=json.dumps(source_focus, ensure_ascii=False, indent=2),
+            source_post_json=json.dumps(self.rewriter._source_post_for_prompt(source_post_info), ensure_ascii=False, indent=2),
+            source_focus_json=json.dumps(self.rewriter._source_focus_for_prompt(source_focus), ensure_ascii=False, indent=2),
+            fresh_context_json=json.dumps(fresh_context_for_prompt(fresh_context), ensure_ascii=False, indent=2),
             outline_json=json.dumps(outline_items, ensure_ascii=False, indent=2),
             audio_json=json.dumps(audio_snippets, ensure_ascii=False, indent=2),
             segments_json=json.dumps(segment_items, ensure_ascii=False, indent=2),
@@ -213,6 +224,7 @@ class ScriptPolisherSkill(BaseSkill):
         min_chars, max_chars = resolve_polish_char_bounds()
         max_attempts = resolve_polish_max_attempts()
         source_post = payload.get("source_post") or {}
+        fresh_context = payload.get("fresh_context") if isinstance(payload.get("fresh_context"), dict) else {}
         source_post_info = self.rewriter._normalize_source_post(source_post)
         partition_profile = resolve_partition_prompt_profile(source_post_info)
 
@@ -246,11 +258,14 @@ class ScriptPolisherSkill(BaseSkill):
         source_focus = payload.get("source_anchor") if isinstance(payload.get("source_anchor"), dict) else None
         if not source_focus or not source_focus.get("has_source_anchor"):
             source_focus = self.rewriter._extract_source_focus(source_post_info)
-        context_blob = self.rewriter._build_context_blob(
-            source_post_info=source_post_info,
-            outline_items=outline_items,
-            audio_snippets=audio_snippets,
-            segment_items=segment_items,
+        context_blob = append_fresh_context_to_blob(
+            self.rewriter._build_context_blob(
+                source_post_info=source_post_info,
+                outline_items=outline_items,
+                audio_snippets=audio_snippets,
+                segment_items=segment_items,
+            ),
+            fresh_context,
         )
 
         provider = _get_script_provider()
@@ -265,6 +280,7 @@ class ScriptPolisherSkill(BaseSkill):
             draft_units=draft_units,
             min_chars=min_chars,
             max_chars=max_chars,
+            fresh_context=fresh_context,
         ), partition_profile)
 
         last_errors: List[str] = []
@@ -327,6 +343,7 @@ class ScriptPolisherSkill(BaseSkill):
                     "source_anchor": source_focus,
                     "validation_errors": [],
                     "partition_prompt_profile": partition_profile,
+                    "fresh_context": fresh_context_for_prompt(fresh_context),
                     **diagnostics,
                 }
                 return SkillResult(
@@ -357,6 +374,7 @@ class ScriptPolisherSkill(BaseSkill):
             "source_anchor": source_focus,
             "validation_errors": last_errors,
             "partition_prompt_profile": partition_profile,
+            "fresh_context": fresh_context_for_prompt(fresh_context),
             **last_diagnostics,
         }
         return SkillResult(

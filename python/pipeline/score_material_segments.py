@@ -56,6 +56,15 @@ def get_text_model():
     )
 
 
+def get_batch_retry_count() -> int:
+    value = str(os.getenv("MATERIAL_SCORING_BATCH_RETRIES", "5") or "5").strip()
+    try:
+        parsed = int(value)
+    except ValueError:
+        return 5
+    return max(0, parsed)
+
+
 def load_json(path_str, default=None):
     """加载 JSON 文件"""
     path = Path(path_str)
@@ -685,6 +694,8 @@ def score_segments_with_llm(segments, client, model, allow_rule_fallback=True):
 
     print(f"   ℹ️ 准备并行评估: {len(segments)} 个片段, {len(batches)} 个批次, 并发数={max_workers}")
 
+    batch_retries = get_batch_retry_count()
+
     def process_batch(batch, batch_index):
         segments_for_llm = []
         for seg in batch:
@@ -703,21 +714,31 @@ def score_segments_with_llm(segments, client, model, allow_rule_fallback=True):
             segments_json=json.dumps(segments_for_llm, ensure_ascii=False, indent=2)
         )
 
-        try:
-            response = generate_content(
-                client,
-                model=model,
-                contents=prompt,
-                retries=2,
-                request_timeout=request_timeout,
-                provider=get_scoring_llm_provider(),
-            )
-            response_text = response.text
-            parsed = extract_json_from_response(response_text)
-            batch_scored = parsed.get("segments", []) if isinstance(parsed, dict) else []
-            return {"status": "success", "index": batch_index, "scored": batch_scored, "count": len(batch)}
-        except Exception as e:
-            return {"status": "error", "index": batch_index, "error": str(e), "offset": (batch_index-1)*batch_size}
+        last_error = ""
+        for attempt in range(batch_retries + 1):
+            try:
+                response = generate_content(
+                    client,
+                    model=model,
+                    contents=prompt,
+                    retries=2,
+                    request_timeout=request_timeout,
+                    provider=get_scoring_llm_provider(),
+                )
+                response_text = response.text
+                parsed = extract_json_from_response(response_text)
+                batch_scored = parsed.get("segments", []) if isinstance(parsed, dict) else []
+                if len(batch_scored) < len(batch):
+                    raise ValueError(f"LLM returned {len(batch_scored)}/{len(batch)} scored segments")
+                if attempt > 0:
+                    print(f"   ✓ LLM 批次 {batch_index} 第 {attempt + 1} 次尝试成功")
+                return {"status": "success", "index": batch_index, "scored": batch_scored, "count": len(batch)}
+            except Exception as e:
+                last_error = str(e)
+                if attempt < batch_retries:
+                    print(f"   ⚠️ LLM 批次 {batch_index} 第 {attempt + 1} 次尝试失败，准备重试: {last_error}")
+
+        return {"status": "error", "index": batch_index, "error": last_error, "offset": (batch_index-1)*batch_size}
 
     # 执行并行请求
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

@@ -18,9 +18,11 @@ function createPublishConfigService(deps) {
     makeJobId
   } = deps;
 
-  const autoPilotPlatformKeys = ['wechatChannels', 'douyin', 'xiaohongshu'];
+  const autoPilotPlatformKeys = ['wechatChannels', 'douyin', 'xiaohongshu', 'x'];
   const defaultAutoPilotPlatforms = ['wechatChannels'];
   const sauPlatformKeys = ['douyin', 'xiaohongshu'];
+  const defaultAvatarAudioPreset = '毕.mp3';
+  const defaultAvatarImagePreset = '毕（保守）.png';
 
   const platformFieldLabels = {
     wechatChannels: {
@@ -45,11 +47,14 @@ function createPublishConfigService(deps) {
       accountId: '账号 ID / Account ID'
     },
     x: {
-      apiKey: 'API Key / API Key',
-      apiSecret: 'API Secret / API Secret',
-      accessToken: '访问令牌 / Access Token',
-      accessSecret: '访问密钥 / Access Secret',
-      bearerToken: 'Bearer Token / Bearer Token'
+      clientId: 'OAuth2 Client ID / OAuth2 Client ID',
+      clientSecret: 'OAuth2 Client Secret / OAuth2 Client Secret',
+      accessToken: 'OAuth2 Access Token / OAuth2 Access Token',
+      refreshToken: 'OAuth2 Refresh Token / OAuth2 Refresh Token',
+      username: 'X 用户名 / X Username',
+      userId: 'X 用户 ID / X User ID',
+      scopes: '授权范围 / OAuth Scopes',
+      accountId: '账号 ID / Account ID'
     },
     youtube: {
       clientId: '客户端 ID / Client ID',
@@ -171,6 +176,100 @@ function createPublishConfigService(deps) {
     return next;
   }
 
+  function createEmptyXAccount() {
+    const generatedId = typeof makeJobId === 'function'
+      ? String(makeJobId() || '').trim()
+      : `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    return {
+      id: `x_${generatedId}`,
+      displayName: '',
+      username: '',
+      userId: '',
+      clientId: '',
+      clientSecret: '',
+      accessToken: '',
+      refreshToken: '',
+      scopes: 'tweet.read users.read tweet.write media.write offline.access',
+      markMadeWithAi: true,
+      notes: ''
+    };
+  }
+
+  function getXAccountFields() {
+    return ['displayName', 'username', 'userId', 'clientId', 'clientSecret', 'accessToken', 'refreshToken', 'scopes', 'notes'];
+  }
+
+  function hasXLegacyValue(source = {}) {
+    return [
+      'displayName',
+      'apiKey',
+      'apiSecret',
+      'accessToken',
+      'accessSecret',
+      'bearerToken',
+      'clientId',
+      'clientSecret',
+      'refreshToken',
+      'username',
+      'userId',
+      'accountId',
+      'notes'
+    ].some((field) => String(source?.[field] ?? '').trim());
+  }
+
+  function createLegacyXAccount(source = {}) {
+    const account = createEmptyXAccount();
+    account.id = 'x_main';
+    account.displayName = String(source.displayName || source.username || source.accountId || 'X Main').trim();
+    account.username = String(source.username || source.accountId || '').trim().replace(/^@+/, '');
+    account.userId = String(source.userId || '').trim();
+    account.clientId = String(source.clientId || source.apiKey || '').trim();
+    account.clientSecret = String(source.clientSecret || source.apiSecret || '').trim();
+    account.accessToken = String(source.accessToken || source.bearerToken || '').trim();
+    account.refreshToken = String(source.refreshToken || '').trim();
+    account.scopes = String(source.scopes || account.scopes).trim();
+    account.notes = String(source.notes || '').trim();
+    return account;
+  }
+
+  function sanitizeXAccounts(accounts, legacySource = {}) {
+    const source = Array.isArray(accounts)
+      ? accounts
+      : (hasXLegacyValue(legacySource) ? [createLegacyXAccount(legacySource)] : []);
+    const seen = new Set();
+    const sanitized = [];
+    for (const item of source) {
+      if (!item || typeof item !== 'object') continue;
+      const next = createEmptyXAccount();
+      const candidateId = String(item.id || '').trim() || next.id;
+      const id = seen.has(candidateId) ? createEmptyXAccount().id : candidateId;
+      seen.add(id);
+      next.id = id;
+      for (const field of getXAccountFields()) {
+        next[field] = String(item[field] ?? '').trim();
+      }
+      next.username = next.username.replace(/^@+/, '');
+      next.markMadeWithAi = item.markMadeWithAi !== undefined ? Boolean(item.markMadeWithAi) : true;
+      sanitized.push(next);
+    }
+    return sanitized;
+  }
+
+  function syncXTopLevelFromAccounts(platformConfig) {
+    const accounts = Array.isArray(platformConfig?.accounts) ? platformConfig.accounts : [];
+    const primary = accounts[0] || null;
+    if (!primary) return platformConfig;
+    const next = platformConfig;
+    for (const field of getXAccountFields()) {
+      if (!String(next[field] ?? '').trim()) {
+        next[field] = String(primary[field] ?? '').trim();
+      }
+    }
+    next.accountId = next.accountId || primary.id || '';
+    next.markMadeWithAi = primary.markMadeWithAi !== false;
+    return next;
+  }
+
   function sanitizeAutoPilotPipelineModes(value, fallback = 'vertical') {
     const allowedModes = new Set(['vertical', 'avatar']);
     const source = Array.isArray(value) ? value : [fallback];
@@ -248,19 +347,27 @@ function createPublishConfigService(deps) {
       let platforms = Array.isArray(item.platforms)
         ? sanitizeAutoPilotPlatformRows(item.platforms)
         : (Array.isArray(fallbackItem.platforms) ? sanitizeAutoPilotPlatformRows(fallbackItem.platforms) : []);
+      const audioPresets = Array.isArray(item.audioPresets)
+        ? trimTrailingEmptyValues(item.audioPresets.map((preset) => String(preset || '').trim()))
+        : (Array.isArray(fallbackItem.audioPresets) ? trimTrailingEmptyValues(fallbackItem.audioPresets.map((preset) => String(preset || '').trim())) : []);
+      const imagePresets = Array.isArray(item.imagePresets)
+        ? trimTrailingEmptyValues(item.imagePresets.map((preset) => String(preset || '').trim()))
+        : (Array.isArray(fallbackItem.imagePresets) ? trimTrailingEmptyValues(fallbackItem.imagePresets.map((preset) => String(preset || '').trim())) : []);
       const schedule = {
         accountIds,
         times,
         partitionIds,
         sourceRanks,
-        platforms
+        platforms,
+        audioPresets,
+        imagePresets
       };
       if (!schedule.sourceRanks.length) {
-        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length, schedule.platforms.length);
+        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length, schedule.platforms.length, schedule.audioPresets.length, schedule.imagePresets.length);
         schedule.sourceRanks = Array.from({ length: plannedCount }, () => '1');
       }
       if (!schedule.platforms.length) {
-        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length, schedule.sourceRanks.length);
+        const plannedCount = Math.max(schedule.accountIds.length, schedule.times.length, schedule.partitionIds.length, schedule.sourceRanks.length, schedule.audioPresets.length, schedule.imagePresets.length);
         platforms = Array.from({ length: plannedCount }, () => [...defaultAutoPilotPlatforms]);
         schedule.platforms = platforms;
       }
@@ -282,8 +389,8 @@ function createPublishConfigService(deps) {
         autoPilotAccountIds: [],
         autoPilotTimes: [],
         autoPilotModeSchedules: {
-          vertical: { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [] },
-          avatar: { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [] }
+          vertical: { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [], audioPresets: [], imagePresets: [] },
+          avatar: { accountIds: [], times: [], partitionIds: [], sourceRanks: [], platforms: [], audioPresets: [], imagePresets: [] }
         },
         autoPilotUseCurrentRanking: false,
         autoPilotPartitionId: 'crypto',
@@ -291,12 +398,29 @@ function createPublishConfigService(deps) {
         autoArchiveDelayMinutes: 30,
         pipelineMode: 'vertical',
         autoPilotPipelineModes: ['vertical'],
-        avatarPipelineConfig: {}
+        avatarPipelineConfig: {
+          audioPreset: defaultAvatarAudioPreset,
+          imagePreset: defaultAvatarImagePreset
+        }
       },
       wechatChannels: { enabled: false, accounts: [] },
       douyin: { enabled: false, displayName: '', sauAccountName: '', accounts: [], clientKey: '', clientSecret: '', accessToken: '', openId: '', notes: '' },
       xiaohongshu: { enabled: false, displayName: '', sauAccountName: '', accounts: [], appId: '', appSecret: '', accessToken: '', accountId: '', notes: '' },
-      x: { enabled: false, displayName: '', apiKey: '', apiSecret: '', accessToken: '', accessSecret: '', bearerToken: '', notes: '' },
+      x: {
+        enabled: false,
+        displayName: '',
+        username: '',
+        userId: '',
+        clientId: '',
+        clientSecret: '',
+        accessToken: '',
+        refreshToken: '',
+        scopes: 'tweet.read users.read tweet.write media.write offline.access',
+        accountId: '',
+        markMadeWithAi: true,
+        accounts: [],
+        notes: ''
+      },
       youtube: { enabled: false, displayName: '', clientId: '', clientSecret: '', refreshToken: '', channelId: '', notes: '' }
     };
     const source = config && typeof config === 'object' ? config : {};
@@ -335,6 +459,12 @@ function createPublishConfigService(deps) {
       if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
         next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
       }
+      if (!String(next.global.avatarPipelineConfig.audioPreset || '').trim()) {
+        next.global.avatarPipelineConfig.audioPreset = defaultAvatarAudioPreset;
+      }
+      if (!String(next.global.avatarPipelineConfig.imagePreset || '').trim() || next.global.avatarPipelineConfig.imagePreset === '毕.png') {
+        next.global.avatarPipelineConfig.imagePreset = defaultAvatarImagePreset;
+      }
     }
 
     for (const platform of ['douyin', 'xiaohongshu', 'x', 'youtube']) {
@@ -350,6 +480,9 @@ function createPublishConfigService(deps) {
       if (sauPlatformKeys.includes(platform)) {
         next[platform].accounts = sanitizeSauAccounts(platform, incoming.accounts, incoming);
         syncSauTopLevelFromAccounts(platform, next[platform]);
+      } else if (platform === 'x') {
+        next.x.accounts = sanitizeXAccounts(incoming.accounts, incoming);
+        syncXTopLevelFromAccounts(next.x);
       }
     }
 
@@ -388,6 +521,15 @@ function createPublishConfigService(deps) {
 
   function getSauAccountMap(platformKey, config = readPublishConfig()) {
     const accounts = getSauPlatformAccounts(platformKey, config);
+    return new Map(accounts.map((account) => [String(account.id || '').trim(), account]).filter(([id]) => id));
+  }
+
+  function getXAccounts(config = readPublishConfig()) {
+    return Array.isArray(config?.x?.accounts) ? config.x.accounts : [];
+  }
+
+  function getXAccountMap(config = readPublishConfig()) {
+    const accounts = getXAccounts(config);
     return new Map(accounts.map((account) => [String(account.id || '').trim(), account]).filter(([id]) => id));
   }
 
@@ -439,7 +581,7 @@ function createPublishConfigService(deps) {
         });
         continue;
       }
-      if (sauPlatformKeys.includes(platform) && Array.isArray(payload[platform]?.accounts)) {
+      if ((sauPlatformKeys.includes(platform) || platform === 'x') && Array.isArray(payload[platform]?.accounts)) {
         payload[platform].accounts = payload[platform].accounts.map((account) => {
           const next = { ...account };
           for (const key of Object.keys(next)) {
@@ -509,6 +651,12 @@ function createPublishConfigService(deps) {
       if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
         next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
       }
+      if (!String(next.global.avatarPipelineConfig.audioPreset || '').trim()) {
+        next.global.avatarPipelineConfig.audioPreset = defaultAvatarAudioPreset;
+      }
+      if (!String(next.global.avatarPipelineConfig.imagePreset || '').trim() || next.global.avatarPipelineConfig.imagePreset === '毕.png') {
+        next.global.avatarPipelineConfig.imagePreset = defaultAvatarImagePreset;
+      }
     }
     for (const platform of Object.keys(next)) {
       if (platform === 'global') continue;
@@ -531,6 +679,11 @@ function createPublishConfigService(deps) {
           ? sanitizeSauAccounts(platform, source.accounts, source)
           : sanitizeSauAccounts(platform, next[platform].accounts, next[platform]);
         syncSauTopLevelFromAccounts(platform, next[platform]);
+      } else if (platform === 'x') {
+        next.x.accounts = Array.isArray(source.accounts)
+          ? sanitizeXAccounts(source.accounts, source)
+          : sanitizeXAccounts(next.x.accounts, next.x);
+        syncXTopLevelFromAccounts(next.x);
       }
     }
     return next;
@@ -589,15 +742,48 @@ function createPublishConfigService(deps) {
     };
   }
 
+  function validateXTaskConfig(platformConfig, task) {
+    const accountId = String(task?.accountId || '').trim();
+    if (!accountId) {
+      return {
+        missingFields: ['selectedAccount'],
+        missingFieldLabels: ['发布账号 / Publish Account'],
+        account: null
+      };
+    }
+    const accountMap = getXAccountMap({ x: platformConfig });
+    const account = accountMap.get(accountId) || null;
+    if (!account) {
+      return {
+        missingFields: ['selectedAccount'],
+        missingFieldLabels: ['发布账号 / Publish Account'],
+        account: null
+      };
+    }
+    const baseValidation = collectPlatformValidation('x', account, task.requiredFields || []);
+    if (baseValidation.missingFields.includes('accessToken') && String(account.refreshToken || '').trim()) {
+      baseValidation.missingFields = baseValidation.missingFields.filter((field) => field !== 'accessToken');
+      baseValidation.missingFieldLabels = baseValidation.missingFields.map((field) => formatPlatformFieldLabel('x', field));
+    }
+    return {
+      ...baseValidation,
+      account
+    };
+  }
+
   return {
     createEmptyWechatAccount,
     sanitizeWechatAccounts,
     createEmptySauAccount,
     sanitizeSauAccounts,
+    createEmptyXAccount,
+    sanitizeXAccounts,
     getSauPlatformAccounts,
+    getXAccounts,
     normalizePublishConfig,
     getWechatAccountMap,
     getSauAccountMap,
+    getXAccountMap,
     readPublishConfig,
     writePublishConfig,
     maskSecretValue,
@@ -606,7 +792,8 @@ function createPublishConfigService(deps) {
     collectPlatformValidation,
     sanitizePlatformConfigInput,
     validateWechatTaskConfig,
-    validateSauTaskConfig
+    validateSauTaskConfig,
+    validateXTaskConfig
   };
 }
 

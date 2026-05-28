@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,9 +14,13 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT, PIPELINE_ROOT):
         sys.path.insert(0, candidate_str)
 
 from pipeline.make_vertical_video import (  # noqa: E402
+    append_outro,
     clamp_subtitle_timeline_for_render,
+    close_active_audio_subtitle_gaps,
+    deduplicate_subtitles,
     get_text_llm_provider,
     normalize_subtitles_for_display,
+    parse_silencedetect_ranges,
     prepare_subtitles_for_render,
     repair_english_spacing,
     split_long_subtitles,
@@ -55,6 +60,39 @@ class SubtitleWrappingTest(unittest.TestCase):
         self.assertIn("current gains", repaired)
 
 
+class OutroAppendTest(unittest.TestCase):
+    def test_returns_false_when_no_outro_is_requested(self):
+        self.assertFalse(append_outro(Path("output.mp4"), None))
+
+    def test_appends_outro_with_silent_audio_fallback_for_mute_main_video(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "output.mp4"
+            outro = Path(temp_dir) / "outro.mp4"
+            output.write_bytes(b"main")
+            outro.write_bytes(b"outro")
+
+            def fake_run(cmd, check):
+                Path(cmd[-1]).write_bytes(b"combined")
+
+            with patch("pipeline.make_vertical_video.emit_stage") as emit_stage, \
+                 patch("pipeline.make_vertical_video.probe_media", side_effect=[
+                     {"duration": 2.5, "has_audio": False},
+                     {"duration": 1.0, "has_audio": True},
+                 ]), \
+                 patch("pipeline.make_vertical_video.subprocess.run", side_effect=fake_run) as subprocess_run:
+
+                appended = append_outro(output, outro)
+
+            self.assertTrue(appended)
+            emit_stage.assert_called_with("vertical_outro", "正在拼接自定义片尾")
+            cmd = subprocess_run.call_args.args[0]
+            self.assertIn("anullsrc=channel_layout=stereo:sample_rate=48000", cmd)
+            filter_complex = cmd[cmd.index("-filter_complex") + 1]
+            self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]", filter_complex)
+            self.assertEqual(Path(cmd[-1]).name, "output.with_outro.mp4")
+            self.assertEqual(output.read_bytes(), b"combined")
+
+
 class LlmProviderConfigTest(unittest.TestCase):
     def test_renderer_uses_text_llm_provider_from_project_environment(self):
         with patch.dict("os.environ", {"LLM_PROVIDER": "gemini", "TEXT_LLM_PROVIDER": "deepseek"}, clear=False):
@@ -62,6 +100,49 @@ class LlmProviderConfigTest(unittest.TestCase):
 
 
 class SubtitleSplitTest(unittest.TestCase):
+    def test_parses_silencedetect_ranges(self):
+        output = """
+        [silencedetect @ 000] silence_start: 13.2
+        [silencedetect @ 000] silence_end: 13.91 | silence_duration: 0.71
+        [silencedetect @ 000] silence_start: 22.5
+        """
+
+        ranges = parse_silencedetect_ranges(output, duration=24.0)
+
+        self.assertEqual(ranges, [(13.2, 13.91), (22.5, 24.0)])
+
+    def test_extends_previous_subtitle_gap_when_audio_is_active(self):
+        subtitles = [
+            {"time": [11.36, 13.2], "zh": "自由和分离货币与国家"},
+            {"time": [15.84, 17.76], "zh": "稳定币常被宣传为生命线"},
+        ]
+
+        closed = close_active_audio_subtitle_gaps(subtitles, silence_ranges=[])
+
+        self.assertEqual(closed[0]["time"], [11.36, 15.84])
+        self.assertEqual(closed[1]["time"], [15.84, 17.76])
+
+    def test_extends_previous_subtitle_across_long_active_audio_gap(self):
+        subtitles = [
+            {"time": [7.2, 10.8], "zh": "她指出上一次黄金风险如此之高"},
+            {"time": [15.51, 21.52], "zh": "但她表示，当前并不处于那两种极端环境"},
+        ]
+
+        closed = close_active_audio_subtitle_gaps(subtitles, silence_ranges=[])
+
+        self.assertEqual(closed[0]["time"], [7.2, 15.51])
+        self.assertEqual(closed[1]["time"], [15.51, 21.52])
+
+    def test_preserves_internal_subtitle_gap_when_audio_is_silent(self):
+        subtitles = [
+            {"time": [11.36, 13.2], "zh": "自由和分离货币与国家"},
+            {"time": [15.84, 17.76], "zh": "稳定币常被宣传为生命线"},
+        ]
+
+        closed = close_active_audio_subtitle_gaps(subtitles, silence_ranges=[(13.18, 15.9)])
+
+        self.assertEqual([item["time"] for item in closed], [[11.36, 13.2], [15.84, 17.76]])
+
     def test_normalizes_traditional_chinese_before_rendering(self):
         subtitles = [
             {
@@ -78,6 +159,34 @@ class SubtitleSplitTest(unittest.TestCase):
         self.assertEqual(normalized[0]["text"], "比特币将突破100万美元。")
         self.assertEqual(normalized[0]["en"], "Bitcoin could reach 1 million dollars.")
         self.assertEqual(subtitles[0]["zh"], "比特幣將突破100萬美元。")
+
+    def test_normalizes_decimal_million_display_before_rendering(self):
+        subtitles = [
+            {
+                "time": [0.0, 2.0],
+                "zh": "触及1.5百万美元之前。",
+                "text": "别只盯着1.5百万这个价格。",
+            }
+        ]
+
+        normalized = normalize_subtitles_for_display(subtitles)
+
+        self.assertEqual(normalized[0]["zh"], "触及150万美元之前。")
+        self.assertEqual(normalized[0]["text"], "别只盯着150万这个价格。")
+
+    def test_preserves_large_chinese_unit_display_before_rendering(self):
+        subtitles = [
+            {
+                "time": [0.0, 2.0],
+                "zh": "资产规模约3.5万亿美元。",
+                "text": "资产规模约3.5万亿美元。",
+            }
+        ]
+
+        normalized = normalize_subtitles_for_display(subtitles)
+
+        self.assertEqual(normalized[0]["zh"], "资产规模约3.5万亿美元。")
+        self.assertEqual(normalized[0]["text"], "资产规模约3.5万亿美元。")
 
     def test_splits_long_subtitles_on_safe_clause_commas(self):
         subtitles = [
@@ -130,6 +239,32 @@ class SubtitleSplitTest(unittest.TestCase):
 
         self.assertEqual([item["time"] for item in prepared], [[29.8, 33.9], [33.9, 37.96]])
         self.assertEqual([item["zh"] for item in prepared], [item["zh"] for item in subtitles])
+
+    def test_render_preparation_preserves_adjacent_repeated_reference_text(self):
+        subtitles = [
+            {
+                "time": [10.24, 16.24],
+                "zh": "他在视频中说，再投入500亿美元也只能买到1%的份额。要拿到7.5%，意味着价格需暴涨至当前水平的百倍",
+            },
+            {
+                "time": [16.24, 18.8],
+                "zh": "他在视频中说，再投入500亿美元也只能买到1%的份额。要拿到7.5%，意味着价格需暴涨至当前水平的百倍",
+            },
+        ]
+
+        prepared = prepare_subtitles_for_render(subtitles)
+
+        self.assertEqual([item["time"] for item in prepared], [[10.24, 16.24], [16.24, 18.8]])
+
+    def test_deduplicate_subtitles_still_merges_true_overlapping_duplicates(self):
+        subtitles = [
+            {"time": [1.0, 3.0], "zh": "重复字幕"},
+            {"time": [1.02, 3.1], "zh": "重复字幕"},
+        ]
+
+        deduplicated = deduplicate_subtitles(subtitles)
+
+        self.assertEqual(deduplicated, [{"time": [1.0, 3.1], "zh": "重复字幕"}])
 
     def test_render_preparation_only_splits_when_explicitly_requested(self):
         subtitles = [

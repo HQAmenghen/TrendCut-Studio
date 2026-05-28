@@ -104,6 +104,22 @@ class SocialAutoUploadAdapterTest(unittest.TestCase):
             self.assertIn('"qrCodeBase64": "data:image/png;base64,abc"', output)
             self.assertIn('"qrCodePath": "C:/tmp/qr.png"', output)
 
+    def test_active_context_pages_ignores_closed_pages(self):
+        class FakePage:
+            def __init__(self, closed):
+                self.closed = closed
+
+            def is_closed(self):
+                return self.closed
+
+        class FakeContext:
+            pages = [FakePage(True), FakePage(False)]
+
+        active = social_auto_upload_adapter.active_context_pages(FakeContext())
+
+        self.assertEqual(len(active), 1)
+        self.assertFalse(active[0].is_closed())
+
 
 if __name__ == "__main__":
     unittest.main()

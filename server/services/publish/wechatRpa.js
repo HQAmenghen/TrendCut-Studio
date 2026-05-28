@@ -31,6 +31,7 @@ function createWechatRpaService(deps) {
     socialAutoUploadDir,
     socialAutoUploadRuntimeDir,
     socialAutoUploadPython,
+    xApiPublisher,
     buildShortTitle,
     readPublishJobs,
     readPublishConfig,
@@ -98,7 +99,8 @@ function createWechatRpaService(deps) {
     updatePublishPlatformTask,
     startWechatRpa: processService.startWechatRpa,
     retryWechatRpa: processService.retryWechatRpa,
-    cancelWechatRpa: processService.cancelWechatRpa
+    cancelWechatRpa: processService.cancelWechatRpa,
+    xApiPublisher
   });
 
   // 导出统一接口

@@ -2,6 +2,7 @@ function registerPublishRoutes(app, handlers) {
   app.get('/api/publish/config', handlers.getConfig);
   app.post('/api/publish/config', handlers.postConfig);
   app.get('/api/publish/assets', handlers.getAssets);
+  app.delete('/api/publish/assets/:assetId', handlers.deleteAsset);
   app.post('/api/publish/description', handlers.generateDescription);
   app.get('/api/publish/jobs', handlers.getJobs);
   app.delete('/api/publish/jobs/:jobId', handlers.deleteJob);

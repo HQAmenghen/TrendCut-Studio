@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT):
         sys.path.insert(0, candidate_str)
 
 from pipeline.skills.partition_prompt_profile import format_partition_addendum, resolve_partition_prompt_profile  # noqa: E402
+from pipeline.skills.fresh_context import build_fresh_context, is_time_sensitive_source  # noqa: E402
 from pipeline.skills.script_rewriter_skill import ScriptRewriterSkill  # noqa: E402
 
 
@@ -59,6 +61,165 @@ class ScriptRewriterStyleGuardTest(unittest.TestCase):
 
         self.assertIn("AI 模板化强转折句式", prompt)
         self.assertIn("这可不是市场传闻，而是正式的法律动作", prompt)
+
+    def test_normalized_source_post_strips_monitor_account_but_keeps_content_people(self):
+        source_post = self.skill._normalize_source_post({
+            "body": "@BMNRBullz - 🚨 COULD TOM LEE BE RIGHT ABOUT A 15-20% SUMMER DRAWDOWN?",
+            "author": "BMNRBullz",
+            "postUrl": "https://x.com/BMNRBullz/status/2056061081995378881",
+        })
+        prompt_payload = self.skill._source_post_for_prompt(source_post)
+
+        self.assertNotIn("BMNRBullz", prompt_payload["body"])
+        self.assertNotIn("author", prompt_payload)
+        self.assertIn("TOM LEE", prompt_payload["body"])
+        self.assertIn("BMNRBullz", source_post["forbidden_source_account_terms"])
+
+    def test_source_post_strips_bare_handle_attribution_prefixes(self):
+        documenting = self.skill._normalize_source_post({
+            "body": "DocumentingBTC今天直播提到比特币可能继续走强。",
+            "author": "DocumentingBTC",
+        })
+        vivek = self.skill._normalize_source_post({
+            "body": "Vivek4real 分享了一段 Jack Dorsey 的采访。",
+            "author": "Vivek4real",
+        })
+
+        self.assertNotIn("DocumentingBTC", documenting["body"])
+        self.assertIn("比特币", documenting["body"])
+        self.assertNotIn("Vivek4real", vivek["body"])
+        self.assertIn("Jack Dorsey", vivek["body"])
+
+    def test_source_account_mentions_rejected_without_rejecting_video_person(self):
+        source_post_info = self.skill._normalize_source_post({
+            "body": "@BMNRBullz - Tom Lee warns about a 15-20% summer drawdown.",
+            "author": "BMNRBullz",
+        })
+        source_focus = self.skill._extract_source_focus(source_post_info)
+        bad_units = [
+            {"text": "BMNRBullz账号分享Tom Lee最新判断，夏季可能回调15-20%。"}
+        ]
+        good_units = [
+            {"text": "Tom Lee最新判断是，夏季可能先回调15-20%，之后再迎来更大的反弹。"}
+        ]
+
+        self.assertEqual(self.skill._find_source_account_mentions(bad_units, source_focus), ["BMNRBullz"])
+        self.assertEqual(self.skill._find_source_account_mentions(good_units, source_focus), [])
+
+    def test_source_account_detection_does_not_reject_real_spaced_person_name(self):
+        source_post_info = self.skill._normalize_source_post({
+            "body": "@elonmusk - Elon Musk discusses xAI and Tesla.",
+            "author": "elonmusk",
+        })
+        source_focus = self.skill._extract_source_focus(source_post_info)
+        units = [
+            {"text": "Elon Musk 这次谈到 xAI 和 Tesla 的协同，重点放在产品节奏上。"}
+        ]
+
+        self.assertEqual(self.skill._find_source_account_mentions(units, source_focus), [])
+
+    def test_parenthetical_english_gloss_is_removed_from_voiceover_text(self):
+        cleaned = self.skill._sanitize_unit_text(
+            "他称这是我们人生中最大的反弹（THE BIGGEST RALLY OF OUR LIFETIME）前的痛苦。"
+        )
+
+        self.assertNotIn("（THE BIGGEST RALLY OF OUR LIFETIME）", cleaned)
+        self.assertEqual(cleaned, "他称这是我们人生中最大的反弹前的痛苦")
+
+    def test_repair_prompt_includes_source_account_and_parenthetical_constraints(self):
+        prompt = self.skill._build_repair_prompt(
+            base_prompt="base",
+            source_focus={"has_source_anchor": True, "numeric_cues": []},
+            coverage={"missing_cues": []},
+            current_units=[{"text": "BMNRBullz账号分享Tom Lee观点（THE BIGGEST RALLY）。"}],
+            source_account_mentions=["BMNRBullz"],
+            parenthetical_glosses=["（THE BIGGEST RALLY）"],
+        )
+
+        self.assertIn("监控来源账号", prompt)
+        self.assertIn("BMNRBullz", prompt)
+        self.assertIn("括号英文注释", prompt)
+        self.assertIn("THE BIGGEST RALLY", prompt)
+
+    def test_time_sensitive_trump_bitcoin_source_requires_fresh_context(self):
+        source_post = {
+            "title": "特朗普总统：比特币减轻了美元的压力",
+            "body": "President Trump: Bitcoin takes a lot of pressure off the dollar.",
+        }
+
+        self.assertTrue(is_time_sensitive_source(source_post))
+
+        with patch.dict("os.environ", {"XAI_API_KEY": ""}, clear=False):
+            context = build_fresh_context(
+                source_post,
+                now=datetime(2026, 5, 28, tzinfo=timezone(timedelta(hours=8))),
+            )
+
+        self.assertTrue(context["required"])
+        self.assertEqual(context["status"], "skipped_missing_key")
+        self.assertEqual(context["current_year"], 2026)
+        self.assertIn("2025年开年", "".join(context["stale_phrases_to_avoid"]))
+
+    def test_freshness_instruction_forbids_stale_year_when_search_unavailable(self):
+        prompt = self.skill._build_freshness_instruction({
+            "required": True,
+            "status": "skipped_missing_key",
+            "current_date": "2026-05-28",
+            "current_year": 2026,
+            "query": "特朗普 比特币 美元压力",
+            "stale_phrases_to_avoid": ["不要把当前事件写成2025年开年"],
+            "error": "Missing XAI_API_KEY",
+        })
+
+        self.assertIn("2026-05-28", prompt)
+        self.assertIn("不得凭模型记忆补旧年份", prompt)
+        self.assertIn("2025年开年", prompt)
+
+    def test_combined_rewrite_rejects_if_repair_keeps_source_account_or_parenthetical(self):
+        source_post = {
+            "body": "@BMNRBullz - Tom Lee warns about a 15-20% summer drawdown.",
+            "author": "BMNRBullz",
+        }
+        source_post_info = self.skill._normalize_source_post(source_post)
+        source_focus = self.skill._extract_source_focus(source_post_info)
+        invalid_payload = {
+            "script_units": [
+                {
+                    "unit_id": 1,
+                    "role": "hook",
+                    "text": "BMNRBullz账号分享Tom Lee判断：夏季可能回调15-20%（SUMMER DRAWDOWN）。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+                {
+                    "unit_id": 2,
+                    "role": "explain",
+                    "text": "他认为短期压力之后还要看更大反弹。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+            ]
+        }
+
+        class FakeResponse:
+            text = __import__("json").dumps(invalid_payload, ensure_ascii=False)
+
+        with patch("pipeline.skills.script_rewriter_skill.generate_content", return_value=FakeResponse()):
+            result = self.skill._run_combined(
+                client=object(),
+                model="test-model",
+                provider="test",
+                source_post_info=source_post_info,
+                source_focus=source_focus,
+                outline_items=[],
+                audio_snippets=[],
+                segment_items=[],
+                route={},
+                outline={},
+                context_blob=self.skill._build_context_blob(source_post_info, [], [], []),
+            )
+
+        self.assertIsNone(result)
 
     def test_partition_prompt_profile_uses_known_ids_only(self):
         profile = resolve_partition_prompt_profile({
@@ -348,6 +509,86 @@ class ScriptRewriterStyleGuardTest(unittest.TestCase):
         self.assertIn("人工智能赛道", script_units[0]["text"])
         self.assertLess(result.meta["source_coverage"]["coverage_ratio"], 0.40)
         self.assertIn("硬件基建", result.meta["out_of_scope_terms"])
+
+    def test_time_sensitive_source_triggers_freshness_search(self):
+        source_post_info = self.skill._normalize_source_post({
+            "title": "特朗普总统：比特币减轻了美元的压力，比我们投资的任何东西都重要得多。",
+            "body": "President Trump: Bitcoin takes a lot of pressure off the dollar.",
+        })
+
+        self.assertTrue(self.skill._needs_freshness_search(source_post_info))
+
+    def test_freshness_instruction_warns_against_stale_year_when_search_fails(self):
+        prompt = self.skill._build_freshness_instruction({
+            "enabled": True,
+            "current_date": "2026-05-28",
+            "searched": False,
+            "query": "特朗普 比特币 美元 压力",
+            "error": "Missing XAI_API_KEY",
+        })
+
+        self.assertIn("2026-05-28", prompt)
+        self.assertIn("不得凭模型记忆补旧年份", prompt)
+        self.assertIn("改用“近期”“这次表态”", prompt)
+
+    def test_run_passes_freshness_context_into_combined_prompt_and_meta(self):
+        source_post = {
+            "title": "特朗普总统：比特币减轻了美元的压力，比我们投资的任何东西都重要得多。",
+            "body": "President Trump: Bitcoin takes a lot of pressure off the dollar.",
+        }
+        response_payload = {
+            "script_units": [
+                {
+                    "unit_id": 1,
+                    "role": "hook",
+                    "text": "特朗普这次把比特币和美元压力放在同一句话里，信号确实不轻。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+                {
+                    "unit_id": 2,
+                    "role": "explain",
+                    "text": "但这类表态要放回当前政策和市场语境里看，不能直接当成投资信号。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+                {
+                    "unit_id": 3,
+                    "role": "ending",
+                    "text": "真正要观察的，是美国政界对数字资产的态度，会不会继续改变监管预期。",
+                    "content_intent": {},
+                    "evidence": {},
+                },
+            ]
+        }
+
+        class FakeResponse:
+            text = __import__("json").dumps(response_payload, ensure_ascii=False)
+
+        captured_prompts = []
+
+        def fake_generate_content(_client, **kwargs):
+            captured_prompts.append(kwargs["contents"])
+            return FakeResponse()
+
+        with patch.object(self.skill, "_fetch_freshness_context", return_value={
+            "enabled": True,
+            "current_date": "2026-05-28",
+            "searched": True,
+            "query": "特朗普 比特币 美元 压力",
+            "verified_facts": ["2026-05-28 context verified"],
+            "stale_or_unsafe_claims": ["不要写2025年开年"],
+            "date_guidance": "这次表态按2026年当前语境处理。",
+            "source_notes": ["x_search"],
+        }), \
+             patch("pipeline.skills.script_rewriter_skill.create_llm_client", return_value=object()), \
+             patch("pipeline.skills.script_rewriter_skill.generate_content", side_effect=fake_generate_content):
+            result = self.skill.run({"source_post": source_post})
+
+        self.assertEqual(result.meta["status"], "ready")
+        self.assertIn("2026-05-28", captured_prompts[0])
+        self.assertIn("不要写2025年开年", captured_prompts[0])
+        self.assertTrue(result.meta["freshness_context"]["live_search_performed"])
 
 
 if __name__ == "__main__":

@@ -14,7 +14,8 @@ const {
 } = require('../../core/failureSummary');
 const {
   normalizeAvatarSegmentSubtitles,
-  normalizeExecutionPlanSubtitles
+  normalizeExecutionPlanSubtitles,
+  normalizeNarrationReferenceSubtitles: normalizeTaskNarrationReferenceSubtitles
 } = require('./taskImport');
 
 const MATERIAL_TASK_DIR_PATTERN = /^material_[A-Za-z0-9_.-]+$/;
@@ -51,7 +52,6 @@ function createVerticalQueueService(deps) {
   let verticalJobConcurrency = 2;
   const verticalQueueLogPath = path.join(baseDir, 'data', 'logs', 'vertical_queue.log');
   const REFERENCE_AUTHORITY_ALIGNMENT_FAILED = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
-  const ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS = 2;
 
   function isPublicHttpUrl(value) {
     try {
@@ -128,6 +128,24 @@ function createVerticalQueueService(deps) {
     return '';
   }
 
+  function mergeTitleFields(target, ...sources) {
+    const next = { ...(target || {}) };
+    const title = pickString(
+      next.title,
+      ...sources.map((source) => source?.title),
+      next.suggestedTitle,
+      ...sources.map((source) => source?.suggestedTitle),
+      next.suggestedShortTitle,
+      ...sources.map((source) => source?.suggestedShortTitle)
+    );
+    if (title) {
+      next.title = title;
+      if (!pickString(next.suggestedTitle)) next.suggestedTitle = title;
+      if (!pickString(next.suggestedShortTitle)) next.suggestedShortTitle = title;
+    }
+    return next;
+  }
+
   function normalizeExistingSubtitles(payload) {
     if (!Array.isArray(payload) || payload.length === 0) return [];
     return payload
@@ -152,6 +170,8 @@ function createVerticalQueueService(deps) {
       })
       .filter(Boolean);
   }
+
+  const normalizeNarrationReferenceSubtitles = normalizeTaskNarrationReferenceSubtitles;
 
   function extractMaterialProjectDir(value) {
     const raw = String(value || '').trim();
@@ -215,6 +235,10 @@ function createVerticalQueueService(deps) {
 
     const candidates = [
       {
+        fileName: 'narration.json',
+        normalize: normalizeNarrationReferenceSubtitles
+      },
+      {
         fileName: 'aiman_subtitles.json',
         normalize: normalizeExistingSubtitles
       },
@@ -227,34 +251,6 @@ function createVerticalQueueService(deps) {
         fileName: 'avatar_segments.json',
         normalize: (payload) => normalizeAvatarSegmentSubtitles(payload)
           .map((item) => ({ ...item, text: item.zh || item.text || '' }))
-      },
-      {
-        fileName: 'narration.json',
-        normalize: (payload) => {
-          const sections = Array.isArray(payload?.script_sections)
-            ? payload.script_sections.map((section) => pickString(section?.text)).filter(Boolean)
-            : [];
-          const script = pickString(payload?.full_text, payload?.fullText);
-          const lines = sections.length ? sections : (script ? [script] : []);
-          if (!lines.length) return [];
-
-          const totalChars = Math.max(1, lines.reduce((sum, text) => sum + text.length, 0));
-          const configuredDuration = Number(payload?.target_duration_sec);
-          const totalDuration = Number.isFinite(configuredDuration) && configuredDuration > 0
-            ? configuredDuration
-            : Math.max(lines.length * 6, Math.ceil(totalChars / 4));
-          let cursor = 0;
-          return lines.map((text, index) => {
-            const isLast = index === lines.length - 1;
-            const duration = isLast
-              ? Math.max(0.4, totalDuration - cursor)
-              : Math.max(0.4, totalDuration * (text.length / totalChars));
-            const start = Number(cursor.toFixed(2));
-            const end = Number((cursor + duration).toFixed(2));
-            cursor += duration;
-            return { time: [start, end], zh: text, text };
-          });
-        }
       }
     ];
 
@@ -290,12 +286,16 @@ function createVerticalQueueService(deps) {
   }
 
   function persistJobFailure(job, failureSummary, jobDir) {
+    const content = readJsonSafe(path.join(jobDir, 'content.json'), {});
+    const publicVideoPath = path.join(verticalPublicDir, job.id, 'vertical_output.mp4');
+    const publicMetadata = typeof readMediaMetadata === 'function' ? (readMediaMetadata(publicVideoPath) || {}) : {};
+    const resolvedTitle = pickString(job.title, content?.title, publicMetadata.title, publicMetadata.suggestedTitle);
     const payload = {
       jobId: job.id,
       status: job.status,
       sourceType: job.sourceType || '',
       author: job.author || '',
-      title: job.title || '',
+      title: resolvedTitle,
       videoUrl: job.videoUrl || '',
       createdAt: job.createdAt || '',
       startedAt: job.startedAt || '',
@@ -319,6 +319,141 @@ function createVerticalQueueService(deps) {
 
   function getJob(jobId) {
     return verticalJobs.get(String(jobId || '').trim()) || null;
+  }
+
+  function normalizeTaskStatusForRuntime(status) {
+    const value = String(status || '').trim();
+    if (['queued', 'pending'].includes(value)) return 'queued';
+    if (['completed', 'failed', 'cancelled', 'skipped'].includes(value)) return value;
+    return 'running';
+  }
+
+  function buildJobFromTask(task) {
+    if (!task || task.type !== 'vertical_queue') return null;
+    const metadata = task.metadata || {};
+    const originalItem = metadata.originalItem && typeof metadata.originalItem === 'object'
+      ? metadata.originalItem
+      : {};
+    return {
+      id: task.id,
+      status: normalizeTaskStatusForRuntime(task.status),
+      progress: Number.isFinite(Number(task.progress)) ? Number(task.progress) : 0,
+      message: task.message || '',
+      createdAt: task.createdAt || new Date().toISOString(),
+      updatedAt: task.updatedAt || task.createdAt || new Date().toISOString(),
+      startedAt: task.startedAt || null,
+      completedAt: task.completedAt || null,
+      durationSeconds: task.durationSeconds || null,
+      logs: Array.isArray(task.logs) ? task.logs.slice(-120) : [],
+      cancelRequested: false,
+      currentProc: null,
+      currentCancelHandle: null,
+      currentStage: metadata.currentStage || '',
+      sourceType: metadata.sourceType || originalItem.sourceType || 'xai_top10',
+      sourcePartitionId: metadata.sourcePartitionId || originalItem.sourcePartitionId || '',
+      sourcePartitionLabel: metadata.sourcePartitionLabel || originalItem.sourcePartitionLabel || '',
+      sourceRank: metadata.sourceRank || originalItem.sourceRank || 0,
+      author: metadata.author || originalItem.author || '',
+      postId: metadata.postId || originalItem.postId || '',
+      postUrl: metadata.postUrl || originalItem.postUrl || '',
+      title: String(metadata.title || originalItem.title || '').trim(),
+      summary: String(metadata.summary || originalItem.summary || '').trim(),
+      videoUrl: metadata.videoUrl || originalItem.videoUrl || '',
+      sourceTaskDir: metadata.sourceTaskDir || metadata.materialTaskDir || originalItem.sourceTaskDir || originalItem.materialTaskDir || '',
+      materialTaskDir: metadata.materialTaskDir || metadata.sourceTaskDir || originalItem.materialTaskDir || originalItem.sourceTaskDir || '',
+      referenceSubtitles: Array.isArray(metadata.referenceSubtitles)
+        ? metadata.referenceSubtitles
+        : (Array.isArray(originalItem.referenceSubtitles) ? originalItem.referenceSubtitles : []),
+      videoLabel: metadata.videoLabel || slugifyText(metadata.author || metadata.postId || metadata.title || task.id || 'video'),
+      renderOptions: metadata.renderOptions || originalItem.renderOptions || {},
+      autoPilot: metadata.autoPilot || originalItem.autoPilot || null,
+      resultVideoUrl: metadata.resultVideoUrl || ''
+    };
+  }
+
+  function hasCompletedPublicArtifact(jobId) {
+    const outputPath = path.join(verticalPublicDir, jobId, 'vertical_output.mp4');
+    try {
+      return fs.existsSync(outputPath) && fs.statSync(outputPath).isFile();
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  function completeRecoveredArtifactJob(job, task) {
+    const completedAt = task.completedAt || new Date().toISOString();
+    job.status = 'completed';
+    job.progress = 100;
+    job.message = '竖屏视频已完成（启动时从已生成成片恢复）';
+    job.resultVideoUrl = `/xai_vertical_queue/${job.id}/vertical_output.mp4?t=${Date.now()}`;
+    job.completedAt = completedAt;
+    job.updatedAt = new Date().toISOString();
+    job.durationSeconds = job.startedAt
+      ? Math.max(0, Math.floor((new Date(completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000))
+      : null;
+    verticalJobs.set(job.id, job);
+    syncJobToTaskStore(job);
+    appendLog(job, '启动恢复：检测到已生成竖屏成片，已恢复为完成状态并等待自动发布链路继续');
+    return job;
+  }
+
+  function recoverPersistedJobs(options = {}) {
+    if (!taskStore || typeof taskStore.listTasks !== 'function') {
+      return { recovered: 0, completed: 0, requeued: 0 };
+    }
+
+    const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : 100;
+    const includeCompletedArtifacts = options.includeCompletedArtifacts !== false;
+    const tasks = taskStore.listTasks('vertical_queue', limit);
+    let recovered = 0;
+    let completed = 0;
+    let requeued = 0;
+
+    for (const task of tasks) {
+      if (!task || verticalJobs.has(task.id)) continue;
+      const job = buildJobFromTask(task);
+      if (!job) continue;
+
+      if (job.status === 'completed') {
+        if (!includeCompletedArtifacts) continue;
+        verticalJobs.set(job.id, job);
+        recovered += 1;
+        completed += 1;
+        continue;
+      }
+
+      if (hasCompletedPublicArtifact(job.id)) {
+        if (includeCompletedArtifacts) {
+          completeRecoveredArtifactJob(job, task);
+          recovered += 1;
+          completed += 1;
+        }
+        continue;
+      }
+
+      if (['queued', 'running'].includes(job.status)) {
+        job.status = 'queued';
+        job.message = '任务已恢复，等待继续竖屏合成';
+        job.progress = Math.min(Number(job.progress || 0), 95);
+        job.updatedAt = new Date().toISOString();
+        verticalJobs.set(job.id, job);
+        verticalJobQueue.push(job);
+        syncJobToTaskStore(job);
+        appendLog(job, '启动恢复：任务已重新加入竖屏队列');
+        recovered += 1;
+        requeued += 1;
+        continue;
+      }
+
+      verticalJobs.set(job.id, job);
+      appendLog(job, '启动恢复：任务运行状态已恢复到内存，等待人工确认或后续恢复');
+      recovered += 1;
+    }
+
+    if (requeued > 0) {
+      processQueue();
+    }
+    return { recovered, completed, requeued };
   }
 
   function appendLog(job, message) {
@@ -422,6 +557,20 @@ function createVerticalQueueService(deps) {
       console.error(`generate_title.py failed: ${reason}`);
       throw new Error(`自动标题生成失败: ${reason}`);
     }
+  }
+
+  function buildSafeFallbackTitle(job, jobDir, subtitlesFileName = 'subtitles.json') {
+    const subtitlesPath = path.join(jobDir, subtitlesFileName);
+    const fallback = typeof _buildFallbackTitleFromSubtitles === 'function'
+      ? _buildFallbackTitleFromSubtitles(subtitlesPath)
+      : '';
+    return pickString(
+      fallback,
+      job.title,
+      job.summary,
+      job.author ? `${job.author} 的视频` : '',
+      '这条消息可能正在改变支付格局'
+    );
   }
 
   async function runJob(job) {
@@ -551,44 +700,24 @@ function createVerticalQueueService(deps) {
       asrArgs.push('--refine-subtitles');
     }
 
-    const maxAsrAttempts = referenceSubtitlesPath ? ASR_REFERENCE_AUTHORITY_MAX_ATTEMPTS : 1;
-    for (let attempt = 1; attempt <= maxAsrAttempts; attempt += 1) {
-      if (attempt > 1) {
-        updateStage(
-          'transcribe',
-          {
-            status: 'transcribing',
-            progress: 35,
-            message: `参考字幕严格校验未通过，正在重新 ASR 打轴（第 ${attempt}/${maxAsrAttempts} 次）...`
-          },
-          `参考字幕严格校验未通过，重试 ASR 阶段 ${attempt}/${maxAsrAttempts}`
-        );
+    const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
+      cwd: jobDir,
+      onSpawn: (proc) => { job.currentProc = proc; },
+      onStdout: pipeProcessLogs('ASR'),
+      onStderr: pipeProcessLogs('ASR', true),
+      onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
+    });
+    job.currentCancelHandle = asrHandle.cancel;
+    try {
+      await asrHandle.promise;
+    } catch (error) {
+      if (isReferenceAuthorityAlignmentFailure(error) && !job.cancelRequested) {
+        appendLog(job, `大模型未输出可用参考字幕 JSON，已停止生成：${error.details || error.message}`);
       }
-      const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
-        cwd: jobDir,
-        onSpawn: (proc) => { job.currentProc = proc; },
-        onStdout: pipeProcessLogs(`ASR${attempt > 1 ? ` retry ${attempt}` : ''}`),
-        onStderr: pipeProcessLogs(`ASR${attempt > 1 ? ` retry ${attempt}` : ''}`, true),
-        onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
-      });
-      job.currentCancelHandle = asrHandle.cancel;
-      try {
-        await asrHandle.promise;
-        break;
-      } catch (error) {
-        if (
-          attempt < maxAsrAttempts &&
-          isReferenceAuthorityAlignmentFailure(error) &&
-          !job.cancelRequested
-        ) {
-          appendLog(job, `参考字幕严格校验失败，准备重新执行 ASR：${error.details || error.message}`);
-          continue;
-        }
-        throw error;
-      } finally {
-        job.currentProc = null;
-        job.currentCancelHandle = null;
-      }
+      throw error;
+    } finally {
+      job.currentProc = null;
+      job.currentCancelHandle = null;
     }
 
     // 尝试读取任务协议输出（可选，回退到文件假设）
@@ -633,10 +762,23 @@ function createVerticalQueueService(deps) {
       return;
     }
 
-    let finalTitle = String(job.title || '').trim();
+    const existingPublicMetadata = typeof readMediaMetadata === 'function' ? (readMediaMetadata(publicOutputPath) || {}) : {};
+    const existingContent = readJsonSafe(contentPath, {});
+    let finalTitle = pickString(
+      job.title,
+      existingContent?.title,
+      existingPublicMetadata.title,
+      existingPublicMetadata.suggestedTitle,
+      existingPublicMetadata.suggestedShortTitle
+    );
     if (!finalTitle) {
       updateJob({ status: 'titling', progress: 55, message: '正在生成竖屏标题...' }, '开始自动生成竖屏标题');
-      finalTitle = await generateHotTitle(jobDir, 'subtitles.json');
+      try {
+        finalTitle = await generateHotTitle(jobDir, 'subtitles.json');
+      } catch (error) {
+        finalTitle = buildSafeFallbackTitle(job, jobDir, 'subtitles.json');
+        appendLog(job, `自动标题生成失败，已使用本地兜底标题继续渲染：${error.message}`);
+      }
     }
     if (job.cancelRequested) {
       updateJob({ status: 'cancelled', progress: 100, message: '任务已取消' }, '标题阶段后任务被取消');
@@ -712,8 +854,11 @@ function createVerticalQueueService(deps) {
     }
 
     fs.copyFileSync(finalOutputPath, publicOutputPath);
-    const metadata = {
-      ...(typeof readMediaMetadata === 'function' ? (readMediaMetadata(publicOutputPath) || {}) : {}),
+    const renderedSubtitles = fs.existsSync(subtitlesPath)
+      ? readJsonSafe(subtitlesPath, subtitlesData)
+      : subtitlesData;
+    const metadata = mergeTitleFields({
+      ...existingPublicMetadata,
       taskType: 'xai_queue',
       taskDir: jobDir,
       sourceType: job.sourceType || 'xai_top10',
@@ -728,7 +873,8 @@ function createVerticalQueueService(deps) {
       title: finalTitle,
       sourceMaterialTaskDir: job.materialTaskDir || job.sourceTaskDir || '',
       referenceSubtitleSource: job.referenceSubtitleSource || '',
-      subtitles: Array.isArray(subtitlesData) ? subtitlesData : [],
+      referenceSubtitleFallbackUsed: Boolean(job.referenceSubtitleFallbackUsed),
+      subtitles: Array.isArray(renderedSubtitles) ? renderedSubtitles : [],
       sourceSummary: String(job.summary || '').trim(),
       regeneration: renderOptions.isRegeneration ? {
         status: 'completed',
@@ -740,7 +886,7 @@ function createVerticalQueueService(deps) {
         completedAt: new Date().toISOString()
       } : undefined,
       updatedAt: new Date().toISOString()
-    };
+    }, existingContent);
     if (typeof writeMediaMetadata === 'function') {
       writeMediaMetadata(publicOutputPath, metadata);
     }
@@ -927,6 +1073,7 @@ function createVerticalQueueService(deps) {
         sourceTaskDir: item.sourceTaskDir || item.materialTaskDir || '',
         materialTaskDir: item.materialTaskDir || item.sourceTaskDir || '',
         referenceSubtitles: Array.isArray(item.referenceSubtitles) ? item.referenceSubtitles : [],
+        autoPilot: item.autoPilot || null,
         // 保存原始参数用于恢复
         originalItem: {
           sourceType: item.sourceType,
@@ -942,7 +1089,8 @@ function createVerticalQueueService(deps) {
           sourceTaskDir: item.sourceTaskDir,
           materialTaskDir: item.materialTaskDir,
           referenceSubtitles: Array.isArray(item.referenceSubtitles) ? item.referenceSubtitles : [],
-          renderOptions: item.renderOptions
+          renderOptions: item.renderOptions,
+          autoPilot: item.autoPilot || null
         }
       });
       taskId = task.id;
@@ -976,7 +1124,8 @@ function createVerticalQueueService(deps) {
       materialTaskDir: item.materialTaskDir || item.sourceTaskDir || '',
       referenceSubtitles: Array.isArray(item.referenceSubtitles) ? item.referenceSubtitles : [],
       videoLabel: slugifyText(item.author || item.postId || item.title || 'video'),
-      renderOptions: item.renderOptions || {}
+      renderOptions: item.renderOptions || {},
+      autoPilot: item.autoPilot || null
     };
 
     if (!taskStore) {
@@ -1089,6 +1238,7 @@ function createVerticalQueueService(deps) {
     enqueue,
     getJob,
     getStatus,
+    recoverPersistedJobs,
     remove,
     setConcurrency
   };

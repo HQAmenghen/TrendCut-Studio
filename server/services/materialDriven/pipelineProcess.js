@@ -11,9 +11,12 @@ const {
   parseAndEmitProgress,
   summarizeFailureMessage
 } = require('./events');
+const { syncMaterialTask } = require('./taskStoreBridge');
 const { buildVersionedProjectFileUrl, nowIso } = require('./utils');
 
 const SCRIPT_PATH = path.join(__dirname, '../../../python/pipeline/run_material_driven.py');
+const DUPLICATE_ACTION_LOG_INTERVAL_MS = 10000;
+const RETRYABLE_TERMINAL_AVATAR_STATUSES = new Set(['failed', 'failure', 'error', 'canceled', 'cancelled']);
 
 function createPythonEnv() {
   return {
@@ -24,7 +27,7 @@ function createPythonEnv() {
   };
 }
 
-function markTaskFailed(jobId, task, message) {
+function markTaskFailed(jobId, task, message, taskStore) {
   task.status = 'failed';
   task.statusText = message;
   task.error = task.error || message;
@@ -32,10 +35,11 @@ function markTaskFailed(jobId, task, message) {
   task.updatedAt = nowIso();
   task.process = null;
   addTaskLog(task, message, 'error');
+  syncMaterialTask(taskStore, task, { error: message });
   emitTaskEvent(jobId, 'error_event', { message });
 }
 
-function markTaskWaitingForAvatar(jobId, task) {
+function markTaskWaitingForAvatar(jobId, task, taskStore) {
   task.status = 'waiting_avatar';
   task.progress = Math.max(Number(task.progress || 0), 80);
   task.currentStep = Math.max(Number(task.currentStep || 0), 5);
@@ -43,11 +47,13 @@ function markTaskWaitingForAvatar(jobId, task) {
   task.updatedAt = nowIso();
   task.process = null;
   addTaskLog(task, task.statusText, 'info');
+  syncMaterialTask(taskStore, task);
   emitTaskEvent(jobId, 'status', { message: task.statusText });
   emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
 }
 
 function markTaskCompleted(jobId, task, options = {}) {
+  const taskStore = options.taskStore || null;
   const outputDir = path.basename(task.outputPath);
   const shouldCheckVideo = options.checkVideoExists !== false;
   const finalVideoPath = path.join(task.outputPath, 'output_final.mp4');
@@ -63,12 +69,86 @@ function markTaskCompleted(jobId, task, options = {}) {
   task.updatedAt = nowIso();
   task.process = null;
   addTaskLog(task, '制作完成', 'success');
+  syncMaterialTask(taskStore, task, { videoUrl });
   emitTaskEvent(jobId, 'complete', { videoUrl });
 }
 
-function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
+function isProcessActive(process) {
+  if (!process) return false;
+  if ('killed' in process && process.killed) return false;
+  if ('exitCode' in process && process.exitCode !== null) return false;
+  return true;
+}
+
+function isTaskRunInFlight(task) {
+  return Boolean(task?.pipelineRun?.inFlight);
+}
+
+function noteTaskAlreadyRunning(jobId, task, taskStore, message = '任务已在运行，已切换为观察状态') {
+  const now = Date.now();
+  const lastLoggedAt = Number(task.lastDuplicateActionLoggedAt || 0);
+  task.updatedAt = nowIso();
+  if (now - lastLoggedAt > DUPLICATE_ACTION_LOG_INTERVAL_MS) {
+    task.lastDuplicateActionLoggedAt = now;
+    addTaskLog(task, message, 'info');
+  }
+  syncMaterialTask(taskStore, task);
+  emitTaskEvent(jobId, 'status', { message });
+  emitTaskEvent(jobId, 'progress', {
+    percent: Number(task.progress || 0),
+    message: task.statusText || message
+  });
+  return {
+    reused: true,
+    alreadyRunning: true,
+    message,
+    task
+  };
+}
+
+function beginTaskRun(jobId, task, taskStore, runKey, busyMessage) {
+  if (isProcessActive(task.process) || isTaskRunInFlight(task)) {
+    return noteTaskAlreadyRunning(jobId, task, taskStore, busyMessage);
+  }
+  task.pipelineRun = {
+    inFlight: true,
+    runKey,
+    startedAt: nowIso()
+  };
+  task.updatedAt = nowIso();
+  syncMaterialTask(taskStore, task);
+  return null;
+}
+
+function clearTaskRun(task, runKey) {
+  if (!task?.pipelineRun) return;
+  if (!runKey || task.pipelineRun.runKey === runKey) {
+    task.pipelineRun = null;
+  }
+}
+
+function resetTerminalAvatarStateForRetry(task) {
+  const state = task?.avatarRenderState;
+  const status = String(state?.status || '').trim().toLowerCase();
+  if (!state?.taskId || !RETRYABLE_TERMINAL_AVATAR_STATUSES.has(status)) return null;
+  const previousTaskId = String(state.taskId || '').trim();
+  const previousError = String(state.error || '').trim();
+  task.avatarRenderState = {
+    provider: state.provider || 'runninghub',
+    status: 'retrying',
+    previousTaskId,
+    previousStatus: status,
+    previousError,
+    taskId: '',
+    error: '',
+    retryStartedAt: nowIso()
+  };
+  return { previousTaskId, previousStatus: status };
+}
+
+function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = null } = {}) {
   function launchFromAvatarReady(jobId, task) {
-    spawnPipeline(jobId, task, 6, {
+    return spawnPipeline(jobId, task, 6, {
       step: 6,
       progressValue: 88,
       statusText: '继续处理数字人映射并执行混剪',
@@ -77,12 +157,41 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
     });
   }
 
+  function continueFromAvatarStep(jobId, task) {
+    const busy = beginTaskRun(jobId, task, taskStore, `continue:${jobId}`, '任务已在继续执行，已切换为观察状态');
+    if (busy) return busy;
+    clearTaskRun(task, `continue:${jobId}`);
+    const aimanPath = path.join(task.outputPath, 'aiman.mp4');
+    if (task.autoGenerate && !fs.existsSync(aimanPath)) {
+      task.lastStdout = '';
+      task.lastStderr = '';
+      task.process = null;
+      task.status = 'generating_avatar';
+      task.currentStep = 6;
+      task.progress = Math.max(Number(task.progress || 0), 86);
+      task.statusText = '正在恢复数字人合成结果...';
+      task.error = '';
+      task.updatedAt = nowIso();
+      addTaskLog(task, '步骤6缺少 aiman.mp4，先恢复数字人生成结果再继续混剪', 'info');
+      emitTaskEvent(jobId, 'status', { message: task.statusText });
+      emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
+      syncMaterialTask(taskStore, task);
+      return runAutoAvatarThenContinue(jobId, task, '继续自动生成数字人失败');
+    }
+    return launchFromAvatarReady(jobId, task);
+  }
+
   function runAutoAvatarThenContinue(jobId, task, fallbackMessage) {
+    const runKey = `avatar:${jobId}`;
+    const busy = beginTaskRun(jobId, task, taskStore, runKey, '数字人恢复任务已在运行，已切换为观察状态');
+    if (busy) return busy;
     (async () => {
       try {
         await autoGenerateAvatar(jobId, task);
+        clearTaskRun(task, runKey);
         launchFromAvatarReady(jobId, task);
       } catch (err) {
+        clearTaskRun(task, runKey);
         const message = err?.message || fallbackMessage;
         task.status = 'failed';
         task.error = message;
@@ -91,9 +200,16 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
         task.updatedAt = nowIso();
         task.process = null;
         addTaskLog(task, message, 'error');
+        syncMaterialTask(taskStore, task, { error: message });
         emitTaskEvent(jobId, 'error_event', { message });
       }
     })();
+    return {
+      reused: false,
+      alreadyRunning: false,
+      message: task.statusText || '数字人恢复任务已启动',
+      task
+    };
   }
 
   function attachPythonProcess(jobId, task, pythonProcess, options = {}) {
@@ -102,7 +218,8 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
       progressValue = 88,
       statusText = '处理中',
       startLog = '开始执行任务',
-      stepMessage = `步骤${step}`
+      stepMessage = `步骤${step}`,
+      runKey = ''
     } = options;
 
     task.lastStdout = '';
@@ -115,6 +232,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
     task.error = '';
     task.updatedAt = nowIso();
     addTaskLog(task, startLog, 'info');
+    syncMaterialTask(taskStore, task);
     emitTaskEvent(jobId, 'step', { step, message: stepMessage });
     emitTaskEvent(jobId, 'status', { message: statusText });
 
@@ -122,7 +240,9 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
       const output = data.toString();
       task.lastStdout = `${String(task.lastStdout || '')}${output}`.slice(-40000);
       console.log(`[${jobId}] ${output}`);
-      parseAndEmitProgress(jobId, output);
+      parseAndEmitProgress(jobId, output, {
+        syncTaskState: (latestTask, extraMetadata) => syncMaterialTask(taskStore, latestTask, extraMetadata)
+      });
     });
 
     pythonProcess.stderr.on('data', (data) => {
@@ -132,15 +252,19 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
     });
 
     pythonProcess.on('close', (code) => {
+      clearTaskRun(task, runKey);
       if (code === 0) {
-        markTaskCompleted(jobId, task, { checkVideoExists: false });
+        markTaskCompleted(jobId, task, { checkVideoExists: false, taskStore });
         return;
       }
-      markTaskFailed(jobId, task, summarizeFailureMessage(task, code));
+      markTaskFailed(jobId, task, summarizeFailureMessage(task, code), taskStore);
     });
   }
 
   function spawnPipeline(jobId, task, startFrom, extraOptions = {}) {
+    const runKey = extraOptions.runKey || `pipeline:${jobId}:${startFrom}`;
+    const busy = beginTaskRun(jobId, task, taskStore, runKey, '任务已有本地渲染进程在运行，已切换为观察状态');
+    if (busy) return busy;
     const materialPath = path.join(task.outputPath, 'material.mp4');
     const args = buildMaterialDrivenPipelineArgs({
       scriptPath: SCRIPT_PATH,
@@ -149,41 +273,56 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
       startFrom,
       useSmartClip: task.useSmartClip,
       useCache: task.useCache,
+      allowRuleFallback: task.allowRuleFallback,
       unbuffered: true
     });
-    const pythonProcess = spawn('python', args, {
-      cwd: task.outputPath,
-      env: createPythonEnv()
-    });
+    let pythonProcess;
+    try {
+      pythonProcess = spawn('python', args, {
+        cwd: task.outputPath,
+        env: createPythonEnv()
+      });
+    } catch (err) {
+      clearTaskRun(task, runKey);
+      throw err;
+    }
     addTaskLog(task, `启动 Python 流水线: start-from=${startFrom}, smartClip=${task.useSmartClip ? 'on' : 'off'}, cache=${task.useCache ? 'on' : 'off'}`, 'info');
-    attachPythonProcess(jobId, task, pythonProcess, extraOptions);
+    syncMaterialTask(taskStore, task);
+    attachPythonProcess(jobId, task, pythonProcess, { ...extraOptions, runKey });
     return pythonProcess;
   }
 
   function startInitialPipeline(jobId, task) {
+    const runKey = `initial:${jobId}`;
+    const busy = beginTaskRun(jobId, task, taskStore, runKey, '任务已在启动，已切换为观察状态');
+    if (busy) return busy;
     const materialPath = path.join(task.outputPath, 'material.mp4');
-    const args = [
-      '-u',
-      SCRIPT_PATH,
+    const args = buildMaterialDrivenPipelineArgs({
+      scriptPath: SCRIPT_PATH,
       materialPath,
-      '--output-dir', task.outputPath
-    ];
-
-    if (!task.useSmartClip) {
-      args.push('--no-smart-clip');
-    }
-    if (task.useCache) {
-      args.push('--use-cache');
-    }
-    args.push('--end-at', '5');
-
-    const pythonProcess = spawn('python', args, {
-      cwd: task.outputPath,
-      env: createPythonEnv()
+      outputPath: task.outputPath,
+      startFrom: 1,
+      endAt: 5,
+      useSmartClip: task.useSmartClip,
+      useCache: task.useCache,
+      allowRuleFallback: task.allowRuleFallback,
+      unbuffered: true
     });
+
+    let pythonProcess;
+    try {
+      pythonProcess = spawn('python', args, {
+        cwd: task.outputPath,
+        env: createPythonEnv()
+      });
+    } catch (err) {
+      clearTaskRun(task, runKey);
+      throw err;
+    }
     task.lastStdout = '';
     task.lastStderr = '';
     task.process = pythonProcess;
+    syncMaterialTask(taskStore, task);
 
     pythonProcess.stdout.on('data', (data) => {
       const output = data.toString();
@@ -192,7 +331,9 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
         latest.lastStdout = `${String(latest.lastStdout || '')}${output}`.slice(-40000);
       }
       console.log(`[${jobId}] ${output}`);
-      parseAndEmitProgress(jobId, output);
+      parseAndEmitProgress(jobId, output, {
+        syncTaskState: (latestTask, extraMetadata) => syncMaterialTask(taskStore, latestTask, extraMetadata)
+      });
     });
 
     pythonProcess.stderr.on('data', (data) => {
@@ -205,6 +346,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
     });
 
     pythonProcess.on('close', (code) => {
+      clearTaskRun(task, runKey);
       const latest = activeTasks.get(jobId);
       if (code === 0) {
         if (latest) {
@@ -216,7 +358,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
           return;
         }
         if (latest) {
-          markTaskWaitingForAvatar(jobId, latest);
+          markTaskWaitingForAvatar(jobId, latest, taskStore);
         }
       } else {
         const step6MissingAiman = latest?.autoGenerate &&
@@ -227,7 +369,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
         }
         const message = summarizeFailureMessage(latest, code);
         if (latest) {
-          markTaskFailed(jobId, latest, message);
+          markTaskFailed(jobId, latest, message, taskStore);
         } else {
           emitTaskEvent(jobId, 'error_event', { message });
         }
@@ -238,25 +380,32 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
   }
 
   function startRetryPipeline(jobId, task, step) {
-    if (task.process) {
-      task.process.kill();
-    }
+    const runKey = `retry:${jobId}:${step}`;
+    const busy = beginTaskRun(jobId, task, taskStore, runKey, '任务正在执行中，本次重试未新建进程');
+    if (busy) return busy;
+    clearTaskRun(task, runKey);
 
     const requestedStep = Number(step);
     const aimanPath = path.join(task.outputPath, 'aiman.mp4');
     if (task.autoGenerate && requestedStep === 6 && !fs.existsSync(aimanPath)) {
+      const resetAvatar = resetTerminalAvatarStateForRetry(task);
       task.lastStdout = '';
       task.lastStderr = '';
       task.process = null;
       task.status = 'generating_avatar';
       task.currentStep = 6;
+      task.progress = Math.max(Number(task.progress || 0), 86);
       task.statusText = '重试步骤6：生成数字人';
       task.error = '';
+      task.completedAt = null;
       task.updatedAt = nowIso();
+      if (resetAvatar) {
+        addTaskLog(task, `上次 RunningHub 任务已失败，本次重试将重新提交新任务: previousTaskId=${resetAvatar.previousTaskId}`, 'warning');
+      }
       addTaskLog(task, '步骤6缺少 aiman.mp4，直接进入数字人生成/恢复链路', 'info');
       emitTaskEvent(jobId, 'status', { message: '重试步骤6：生成数字人...' });
-      runAutoAvatarThenContinue(jobId, task, '重试自动生成数字人失败');
-      return null;
+      syncMaterialTask(taskStore, task);
+      return runAutoAvatarThenContinue(jobId, task, '重试自动生成数字人失败');
     }
 
     const materialPath = path.join(task.outputPath, 'material.mp4');
@@ -269,13 +418,23 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
       endAt: retryPlan.endAt,
       useSmartClip: task.useSmartClip,
       useCache: task.useCache,
+      allowRuleFallback: task.allowRuleFallback,
       unbuffered: true
     });
 
-    const pythonProcess = spawn('python', args, {
-      cwd: task.outputPath,
-      env: createPythonEnv()
-    });
+    const retryRunKey = `retry-pipeline:${jobId}:${step}`;
+    const retryBusy = beginTaskRun(jobId, task, taskStore, retryRunKey, '任务正在执行中，本次重试未新建进程');
+    if (retryBusy) return retryBusy;
+    let pythonProcess;
+    try {
+      pythonProcess = spawn('python', args, {
+        cwd: task.outputPath,
+        env: createPythonEnv()
+      });
+    } catch (err) {
+      clearTaskRun(task, retryRunKey);
+      throw err;
+    }
     addTaskLog(
       task,
       `重试启动 Python 流水线: start-from=${retryPlan.startFrom}${retryPlan.endAt ? `, end-at=${retryPlan.endAt}` : ''}, smartClip=${task.useSmartClip ? 'on' : 'off'}, cache=${task.useCache ? 'on' : 'off'}`,
@@ -291,13 +450,16 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
     task.error = '';
     task.updatedAt = nowIso();
     addTaskLog(task, `开始重试步骤${step}`, 'info');
+    syncMaterialTask(taskStore, task);
     emitTaskEvent(jobId, 'status', { message: `重试步骤${step}...` });
 
     pythonProcess.stdout.on('data', (data) => {
       const output = data.toString();
       task.lastStdout = `${String(task.lastStdout || '')}${output}`.slice(-40000);
       console.log(`[${jobId}] ${output}`);
-      parseAndEmitProgress(jobId, output);
+      parseAndEmitProgress(jobId, output, {
+        syncTaskState: (latestTask, extraMetadata) => syncMaterialTask(taskStore, latestTask, extraMetadata)
+      });
     });
 
     pythonProcess.stderr.on('data', (data) => {
@@ -307,6 +469,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
     });
 
     pythonProcess.on('close', (code) => {
+      clearTaskRun(task, retryRunKey);
       if (code === 0) {
         if (retryPlan.stopAfterNarration) {
           emitNarrationSummary(jobId, task);
@@ -322,11 +485,12 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
           task.updatedAt = nowIso();
           task.process = null;
           addTaskLog(task, task.statusText, 'info');
+          syncMaterialTask(taskStore, task);
           emitTaskEvent(jobId, 'status', { message: task.statusText });
           emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
           return;
         }
-        markTaskCompleted(jobId, task);
+        markTaskCompleted(jobId, task, { taskStore });
       } else {
         const step6MissingAiman = task?.autoGenerate &&
           Number(step) === 6 &&
@@ -336,7 +500,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
           return;
         }
 
-        markTaskFailed(jobId, task, summarizeFailureMessage(task, code));
+        markTaskFailed(jobId, task, summarizeFailureMessage(task, code), taskStore);
       }
     });
 
@@ -345,6 +509,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar }) {
 
   return {
     attachPythonProcess,
+    continueFromAvatarStep,
     spawnPipeline,
     startInitialPipeline,
     startRetryPipeline,

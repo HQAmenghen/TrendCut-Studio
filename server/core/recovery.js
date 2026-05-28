@@ -8,10 +8,14 @@
  * - 自动或手动恢复任务
  */
 
+const fs = require('fs');
+const path = require('path');
+
 function createRecoveryService(deps) {
   const {
     taskStore,
-    verticalQueueService
+    verticalQueueService,
+    materialDrivenStarter
   } = deps;
 
   // 恢复配置
@@ -21,10 +25,10 @@ function createRecoveryService(deps) {
       enabled: true,
       maxRetries: 3,
       retryDelay: 5000, // 5 秒后重试
-      taskTypes: ['vertical_queue', 'xai_top10']
+      taskTypes: ['vertical_queue', 'xai_top10', 'avatar_generation']
     },
     manualRecovery: {
-      taskTypes: ['wechat_rpa', 'publish']
+      taskTypes: ['material_driven', 'avatar_generation', 'standalone_vertical', 'wechat_rpa', 'publish', 'publish_platform']
     },
     heartbeatTimeout: 300000 // 5 分钟无心跳视为死亡
   };
@@ -38,9 +42,19 @@ function createRecoveryService(deps) {
    */
   function scanInterruptedTasks() {
     try {
-      const tasks = taskStore.listActiveTasks();
-      const interrupted = tasks.filter(task =>
-        task.status === 'running' || task.status === 'in_progress'
+      const activeTasks = taskStore.listActiveTasks();
+      let storedInterrupted = [];
+      if (taskStore.db && typeof taskStore.db.prepare === 'function') {
+        storedInterrupted = taskStore.db.prepare(`
+          SELECT * FROM tasks WHERE status = 'interrupted' ORDER BY updatedAt DESC LIMIT 100
+        `).all().map((row) => taskStore.rowToTask(row));
+      }
+      const byId = new Map();
+      for (const task of [...activeTasks, ...storedInterrupted]) {
+        if (task?.id) byId.set(task.id, task);
+      }
+      const interrupted = Array.from(byId.values()).filter(task =>
+        task.status === 'running' || task.status === 'in_progress' || task.status === 'interrupted'
       );
       return interrupted;
     } catch (err) {
@@ -135,6 +149,10 @@ function createRecoveryService(deps) {
       return { success: false, action: 'max_retries_exceeded' };
     }
 
+    if (task.type === 'avatar_generation') {
+      return recoverAvatarGenerationTask(task, retryCount);
+    }
+
     // 重置任务状态为 pending
     taskStore.updateTask(task.id, {
       status: 'pending',
@@ -153,20 +171,28 @@ function createRecoveryService(deps) {
     // 根据任务类型重新入队
     if (task.type === 'vertical_queue' && verticalQueueService) {
       try {
-        // 从 metadata 中恢复任务参数
-        const item = task.metadata?.originalItem;
-        if (item) {
-          // 延迟重试，避免立即失败
+        if (typeof verticalQueueService.recoverPersistedJobs === 'function') {
           const timerId = setTimeout(() => {
             pendingTimers.delete(timerId);
             try {
-              verticalQueueService.enqueue(item);
-              console.log(`[Recovery] 任务 ${task.id} 已重新入队`);
+              verticalQueueService.recoverPersistedJobs({ includeCompletedArtifacts: false });
+              console.log(`[Recovery] 任务 ${task.id} 已按原任务 ID 恢复竖屏队列`);
             } catch (err) {
-              console.error('[Recovery] 重新入队失败:', err);
+              console.error('[Recovery] 竖屏队列恢复失败:', err);
             }
           }, config.autoRecovery.retryDelay);
           pendingTimers.add(timerId);
+        } else {
+          taskStore.updateTask(task.id, {
+            status: 'interrupted',
+            message: '竖屏任务缺少原地恢复能力，等待手动恢复',
+            metadata: {
+              ...task.metadata,
+              awaitingManualRecovery: true,
+              manualRecoveryRequiredAt: new Date().toISOString()
+            }
+          });
+          return { success: true, action: 'awaiting_manual_recovery' };
         }
       } catch (err) {
         console.error(`[Recovery] 自动恢复任务 ${task.id} 失败:`, err);
@@ -174,7 +200,103 @@ function createRecoveryService(deps) {
       }
     }
 
+    if (task.type === 'standalone_vertical') {
+      taskStore.updateTask(task.id, {
+        status: 'interrupted',
+        message: '单条竖屏任务在服务重启时中断，请从面板恢复或重试',
+        metadata: {
+          ...task.metadata,
+          awaitingManualRecovery: true,
+          manualRecoveryRequiredAt: new Date().toISOString()
+        }
+      });
+      return { success: true, action: 'awaiting_manual_recovery' };
+    }
+
     return { success: true, action: 'auto_recovered' };
+  }
+
+  function getMaterialJobIdFromTask(task) {
+    const outputDir = String(task.metadata?.outputDir || '').trim();
+    if (outputDir) return outputDir.replace(/^material_/, '');
+    const outputPath = String(task.metadata?.outputPath || '').trim();
+    if (outputPath) return path.basename(outputPath).replace(/^material_/, '');
+    const sourceKey = String(task.metadata?.sourceMaterialTaskKey || '').trim();
+    return sourceKey.replace(/^material:/, '').replace(/^material_/, '');
+  }
+
+  function ensureRunningHubStateFile(task) {
+    const metadata = task.metadata || {};
+    const provider = String(metadata.provider || '').trim().toLowerCase();
+    const providerTaskId = String(metadata.providerTaskId || '').trim();
+    const outputPath = String(metadata.outputPath || '').trim();
+    if (provider !== 'runninghub' || !providerTaskId || !outputPath) return false;
+
+    const statePath = path.join(outputPath, 'avatar_render_state.json');
+    let existing = {};
+    try {
+      if (fs.existsSync(statePath)) {
+        existing = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      }
+    } catch (_err) {
+      existing = {};
+    }
+
+    const state = {
+      ...existing,
+      provider: 'runninghub',
+      status: String(existing.status || metadata.stage || 'polling_interrupted').trim(),
+      resumeKey: existing.resumeKey || metadata.resumeKey || '',
+      taskId: providerTaskId,
+      videoUrl: existing.videoUrl || metadata.videoUrl || '',
+      remoteAudioName: existing.remoteAudioName || metadata.remoteAudioName || '',
+      remoteImageName: existing.remoteImageName || metadata.remoteImageName || '',
+      remotePoseName: existing.remotePoseName || metadata.remotePoseName || '',
+      nodeInfoList: Array.isArray(existing.nodeInfoList) ? existing.nodeInfoList : [],
+      error: ''
+    };
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
+    return true;
+  }
+
+  async function recoverAvatarGenerationTask(task, retryCount) {
+    if (!materialDrivenStarter || typeof materialDrivenStarter.continueOneClick !== 'function') {
+      return manualRecoverTask(task);
+    }
+
+    const jobId = getMaterialJobIdFromTask(task);
+    const outputDir = String(task.metadata?.outputDir || '').trim();
+    if (!jobId || !outputDir || !ensureRunningHubStateFile(task)) {
+      taskStore.updateTask(task.id, {
+        status: 'interrupted',
+        message: '数字人任务缺少恢复信息，等待手动恢复',
+        metadata: {
+          ...task.metadata,
+          awaitingManualRecovery: true,
+          manualRecoveryRequiredAt: new Date().toISOString()
+        }
+      });
+      taskStore.appendLog(task.id, '[Recovery] 数字人任务缺少 RunningHub taskId 或输出目录，无法自动恢复');
+      return { success: true, action: 'awaiting_manual_recovery' };
+    }
+
+    taskStore.updateTask(task.id, {
+      status: 'running',
+      progress: Math.max(Number(task.progress || 0), 86),
+      message: '正在恢复未完成的数字人合成任务...',
+      metadata: {
+        ...task.metadata,
+        retryCount: retryCount + 1,
+        lastRecoveryAt: new Date().toISOString(),
+        recoveryAttempt: (task.metadata?.recoveryAttempt || 0) + 1,
+        recoveryStrategy: 'auto'
+      }
+    });
+    taskStore.appendLog(task.id, '[Recovery] 已恢复未完成数字人任务，将继续查询 RunningHub 并接续混剪');
+
+    await materialDrivenStarter.continueOneClick(jobId, outputDir, { useCache: true });
+    return { success: true, action: 'avatar_continue_started' };
   }
 
   /**
@@ -232,6 +354,17 @@ function createRecoveryService(deps) {
     const results = [];
 
     for (const task of interrupted) {
+      if (task.status === 'interrupted') {
+        const recoverResult = await recoverTask(task);
+        results.push({
+          taskId: task.id,
+          type: task.type,
+          strategy: task.metadata?.recoveryStrategy || getRecoveryStrategy(task),
+          ...recoverResult
+        });
+        continue;
+      }
+
       const isAlive = isProcessAlive(task);
 
       if (!isAlive) {
@@ -286,6 +419,16 @@ function createRecoveryService(deps) {
       throw new Error('只能重试中断的任务');
     }
 
+    if (task.type === 'avatar_generation') {
+      taskStore.appendLog(taskId, '[Recovery] 用户手动恢复数字人任务');
+      const result = await recoverAvatarGenerationTask(task, task.metadata?.retryCount || 0);
+      return {
+        success: true,
+        message: '数字人任务已恢复执行',
+        action: result.action
+      };
+    }
+
     // 重置状态并恢复
     taskStore.updateTask(taskId, {
       status: 'pending',
@@ -302,13 +445,23 @@ function createRecoveryService(deps) {
 
     // 根据任务类型重新入队
     if (task.type === 'vertical_queue' && verticalQueueService) {
-      const item = task.metadata?.originalItem;
-      if (item) {
-        verticalQueueService.enqueue(item);
+      if (typeof verticalQueueService.recoverPersistedJobs === 'function') {
+        verticalQueueService.recoverPersistedJobs({ includeCompletedArtifacts: false });
+      } else {
+        taskStore.updateTask(taskId, {
+          status: 'interrupted',
+          message: '竖屏任务缺少原地恢复能力，等待手动恢复',
+          metadata: {
+            ...task.metadata,
+            awaitingManualRecovery: true,
+            manualRecoveryRequiredAt: new Date().toISOString()
+          }
+        });
+        return { success: true, message: '任务等待手动恢复', action: 'awaiting_manual_recovery' };
       }
     }
 
-    return { success: true, message: '任务已重新入队' };
+    return { success: true, message: '任务已按原 ID 重新入队' };
   }
 
   /**

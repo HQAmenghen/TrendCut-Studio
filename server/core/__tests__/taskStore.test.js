@@ -25,6 +25,7 @@ describe('统一任务存储', () => {
       const task = taskStore.createTask('vertical_queue', { videoUrl: 'test.mp4' });
 
       expect(task.id).toBeDefined();
+      expect(task.taskKey).toBeNull();
       expect(task.type).toBe('vertical_queue');
       expect(task.status).toBe('queued');
       expect(task.progress).toBe(0);
@@ -39,6 +40,54 @@ describe('统一任务存储', () => {
       const task2 = taskStore.createTask('test');
 
       expect(task1.id).not.toBe(task2.id);
+    });
+
+    test('支持幂等任务键', () => {
+      const task = taskStore.createTask('standalone_vertical', { sourceTaskDir: 'material_1' }, {
+        taskKey: 'source:material_1'
+      });
+
+      expect(task.taskKey).toBe('source:material_1');
+      expect(taskStore.findTaskByKey('standalone_vertical', 'source:material_1')).toEqual(task);
+    });
+
+    test('同类型同任务键只能创建一次', () => {
+      taskStore.createTask('standalone_vertical', {}, { taskKey: 'source:material_1' });
+
+      expect(() => {
+        taskStore.createTask('standalone_vertical', {}, { taskKey: 'source:material_1' });
+      }).toThrow();
+    });
+  });
+
+  describe('createOrReuseTask', () => {
+    test('复用同类型同任务键任务并合并元数据', () => {
+      const first = taskStore.createOrReuseTask('standalone_vertical', 'source:material_1', {
+        sourceTaskDir: 'material_1'
+      });
+      const second = taskStore.createOrReuseTask('standalone_vertical', 'source:material_1', {
+        runtimeDir: 'standalone_123'
+      });
+
+      expect(first.created).toBe(true);
+      expect(second.created).toBe(false);
+      expect(second.task.id).toBe(first.task.id);
+      expect(second.task.metadata).toMatchObject({
+        sourceTaskDir: 'material_1',
+        runtimeDir: 'standalone_123'
+      });
+    });
+
+    test('可按状态限制查找任务键', () => {
+      const created = taskStore.createOrReuseTask('standalone_vertical', 'source:material_1', {});
+      taskStore.updateTask(created.task.id, { status: 'completed', progress: 100 });
+
+      expect(taskStore.findTaskByKey('standalone_vertical', 'source:material_1', {
+        statuses: ['queued', 'running']
+      })).toBeNull();
+      expect(taskStore.findTaskByKey('standalone_vertical', 'source:material_1', {
+        statuses: ['completed']
+      })?.id).toBe(created.task.id);
     });
   });
 

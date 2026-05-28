@@ -1,0 +1,331 @@
+[
+  {
+    "attempt": 1,
+    "max_attempts": 5,
+    "reason": "atom_span_not_contiguous:expected_0_got_1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      }
+    ],
+    "timestamp": "2026-05-21T09:58:55+0800"
+  },
+  {
+    "attempt": 2,
+    "max_attempts": 5,
+    "reason": "atom_span_not_allowed:0-1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      }
+    ],
+    "timestamp": "2026-05-21T09:59:41+0800"
+  },
+  {
+    "attempt": 3,
+    "max_attempts": 5,
+    "reason": "atom_span_not_contiguous:expected_0_got_1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      }
+    ],
+    "timestamp": "2026-05-21T10:00:11+0800"
+  },
+  {
+    "attempt": 4,
+    "max_attempts": 5,
+    "reason": "atom_span_not_allowed:0-0",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 0,
+        "text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。"
+      },
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1,
+        "text": "任何可停止可审查的工具，都与比特币主权使命背道而驰。"
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2,
+        "text": "视频强调，目标是让八十亿人都拥有金融主权"
+      }
+    ],
+    "timestamp": "2026-05-21T10:00:51+0800"
+  },
+  {
+    "attempt": 5,
+    "max_attempts": 5,
+    "reason": "atom_span_not_allowed:0-1",
+    "require_atom_groups": true,
+    "reference_text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          15.84,
+          17.44
+        ],
+        "asr_text": "但这只是让人们接受的套路。"
+      },
+      {
+        "index": 1,
+        "time": [
+          17.76,
+          20.72
+        ],
+        "asr_text": "任何可停止、可审查的工具都与比特币"
+      },
+      {
+        "index": 2,
+        "time": [
+          20.72,
+          22.24
+        ],
+        "asr_text": "主权使命背道而驰。"
+      },
+      {
+        "index": 3,
+        "time": [
+          22.72,
+          25.92
+        ],
+        "asr_text": "视频强调目标是让亿人都拥有金融主权。"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 1,
+        "text": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。"
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2,
+        "text": "视频强调，目标是让八十亿人都拥有金融主权"
+      }
+    ],
+    "timestamp": "2026-05-21T10:01:26+0800"
+  },
+  {
+    "attempt": 1,
+    "max_attempts": 1,
+    "reason": "index_assignment_validation_failed",
+    "require_atom_groups": false,
+    "reference_text": "特朗普公开承诺：支持5000万加密持有者自我托管权，确保比特币未来在美国制造而非海外。他同时明确，不会让Elizabeth Warren干扰你的比特币，也永不批准央行数字货币",
+    "asr_segments": [
+      {
+        "index": 0,
+        "time": [
+          0.16,
+          3.36
+        ],
+        "asr_text": "Trump publicly promised to support 50 million"
+      },
+      {
+        "index": 1,
+        "time": [
+          3.44,
+          5.04
+        ],
+        "asr_text": "crypto holders' self-custody rights,"
+      },
+      {
+        "index": 2,
+        "time": [
+          5.44,
+          8.32
+        ],
+        "asr_text": "ensure Bitcoin future is made in America."
+      },
+      {
+        "index": 3,
+        "time": [
+          8.64,
+          10.24
+        ],
+        "asr_text": "He also made clear,"
+      }
+    ],
+    "llm_results": [
+      {
+        "start_atom_index": 0,
+        "end_atom_index": 0
+      },
+      {
+        "start_atom_index": 1,
+        "end_atom_index": 1
+      },
+      {
+        "start_atom_index": 2,
+        "end_atom_index": 2
+      },
+      {
+        "start_atom_index": 3,
+        "end_atom_index": 4
+      }
+    ],
+    "timestamp": "2026-05-26T16:05:19+0800"
+  }
+]

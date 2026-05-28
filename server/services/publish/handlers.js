@@ -13,14 +13,17 @@ function createPublishHandlers(deps) {
     archivePublishJob,
     archiveCompletedPublishJobs,
     collectPublishAssets,
+    deletePublishAsset,
     makeJobId,
     buildShortTitle,
     generatePublishDescription,
     getWechatAccountMap,
     getSauAccountMap,
+    getXAccountMap,
     buildPublishTask,
     validateWechatTaskConfig,
     validateSauTaskConfig,
+    validateXTaskConfig,
     collectPlatformValidation,
     startWechatRpa,
     retryWechatRpa,
@@ -125,6 +128,28 @@ function createPublishHandlers(deps) {
         res.json({ success: true, assets: getCachedPublishAssets(forceRefresh) });
       } catch (err) {
         sendError(res, { status: 500, code: 'PUBLISH_ASSETS_READ_FAILED', stage: 'publish.assets', error: '读取发布素材失败', details: err.message });
+      }
+    },
+    deleteAsset: (req, res) => {
+      try {
+        const assetId = String(req.params.assetId || '').trim();
+        if (!assetId) return sendError(res, { status: 400, code: 'PUBLISH_ASSET_ID_MISSING', stage: 'publish.assets', error: '缺少素材 ID' });
+        if (typeof deletePublishAsset !== 'function') {
+          return sendError(res, { status: 500, code: 'PUBLISH_ASSET_DELETE_UNAVAILABLE', stage: 'publish.assets', error: '成品删除服务未初始化' });
+        }
+
+        const result = deletePublishAsset(assetId);
+        if (!result) return sendError(res, { status: 404, code: 'PUBLISH_ASSET_NOT_FOUND', stage: 'publish.assets', error: '所选视频素材不存在' });
+
+        res.json({
+          success: true,
+          deletedAsset: result.asset,
+          deletedPath: result.deletedPath,
+          deletedMetadata: result.deletedMetadata,
+          assets: getCachedPublishAssets(true)
+        });
+      } catch (err) {
+        sendError(res, { status: 500, code: 'PUBLISH_ASSET_DELETE_FAILED', stage: 'publish.assets', error: '删除成品素材失败', details: err.message });
       }
     },
     generateDescription: async (req, res) => {
@@ -290,6 +315,7 @@ function createPublishHandlers(deps) {
           douyin: typeof getSauAccountMap === 'function' ? getSauAccountMap('douyin', config) : new Map(),
           xiaohongshu: typeof getSauAccountMap === 'function' ? getSauAccountMap('xiaohongshu', config) : new Map()
         };
+        const xAccountMap = typeof getXAccountMap === 'function' ? getXAccountMap(config) : new Map();
 
         for (const platformKey of selectedPlatforms) {
           const platformConfig = config[platformKey];
@@ -321,6 +347,15 @@ function createPublishHandlers(deps) {
               accountLabel: account?.displayName || account?.sauAccountName || account?.accountId || account?.openId || '',
               sauAccountName: account?.sauAccountName || platformConfig.sauAccountName || ''
             };
+          } else if (platformKey === 'x') {
+            const accountId = String(selection.accountId || '').trim();
+            const accounts = Array.from(xAccountMap?.values?.() || []);
+            const account = xAccountMap?.get(accountId) || accounts[0] || null;
+            normalizedSelection = {
+              accountId: account?.id || accountId,
+              accountLabel: account?.displayName || account?.username || account?.userId || '',
+              username: account?.username || ''
+            };
           }
           platformSelections[platformKey] = normalizedSelection;
           const task = buildPublishTask(platformKey, publishData, asset.url, platformConfig, normalizedSelection);
@@ -331,7 +366,9 @@ function createPublishHandlers(deps) {
             ? validateWechatTaskConfig(platformConfig, task)
             : (['douyin', 'xiaohongshu'].includes(platformKey) && typeof validateSauTaskConfig === 'function'
               ? validateSauTaskConfig(platformKey, platformConfig, task)
-              : collectPlatformValidation(platformKey, platformConfig, task.requiredFields || []));
+              : (platformKey === 'x' && typeof validateXTaskConfig === 'function'
+                ? validateXTaskConfig(platformConfig, task)
+                : collectPlatformValidation(platformKey, platformConfig, task.requiredFields || [])));
           task.validation = validation;
           if (platformKey === 'wechatChannels' && validation.account) {
             task.accountLabel = validation.account.displayName || validation.account.helperAccount || validation.account.finderUserName || task.accountLabel || '';
@@ -339,6 +376,10 @@ function createPublishHandlers(deps) {
           if (['douyin', 'xiaohongshu'].includes(platformKey) && validation.account) {
             task.accountLabel = validation.account.displayName || validation.account.sauAccountName || validation.account.accountId || validation.account.openId || task.accountLabel || '';
             task.sauAccountName = validation.account.sauAccountName || task.sauAccountName || '';
+          }
+          if (platformKey === 'x' && validation.account) {
+            task.accountLabel = validation.account.displayName || validation.account.username || validation.account.userId || task.accountLabel || '';
+            task.username = validation.account.username || task.username || '';
           }
           if (validation.missingFields.length > 0) {
             platformErrors.push({

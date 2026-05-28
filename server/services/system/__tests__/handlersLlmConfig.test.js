@@ -82,7 +82,7 @@ describe('system llm config handlers', () => {
           publishDescriptionModel: 'gemini-2.5-pro'
         },
         qwen: {
-          apiKey: 'qwen-key',
+          apiKey: 'qwen-key-1;qwen-key-2',
           baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
           vlModel: 'qwen3-vl-flash',
           asrModel: 'qwen3-asr-flash-filetrans',
@@ -93,6 +93,11 @@ describe('system llm config handlers', () => {
           apiKey: 'vertex-key',
           project: 'yumeato',
           location: 'global'
+        },
+        deepseek: {
+          apiKey: 'deepseek-key-1;deepseek-key-2',
+          baseUrl: 'https://api.deepseek.com/v1',
+          textModel: 'deepseek-chat'
         }
       }
     };
@@ -109,7 +114,57 @@ describe('system llm config handlers', () => {
       VERTEX_AI_API_KEY: 'vertex-key',
       VERTEX_AI_PROJECT: 'yumeato',
       VERTEX_AI_LOCATION: 'global',
-      GEMINI_MODEL: 'gemini-3.1-pro-preview'
+      GEMINI_MODEL: 'gemini-3.1-pro-preview',
+      QWEN_API_KEY: 'qwen-key-1;qwen-key-2',
+      DASHSCOPE_API_KEY: 'qwen-key-1;qwen-key-2',
+      DEEPSEEK_API_KEY: 'deepseek-key-1;deepseek-key-2',
+      DEEPSEEK_TEXT_MODEL: 'deepseek-chat'
+    }));
+  });
+
+  test('returns and saves deepseek provider config', () => {
+    const updateProjectEnv = jest.fn();
+    const handlers = createHandlers({
+      envValues: {
+        LLM_PROVIDER: 'deepseek',
+        TEXT_LLM_PROVIDER: 'deepseek',
+        DEEPSEEK_API_KEY: 'deepseek-key-1;deepseek-key-2',
+        DEEPSEEK_API_BASE_URL: 'https://api.deepseek.com/v1',
+        DEEPSEEK_TEXT_MODEL: 'deepseek-chat'
+      },
+      updateProjectEnv
+    });
+    const res = createJsonResponse();
+
+    handlers.getLlmConfig({}, res);
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.config.provider).toBe('deepseek');
+    expect(res.body.config.textProvider).toBe('deepseek');
+    expect(res.body.config.deepseek).toEqual({
+      apiKey: 'deepseek-key-1;deepseek-key-2',
+      baseUrl: 'https://api.deepseek.com/v1',
+      textModel: 'deepseek-chat'
+    });
+
+    handlers.postLlmConfig({
+      body: {
+        provider: 'deepseek',
+        textProvider: 'deepseek',
+        deepseek: {
+          apiKey: 'deepseek-key-3,deepseek-key-4',
+          baseUrl: 'https://api.deepseek.com/v1',
+          textModel: 'deepseek-reasoner'
+        }
+      }
+    }, createJsonResponse());
+
+    expect(updateProjectEnv).toHaveBeenCalledWith('C:\\project', expect.objectContaining({
+      LLM_PROVIDER: 'deepseek',
+      TEXT_LLM_PROVIDER: 'deepseek',
+      SCRIPT_LLM_PROVIDER: 'deepseek',
+      DEEPSEEK_API_KEY: 'deepseek-key-3,deepseek-key-4',
+      DEEPSEEK_TEXT_MODEL: 'deepseek-reasoner'
     }));
   });
 });

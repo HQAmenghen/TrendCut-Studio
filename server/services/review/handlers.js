@@ -35,6 +35,11 @@ function buildDefaultMetadata(videoPath) {
   };
 }
 
+function isDefaultTitleValue(value, defaultTitle) {
+  const text = String(value || '').trim();
+  return !text || text === String(defaultTitle || '').trim();
+}
+
 function readJsonSafe(filePath, fallbackValue = null) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -51,7 +56,10 @@ function enrichMetadataFromRuntimeFiles(videoPath, metadata) {
   const subtitleItems = Array.isArray(next.subtitles) ? next.subtitles.filter(Boolean) : [];
   const hasSubtitles = subtitleItems.length > 0;
   const hasSummary = String(next.sourceSummary || '').trim().length > 0;
-  const hasTitle = String(next.suggestedTitle || next.title || '').trim().length > 0;
+  const defaultTitle = String(buildDefaultMetadata(videoPath).title || '').trim();
+  const hasTitle = !isDefaultTitleValue(next.title, defaultTitle) ||
+    !isDefaultTitleValue(next.suggestedTitle, defaultTitle) ||
+    !isDefaultTitleValue(next.suggestedShortTitle, defaultTitle);
 
   const pathPatterns = [
     {
@@ -115,11 +123,31 @@ function enrichMetadataFromRuntimeFiles(videoPath, metadata) {
   return next;
 }
 
+function normalizeReviewTitleMetadata(videoPath, metadata) {
+  const next = { ...(metadata || {}) };
+  const defaultTitle = String(buildDefaultMetadata(videoPath).title || '').trim();
+  const title = String(next.title || '').trim();
+  const suggestedTitle = String(next.suggestedTitle || '').trim();
+  const suggestedShortTitle = String(next.suggestedShortTitle || '').trim();
+
+  if (!title || title === defaultTitle) {
+    return next;
+  }
+
+  if (!suggestedTitle || suggestedTitle === defaultTitle) {
+    next.suggestedTitle = title;
+  }
+  if (!suggestedShortTitle || suggestedShortTitle === defaultTitle) {
+    next.suggestedShortTitle = title;
+  }
+  return next;
+}
+
 function buildReviewMetadata(videoPath, savedMetadata) {
-  return {
+  return normalizeReviewTitleMetadata(videoPath, {
     ...buildDefaultMetadata(videoPath),
     ...enrichMetadataFromRuntimeFiles(videoPath, savedMetadata || {})
-  };
+  });
 }
 
 function notifyPublishAssetsChanged(resetPublishAssetsCache) {
@@ -542,8 +570,8 @@ function createReviewHandlers(deps) {
         }
 
         // 读取视频元数据
-        const metadata = readMediaMetadata(videoPath);
-        if (!metadata) {
+        const savedMetadata = readMediaMetadata(videoPath);
+        if (!savedMetadata) {
           return sendError(res, {
             status: 404,
             code: 'REVIEW_METADATA_NOT_FOUND',
@@ -551,6 +579,7 @@ function createReviewHandlers(deps) {
             error: '视频元数据不存在'
           });
         }
+        const metadata = buildReviewMetadata(videoPath, savedMetadata);
 
         const aiReview = metadata.aiReview;
         if (!aiReview || !aiReview.fixSuggestions || aiReview.fixSuggestions.length === 0) {

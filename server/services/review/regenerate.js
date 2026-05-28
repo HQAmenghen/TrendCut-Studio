@@ -38,6 +38,14 @@ function buildRegenerationAdjustments(fixSuggestions = []) {
   return adjustments;
 }
 
+function pickString(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 function normalizeScore(value) {
   const score = Number(value);
   return Number.isFinite(score) ? score : 0;
@@ -174,6 +182,12 @@ function enqueueRegenerationFromReview({
 
   const adjustments = buildRegenerationAdjustments(aiReview.fixSuggestions);
   const repairPlan = buildRepairPlan(aiReview, adjustments);
+  const preservedTitle = pickString(
+    adjustments.suggestedTitle,
+    metadata.suggestedTitle,
+    metadata.title,
+    metadata.suggestedShortTitle
+  );
 
   // 查找源视频路径
   let sourceVideoPath = null;
@@ -195,7 +209,7 @@ function enqueueRegenerationFromReview({
 
   const regenerateParams = {
     sourceType: sourceType || 'manual',
-    title: adjustments.suggestedTitle || metadata.suggestedTitle || metadata.title,
+    title: preservedTitle,
     summary: metadata.sourceSummary || '',
     videoUrl: metadata.videoUrl || '',
     author: metadata.author || '',
@@ -248,5 +262,6 @@ function enqueueRegenerationFromReview({
 
 module.exports = {
   buildRegenerationAdjustments,
+  pickString,
   enqueueRegenerationFromReview
 };

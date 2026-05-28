@@ -32,7 +32,8 @@ describe('任务恢复服务', () => {
 
     // Mock verticalQueueService
     mockVerticalQueueService = {
-      enqueue: jest.fn()
+      enqueue: jest.fn(),
+      recoverPersistedJobs: jest.fn(() => ({ recovered: 1, completed: 0, requeued: 1 }))
     };
 
     recoveryService = createRecoveryService({
@@ -163,7 +164,7 @@ describe('任务恢复服务', () => {
     expect(results.every(r => r.success || r.action === 'still_alive')).toBe(true);
   });
 
-  test('手动重试应该重置任务状态', async () => {
+  test('手动重试竖屏任务应该按原任务 ID 恢复队列而不是创建新任务', async () => {
     // 创建一个中断的任务
     const task = taskStore.createTask('vertical_queue', {
       originalItem: { title: 'Test' },
@@ -177,11 +178,91 @@ describe('任务恢复服务', () => {
     // 应该成功
     expect(result.success).toBe(true);
 
-    // 任务应该被重置为 pending
+    // 任务应该被重置为 pending，并由竖屏队列服务按原 ID 恢复
     const updatedTask = taskStore.getTask(task.id);
     expect(updatedTask.status).toBe('pending');
     expect(updatedTask.progress).toBe(0);
     expect(updatedTask.metadata.retryCount).toBe(2);
+    expect(mockVerticalQueueService.recoverPersistedJobs).toHaveBeenCalledWith({ includeCompletedArtifacts: false });
+    expect(mockVerticalQueueService.enqueue).not.toHaveBeenCalled();
+  });
+
+  test('应该自动恢复中断的 RunningHub 数字人任务并继续素材链路', async () => {
+    const outputDir = 'material_recover_avatar';
+    const outputPath = path.join(path.dirname(testDbPath), outputDir);
+    fs.mkdirSync(outputPath, { recursive: true });
+    const continueOneClick = jest.fn(async () => ({ success: true }));
+    recoveryService = createRecoveryService({
+      taskStore,
+      verticalQueueService: mockVerticalQueueService,
+      materialDrivenStarter: { continueOneClick }
+    });
+    const task = taskStore.createTask('avatar_generation', {
+      outputDir,
+      outputPath,
+      provider: 'runninghub',
+      providerTaskId: 'rh_task_1',
+      sourceMaterialTaskKey: `material:${outputDir}`,
+      stage: 'polling_interrupted',
+      resumeKey: 'resume-key',
+      remoteAudioName: 'audio.wav',
+      remoteImageName: 'image.png'
+    });
+    taskStore.updateTask(task.id, {
+      status: 'interrupted',
+      progress: 88,
+      message: '数字人合成中断'
+    });
+
+    const results = await recoveryService.recoverOnStartup();
+    const updatedTask = taskStore.getTask(task.id);
+    const statePath = path.join(outputPath, 'avatar_render_state.json');
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: task.id,
+        type: 'avatar_generation',
+        action: 'avatar_continue_started'
+      })
+    ]));
+    expect(continueOneClick).toHaveBeenCalledWith('recover_avatar', outputDir, expect.objectContaining({ useCache: true }));
+    expect(updatedTask.status).toBe('running');
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toEqual(expect.objectContaining({
+      provider: 'runninghub',
+      taskId: 'rh_task_1',
+      resumeKey: 'resume-key'
+    }));
+  });
+
+  test('手动恢复 RunningHub 数字人任务也应该继续素材链路', async () => {
+    const outputDir = 'material_manual_avatar';
+    const outputPath = path.join(path.dirname(testDbPath), outputDir);
+    fs.mkdirSync(outputPath, { recursive: true });
+    const continueOneClick = jest.fn(async () => ({ success: true }));
+    recoveryService = createRecoveryService({
+      taskStore,
+      verticalQueueService: mockVerticalQueueService,
+      materialDrivenStarter: { continueOneClick }
+    });
+    const task = taskStore.createTask('avatar_generation', {
+      outputDir,
+      outputPath,
+      provider: 'runninghub',
+      providerTaskId: 'rh_manual_1',
+      sourceMaterialTaskKey: `material:${outputDir}`,
+      stage: 'submitted',
+      resumeKey: 'manual-resume'
+    });
+    taskStore.updateTask(task.id, { status: 'interrupted', progress: 90 });
+
+    const result = await recoveryService.manualRetry(task.id);
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      action: 'avatar_continue_started'
+    }));
+    expect(continueOneClick).toHaveBeenCalledWith('manual_avatar', outputDir, expect.objectContaining({ useCache: true }));
+    expect(taskStore.getTask(task.id).status).toBe('running');
   });
 
   test('取消中断任务应该更新状态', () => {

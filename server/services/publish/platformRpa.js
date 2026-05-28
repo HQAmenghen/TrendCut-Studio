@@ -33,7 +33,8 @@ function createPlatformRpaService(deps) {
     updatePublishPlatformTask,
     startWechatRpa,
     retryWechatRpa,
-    cancelWechatRpa
+    cancelWechatRpa,
+    xApiPublisher
   } = deps;
 
   const runtimeProcesses = new Map();
@@ -137,6 +138,16 @@ function createPlatformRpaService(deps) {
     try {
       runtimeEntry.cancel();
     } catch (_err) {}
+  }
+
+  function isSessionActive(session) {
+    if (!session) return false;
+    const proc = session.process || session.proc;
+    if (!proc) return true;
+    if (proc.killed) return false;
+    if (Object.prototype.hasOwnProperty.call(proc, 'exitCode') && proc.exitCode !== null) return false;
+    if (Object.prototype.hasOwnProperty.call(proc, 'signalCode') && proc.signalCode !== null) return false;
+    return true;
   }
 
   function resolveStandaloneRuntimeVideoPath(job) {
@@ -610,7 +621,11 @@ function createPlatformRpaService(deps) {
 
       const sessionKey = `${action}:${normalizedPlatform}:${account.id}`;
       const sessionMap = action === 'open_manager' ? contentManagerSessions : loginCheckSessions;
-      const existing = sessionMap.get(sessionKey);
+      let existing = sessionMap.get(sessionKey);
+      if (existing && !isSessionActive(existing)) {
+        sessionMap.delete(sessionKey);
+        existing = null;
+      }
       if (existing && action === 'check_login') {
         resolve(existing.latestResponse || {
           success: true,
@@ -669,15 +684,18 @@ function createPlatformRpaService(deps) {
       let settled = false;
       let latestStatus = 'starting';
       let latestPayload = null;
+      let timeout = null;
       const resolveOnce = (payload) => {
         if (settled) return;
         settled = true;
+        if (timeout) clearTimeout(timeout);
         latestPayload = payload;
         resolve(payload);
       };
       const rejectOnce = (error) => {
         if (settled) return;
         settled = true;
+        if (timeout) clearTimeout(timeout);
         reject(error);
       };
 
@@ -768,7 +786,7 @@ function createPlatformRpaService(deps) {
       };
       sessionMap.set(sessionKey, session);
 
-      const timeout = setTimeout(() => {
+      timeout = setTimeout(() => {
         if (!settled) {
           if (action === 'open_manager') {
             const response = {
@@ -994,6 +1012,12 @@ function createPlatformRpaService(deps) {
     if (normalizedPlatform === 'wechatChannels') {
       return startWechatRpa(jobId, publishMode);
     }
+    if (normalizedPlatform === 'x') {
+      if (!xApiPublisher || typeof xApiPublisher.startXPublish !== 'function') {
+        throw new Error('X API 发布服务未初始化');
+      }
+      return xApiPublisher.startXPublish(jobId, publishMode);
+    }
     return startBrowserPlatformRpa(jobId, normalizedPlatform, publishMode);
   }
 
@@ -1001,6 +1025,12 @@ function createPlatformRpaService(deps) {
     const normalizedPlatform = normalizePlatformKey(platformKey);
     if (normalizedPlatform === 'wechatChannels') {
       return retryWechatRpa(jobId, mode);
+    }
+    if (normalizedPlatform === 'x') {
+      if (!xApiPublisher || typeof xApiPublisher.retryXPublish !== 'function') {
+        throw new Error('X API 发布服务未初始化');
+      }
+      return xApiPublisher.retryXPublish(jobId, mode || 'publish');
     }
     const payload = readPublishJobs();
     const job = (payload.jobs || []).find((item) => item.id === jobId);
@@ -1030,6 +1060,12 @@ function createPlatformRpaService(deps) {
     const normalizedPlatform = normalizePlatformKey(platformKey);
     if (normalizedPlatform === 'wechatChannels') {
       return cancelWechatRpa(jobId);
+    }
+    if (normalizedPlatform === 'x') {
+      if (!xApiPublisher || typeof xApiPublisher.cancelXPublish !== 'function') {
+        throw new Error('X API 发布服务未初始化');
+      }
+      return xApiPublisher.cancelXPublish(jobId);
     }
     const runtimeKey = `${jobId}:${normalizedPlatform}`;
     const runtimeEntry = runtimeProcesses.get(runtimeKey);

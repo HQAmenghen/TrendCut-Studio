@@ -7,15 +7,23 @@ const { runCleanup, getCleanupConfig } = require('../../core/cleanup');
 const SCHEDULER_TIME_ZONE = 'Asia/Shanghai';
 const SCHEDULER_LOG_PATH = path.join(__dirname, '../../../data/logs/scheduler.log');
 const DEFAULT_XAI_PARTITION_ID = 'crypto';
-const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu'];
+const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu', 'x'];
 const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
+const DEFAULT_AVATAR_AUDIO_PRESET = '毕.mp3';
+const DEFAULT_AVATAR_IMAGE_PRESET = '毕（保守）.png';
 const DEFAULT_LOGIN_CHECK_INTERVAL_MINUTES = 30;
+const DEFAULT_AUTO_PILOT_SLOT_RETRY_LIMIT = 5;
 const LOGIN_CHECK_CRON_EXPRESSION = '* * * * *';
 const LOGIN_CHECK_MS_PER_MINUTE = 60 * 1000;
 
 function normalizePositiveInteger(value, fallback) {
   const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeNonNegativeInteger(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function readLoginCheckScheduleConfig(baseDir) {
@@ -184,6 +192,13 @@ function getAutoPilotPipelineModes(config = {}) {
   return modes.length ? modes : ['vertical'];
 }
 
+function getAutoPilotSlotRetryLimit(config = {}) {
+  return normalizeNonNegativeInteger(
+    config?.global?.autoPilotSlotRetryLimit ?? process.env.AUTO_PILOT_SLOT_RETRY_LIMIT,
+    DEFAULT_AUTO_PILOT_SLOT_RETRY_LIMIT
+  );
+}
+
 function trimTrailingEmptyStrings(items = []) {
   const values = Array.isArray(items) ? items.map((item) => String(item || '').trim()) : [];
   while (values.length > 0 && !values[values.length - 1]) {
@@ -235,9 +250,15 @@ function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
   const platforms = Array.isArray(schedule.platforms)
     ? trimTrailingEmptyPlatformRows(schedule.platforms)
     : [];
+  const audioPresets = Array.isArray(schedule.audioPresets)
+    ? trimTrailingEmptyStrings(schedule.audioPresets)
+    : [];
+  const imagePresets = Array.isArray(schedule.imagePresets)
+    ? trimTrailingEmptyStrings(schedule.imagePresets)
+    : [];
 
-  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length) {
-    return { accountIds, times, partitionIds, sourceRanks, platforms };
+  if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length || audioPresets.length || imagePresets.length) {
+    return { accountIds, times, partitionIds, sourceRanks, platforms, audioPresets, imagePresets };
   }
 
   return {
@@ -249,7 +270,9 @@ function getAutoPilotModeSchedule(config = {}, pipelineMode = 'vertical') {
       : [],
     partitionIds: [],
     sourceRanks: [],
-    platforms: []
+    platforms: [],
+    audioPresets: [],
+    imagePresets: []
   };
 }
 
@@ -273,6 +296,19 @@ function getAutoPilotSlotSourceRank(config = {}, pipelineMode = 'vertical', rank
   return normalizeAutoPilotSourceRank(modeSchedule.sourceRanks?.[rankIndex], rankIndex + 1);
 }
 
+function getAutoPilotSlotAvatarConfig(config = {}, pipelineMode = 'vertical', rankIndex = 0) {
+  const base = config?.global?.avatarPipelineConfig || {};
+  const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
+  if (String(pipelineMode || '').trim() !== 'avatar') {
+    return { ...base };
+  }
+  return {
+    ...base,
+    audioPreset: String(modeSchedule.audioPresets?.[rankIndex] || base.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET).trim(),
+    imagePreset: String(modeSchedule.imagePresets?.[rankIndex] || base.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET).trim()
+  };
+}
+
 function getAutoPilotRequiredPartitionIds(config = {}) {
   const partitionIds = new Set();
   const configCount = Math.max(1, Number(config?.global?.autoPilotCount) || 1);
@@ -283,7 +319,9 @@ function getAutoPilotRequiredPartitionIds(config = {}) {
       modeSchedule.accountIds?.length || 0,
       modeSchedule.partitionIds?.length || 0,
       modeSchedule.sourceRanks?.length || 0,
-      modeSchedule.platforms?.length || 0
+      modeSchedule.platforms?.length || 0,
+      modeSchedule.audioPresets?.length || 0,
+      modeSchedule.imagePresets?.length || 0
     );
     for (let index = 0; index < count; index += 1) {
       partitionIds.add(getAutoPilotSlotPartitionId(config, pipelineMode, index));
@@ -313,6 +351,40 @@ function getWechatAccountId(job) {
     || (job?.platformTasks || []).find((task) => task.platform === 'wechatChannels')?.accountId
     || ''
   ).trim();
+}
+
+function getPlatformAccount(config = {}, platformKey = '', accountId = '') {
+  const accounts = Array.isArray(config?.[platformKey]?.accounts) ? config[platformKey].accounts : [];
+  const requestedId = String(accountId || '').trim();
+  if (requestedId) {
+    return accounts.find((item) => String(item.id || '').trim() === requestedId) || null;
+  }
+  return accounts[0] || null;
+}
+
+function getPlatformAccountLabel(platformKey = '', account = null) {
+  if (!account) return '';
+  if (platformKey === 'wechatChannels') {
+    return account.displayName || account.finderUserName || account.helperAccount || '';
+  }
+  if (platformKey === 'x') {
+    return account.displayName || account.username || account.userId || '';
+  }
+  return account.displayName || account.sauAccountName || account.accountId || account.openId || '';
+}
+
+function buildAutoPilotPlatformSelections(config = {}, selectedPlatforms = [], accountId = '') {
+  const selections = {};
+  for (const platformKey of selectedPlatforms) {
+    const account = getPlatformAccount(config, platformKey, accountId);
+    if (account) {
+      selections[platformKey] = {
+        accountId: account.id,
+        accountLabel: getPlatformAccountLabel(platformKey, account)
+      };
+    }
+  }
+  return selections;
 }
 
 function getJobSourceVideoKey(job) {
@@ -365,6 +437,20 @@ function findExistingAutoPilotPublishJob(jobs, identity) {
   }) || null;
 }
 
+function collectAutoPilotFallbackCandidates({ rankingItems = [], partition = {}, partitionId = '', startIndex = 0 }) {
+  const candidates = [];
+  for (let index = startIndex; index < rankingItems.length; index += 1) {
+    const normalized = normalizeRankingItem(rankingItems[index], partition);
+    if (!normalized.videoUrl) continue;
+    candidates.push({
+      normalized,
+      sourceRank: index + 1,
+      sourcePartitionId: normalized.sourcePartitionId || partitionId,
+      sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || ''
+    });
+  }
+  return candidates;
+}
 
 function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQueueService, taskStore, generatePublishDescription, publishAssetsService, loginStatusService, materialDrivenStarter }) {
   logInfo('[Scheduler] 初始化定时调度引擎 - node-cron', {
@@ -381,6 +467,216 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
 
   const SERVER_PORT = process.env.PORT || 3001;
 
+  function enqueueAvatarReplacement(config, meta = {}, reason = '') {
+    const rank = normalizeNonNegativeInteger(meta.rank, 0);
+    const maxRetries = normalizeNonNegativeInteger(meta.maxRetries, getAutoPilotSlotRetryLimit(config));
+    const retryCount = normalizeNonNegativeInteger(meta.retryCount, 0);
+    const fallbackCandidates = Array.isArray(meta.fallbackCandidates) ? [...meta.fallbackCandidates] : [];
+    if (retryCount >= maxRetries || fallbackCandidates.length === 0) {
+      logWarn('[AutoPilot:Avatar] 该账号槽没有可用补位素材，无法继续补发', {
+        rank: rank + 1,
+        retryCount,
+        maxRetries,
+        reason
+      });
+      return false;
+    }
+
+    while (fallbackCandidates.length > 0) {
+      const candidate = fallbackCandidates.shift();
+      const normalized = candidate?.normalized || {};
+      const activeKey = `${meta.pipelineMode || 'avatar'}:${createAutoPilotActiveKey(normalized, rank + 1)}`;
+      if (autoPilotActiveKeys.has(activeKey)) {
+        continue;
+      }
+
+      const sourceVideoKey = normalizeSourceVideoKey(normalized.videoUrl);
+      if (publishStore && typeof publishStore.readPublishJobs === 'function') {
+        try {
+          const payload = publishStore.readPublishJobs();
+          const existingJob = findExistingAutoPilotPublishJob(payload.jobs || [], {
+            sourceVideoKey,
+            pipelineMode: meta.pipelineMode || 'avatar'
+          });
+          if (existingJob) {
+            continue;
+          }
+        } catch (err) {
+          logWarn('[AutoPilot:Avatar] 检查补位素材重复任务失败，继续尝试入队', {
+            rank: rank + 1,
+            sourceRank: candidate.sourceRank,
+            error: err.message
+          });
+        }
+      }
+
+      avatarPendingQueue.unshift({
+        rank,
+        activeKey,
+        sourceMode: meta.sourceMode || '',
+        pipelineMode: meta.pipelineMode || 'avatar',
+        itemRank: candidate.sourceRank,
+        normalized,
+        sourceRank: candidate.sourceRank,
+        platforms: meta.platforms || DEFAULT_AUTO_PILOT_PLATFORMS,
+        sourcePartitionId: candidate.sourcePartitionId || normalized.sourcePartitionId || meta.sourcePartitionId || '',
+        sourcePartitionLabel: candidate.sourcePartitionLabel || normalized.sourcePartitionLabel || meta.sourcePartitionLabel || '',
+        avatarConfig: meta.avatarConfig || {},
+        retryCount: retryCount + 1,
+        maxRetries,
+        fallbackCandidates,
+        retryReason: reason
+      });
+      autoPilotActiveKeys.add(activeKey);
+      logInfo('[AutoPilot:Avatar] 已为失败账号槽加入补位素材', {
+        rank: rank + 1,
+        sourceRank: candidate.sourceRank,
+        title: normalized.title || '',
+        author: normalized.author || '',
+        retryCount: retryCount + 1,
+        maxRetries,
+        reason,
+        pendingCount: avatarPendingQueue.length
+      });
+      return true;
+    }
+
+    logWarn('[AutoPilot:Avatar] 补位候选已耗尽，无法继续补发', {
+      rank: rank + 1,
+      retryCount,
+      maxRetries,
+      reason
+    });
+    return false;
+  }
+
+  function inferRecoveredPipelineMode(metadata = {}) {
+    const explicitMode = String(metadata.pipelineMode || metadata.autoPilot?.pipelineMode || '').trim();
+    if (explicitMode) return explicitMode;
+    const sourceType = String(metadata.sourceType || '').trim();
+    return sourceType === 'material_driven_avatar' ? 'avatar' : 'vertical';
+  }
+
+  function getRecoveredAutoPilotMeta(task, config = {}) {
+    const metadata = task?.metadata || {};
+    const originalItem = metadata.originalItem && typeof metadata.originalItem === 'object'
+      ? metadata.originalItem
+      : {};
+    const autoPilot = metadata.autoPilot && typeof metadata.autoPilot === 'object'
+      ? metadata.autoPilot
+      : {};
+    const pipelineMode = inferRecoveredPipelineMode({ ...metadata, ...originalItem, autoPilot });
+    const hasSavedRank = autoPilot.rank !== undefined || metadata.rank !== undefined;
+    const rank = hasSavedRank
+      ? normalizeNonNegativeInteger(autoPilot.rank ?? metadata.rank, 0)
+      : Math.max(0, normalizeAutoPilotSourceRank(metadata.sourceRank || originalItem.sourceRank || autoPilot.sourceRank || 1, 1) - 1);
+    const sourceMode = metadata.sourceMode || autoPilot.sourceMode || '';
+    const selectedPlatforms = normalizeAutoPilotPlatformSelection(
+      autoPilot.platforms || metadata.platforms || [],
+      getAutoPilotModeSchedule(config, pipelineMode).platforms?.[rank] || DEFAULT_AUTO_PILOT_PLATFORMS
+    );
+    const videoUrl = metadata.videoUrl || originalItem.videoUrl || autoPilot.sourceVideoUrl || '';
+    const postId = metadata.postId || originalItem.postId || autoPilot.sourcePostId || '';
+    const normalized = {
+      videoUrl,
+      postId,
+      title: metadata.title || originalItem.title || '',
+      author: metadata.author || originalItem.author || ''
+    };
+
+    return {
+      rank,
+      activeKey: autoPilot.activeKey || `${pipelineMode}:${createAutoPilotActiveKey(normalized, rank + 1)}`,
+      sourceMode,
+      pipelineMode,
+      platforms: selectedPlatforms,
+      sourcePartitionId: metadata.sourcePartitionId || originalItem.sourcePartitionId || autoPilot.sourcePartitionId || '',
+      sourcePartitionLabel: metadata.sourcePartitionLabel || originalItem.sourcePartitionLabel || autoPilot.sourcePartitionLabel || '',
+      sourceRank: normalizeAutoPilotSourceRank(metadata.sourceRank || originalItem.sourceRank || autoPilot.sourceRank || rank + 1, rank + 1),
+      avatarConfig: metadata.avatarConfig || autoPilot.avatarConfig || {},
+      recovered: true
+    };
+  }
+
+  function recoverAutoPilotVerticalJobs(config = publishStore?.readPublishConfig() || {}) {
+    if (!taskStore || typeof taskStore.listTasks !== 'function' || !verticalQueueService) {
+      return { watched: 0 };
+    }
+
+    const recoverableStatuses = new Set(['queued', 'pending', 'running', 'in_progress', 'reviewing', 'interrupted']);
+    const beforeRecoveryTasks = taskStore.listTasks('vertical_queue', 100);
+    const recoverableTaskIds = new Set(
+      beforeRecoveryTasks
+        .filter((task) => recoverableStatuses.has(String(task?.status || '').trim()))
+        .map((task) => task.id)
+        .filter(Boolean)
+    );
+
+    if (verticalQueueService && typeof verticalQueueService.recoverPersistedJobs === 'function') {
+      try {
+        verticalQueueService.recoverPersistedJobs({ includeCompletedArtifacts: false });
+      } catch (err) {
+        logWarn('[AutoPilot:Recovery] 恢复竖屏队列内存状态失败，继续尝试监听 DB 任务', {
+          error: err.message
+        });
+      }
+    }
+
+    const tasks = taskStore.listTasks('vertical_queue', 100);
+    let watched = 0;
+    for (const task of tasks) {
+      if (!task || autoPilotJobs.has(task.id)) continue;
+      if (!recoverableTaskIds.has(task.id)) continue;
+      const metadata = task.metadata || {};
+      const originalItem = metadata.originalItem || {};
+      const sourceType = String(metadata.sourceType || originalItem.sourceType || '').trim();
+      const sourceRank = normalizeAutoPilotSourceRank(metadata.sourceRank || originalItem.sourceRank || 0, 0);
+      const isAutoPilotSource = Boolean(metadata.autoPilot)
+        || sourceType === 'material_driven_avatar'
+        || sourceType === 'xai_top10_cached'
+        || (sourceType === 'xai_top10' && sourceRank > 0);
+      if (!isAutoPilotSource && !metadata.autoPilot) continue;
+
+      const runtimeJob = typeof verticalQueueService.getJob === 'function' ? verticalQueueService.getJob(task.id) : null;
+      if (!runtimeJob || runtimeJob.status !== 'completed') continue;
+
+      const meta = getRecoveredAutoPilotMeta(task, config);
+      try {
+        const sourceVideoKey = normalizeSourceVideoKey(
+          metadata.videoUrl
+          || originalItem.videoUrl
+          || metadata.autoPilot?.sourceVideoUrl
+          || ''
+        );
+        const payload = publishStore?.readPublishJobs ? publishStore.readPublishJobs() : { jobs: [] };
+        const existingJob = findExistingAutoPilotPublishJob(payload.jobs || [], {
+          queueJobId: task.id,
+          sourceVideoKey,
+          pipelineMode: meta.pipelineMode
+        });
+        if (existingJob) {
+          continue;
+        }
+      } catch (err) {
+        logWarn('[AutoPilot:Recovery] 检查已恢复任务是否已有发布单失败，暂不恢复监控以避免重复发布', {
+          queueJobId: task.id,
+          error: err.message
+        });
+        continue;
+      }
+      autoPilotJobs.set(task.id, meta);
+      if (meta.activeKey) autoPilotActiveKeys.add(meta.activeKey);
+      watched += 1;
+      logInfo('[AutoPilot:Recovery] 已恢复竖屏队列任务监控', {
+        queueJobId: task.id,
+        status: task.status,
+        rank: meta.rank + 1,
+        pipelineMode: meta.pipelineMode
+      });
+    }
+    return { watched };
+  }
+
   async function enqueueAutoPilotTopItems(config, result, nowParts, sourceMode) {
     const pipelineModes = getAutoPilotPipelineModes(config);
     for (const pipelineMode of pipelineModes) {
@@ -395,7 +691,16 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     const targetPartitionIds = modeSchedule.partitionIds || [];
     const targetSourceRanks = modeSchedule.sourceRanks || [];
     const targetPlatforms = modeSchedule.platforms || [];
-    const mappingLength = Math.max(targetAccountIds.length, targetPartitionIds.length, targetSourceRanks.length, targetPlatforms.length);
+    const targetAudioPresets = modeSchedule.audioPresets || [];
+    const targetImagePresets = modeSchedule.imagePresets || [];
+    const mappingLength = Math.max(
+      targetAccountIds.length,
+      targetPartitionIds.length,
+      targetSourceRanks.length,
+      targetPlatforms.length,
+      targetAudioPresets.length,
+      targetImagePresets.length
+    );
     const count = Math.max(configCount, mappingLength);
     const sourceIndexByPartition = new Map();
     let rank = 0;
@@ -500,7 +805,13 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
 
         if (pipelineMode === 'avatar' && materialDrivenStarter && typeof materialDrivenStarter.start === 'function') {
           try {
-            const avatarConfig = config?.global?.avatarPipelineConfig || {};
+            const avatarConfig = getAutoPilotSlotAvatarConfig(config, pipelineMode, rank);
+            const fallbackCandidates = collectAutoPilotFallbackCandidates({
+              rankingItems,
+              partition,
+              partitionId,
+              startIndex: sourceIndex + 1
+            });
             avatarPendingQueue.push({
               rank,
               activeKey,
@@ -512,6 +823,9 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               platforms: selectedPlatforms,
               sourcePartitionId: normalized.sourcePartitionId || partitionId,
               sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+              retryCount: 0,
+              maxRetries: getAutoPilotSlotRetryLimit(config),
+              fallbackCandidates,
               avatarConfig: {
                 renderProvider: 'runninghub',
                 serverUrl: avatarConfig.serverUrl || '',
@@ -525,8 +839,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
                 runningHubImageNodeId: avatarConfig.runningHubImageNodeId || '',
                 runningHubImageFieldName: avatarConfig.runningHubImageFieldName || '',
                 runningHubOutputNodeId: avatarConfig.runningHubOutputNodeId || '',
-                audioPreset: avatarConfig.audioPreset || '',
-                imagePreset: avatarConfig.imagePreset || '',
+                audioPreset: avatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+                imagePreset: avatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET,
                 genText: avatarConfig.genText || ''
               }
             });
@@ -552,6 +866,16 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               pipelineMode: 'avatar'
             });
             if (verticalQueueService && typeof verticalQueueService.enqueue === 'function') {
+              const autoPilotMeta = {
+                rank,
+                activeKey,
+                sourceMode,
+                pipelineMode,
+                platforms: selectedPlatforms,
+                sourcePartitionId: normalized.sourcePartitionId || partitionId,
+                sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+                sourceRank: itemRank
+              };
               const vjob = verticalQueueService.enqueue({
                 sourceType: sourceMode === 'current_ranking' ? 'xai_top10_cached' : 'xai_top10',
                 title: normalized.title,
@@ -563,18 +887,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
                 sourcePartitionId: normalized.sourcePartitionId || partitionId,
                 sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
                 sourceRank: itemRank,
-                renderOptions: {}
+                renderOptions: {},
+                autoPilot: autoPilotMeta
               });
-              autoPilotJobs.set(vjob.id, {
-                rank,
-                activeKey,
-                sourceMode,
-                pipelineMode,
-                platforms: selectedPlatforms,
-                sourcePartitionId: normalized.sourcePartitionId || partitionId,
-                sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
-                sourceRank: itemRank
-              });
+              autoPilotJobs.set(vjob.id, autoPilotMeta);
               autoPilotActiveKeys.add(activeKey);
               logInfo('[AutoPilot] 已回退到竖屏直发模式', {
                 rank: rank + 1,
@@ -585,6 +901,16 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             }
           }
         } else if (verticalQueueService && typeof verticalQueueService.enqueue === 'function') {
+          const autoPilotMeta = {
+            rank,
+            activeKey,
+            sourceMode,
+            pipelineMode,
+            platforms: selectedPlatforms,
+            sourcePartitionId: normalized.sourcePartitionId || partitionId,
+            sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
+            sourceRank: itemRank
+          };
           const vjob = verticalQueueService.enqueue({
             sourceType: sourceMode === 'current_ranking' ? 'xai_top10_cached' : 'xai_top10',
             title: normalized.title,
@@ -596,18 +922,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             sourcePartitionId: normalized.sourcePartitionId || partitionId,
             sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
             sourceRank: itemRank,
-            renderOptions: {}
+            renderOptions: {},
+            autoPilot: autoPilotMeta
           });
-          autoPilotJobs.set(vjob.id, {
-            rank,
-            activeKey,
-            sourceMode,
-            pipelineMode,
-            platforms: selectedPlatforms,
-            sourcePartitionId: normalized.sourcePartitionId || partitionId,
-            sourcePartitionLabel: normalized.sourcePartitionLabel || partition.label || '',
-            sourceRank: itemRank
-          });
+          autoPilotJobs.set(vjob.id, autoPilotMeta);
           autoPilotActiveKeys.add(activeKey);
           logInfo('[AutoPilot] 已将榜单内容送入渲染队列', {
             rank: rank + 1,
@@ -782,6 +1100,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0,
             avatarConfig: pendingTask.avatarConfig
           });
+          const startedAvatarConfig = pendingTask.avatarConfig || {};
           autoPilotAvatarJobs.set(avatarJobId, {
             rank: pendingTask.rank,
             activeKey: pendingTask.activeKey,
@@ -796,6 +1115,13 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             sourcePartitionId: pendingTask.sourcePartitionId || pendingTask.normalized.sourcePartitionId || '',
             sourcePartitionLabel: pendingTask.sourcePartitionLabel || pendingTask.normalized.sourcePartitionLabel || '',
             sourceRank: pendingTask.sourceRank || pendingTask.itemRank || 0,
+            retryCount: normalizeNonNegativeInteger(pendingTask.retryCount, 0),
+            maxRetries: normalizeNonNegativeInteger(pendingTask.maxRetries, getAutoPilotSlotRetryLimit(config)),
+            fallbackCandidates: Array.isArray(pendingTask.fallbackCandidates) ? pendingTask.fallbackCandidates : [],
+            avatarConfig: {
+              audioPreset: startedAvatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+              imagePreset: startedAvatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET
+            },
             platforms: pendingTask.platforms || DEFAULT_AUTO_PILOT_PLATFORMS
           });
           logInfo('[AutoPilot] 调度器从队列中启动了新的 AI剪辑+数字人 任务', {
@@ -804,13 +1130,17 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             outputPath: avatarOutputPath,
             title: pendingTask.normalized.title,
             pipelineMode: pendingTask.pipelineMode || 'avatar',
+            audioPreset: startedAvatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+            imagePreset: startedAvatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET,
             remainingInQueue: avatarPendingQueue.length
           });
         } catch (err) {
+          if (pendingTask.activeKey) autoPilotActiveKeys.delete(pendingTask.activeKey);
           logError('[AutoPilot] 从队列启动 AI剪辑+数字人 任务失败', err, {
             rank: pendingTask.rank + 1,
             title: pendingTask.normalized.title
           });
+          enqueueAvatarReplacement(config, pendingTask, 'avatar_start_failed');
         }
       }
 
@@ -837,6 +1167,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             rank: rank + 1,
             error: taskStatus.error || ''
           });
+          enqueueAvatarReplacement(config, meta, 'avatar_pipeline_failed');
           continue;
         }
 
@@ -860,6 +1191,20 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               });
               continue;
             }
+            const autoPilotMeta = {
+              rank,
+              activeKey,
+              sourceMode: meta.sourceMode || '',
+              pipelineMode: meta.pipelineMode || 'avatar',
+              platforms: meta.platforms || DEFAULT_AUTO_PILOT_PLATFORMS,
+              sourcePartitionId: meta.sourcePartitionId || '',
+              sourcePartitionLabel: meta.sourcePartitionLabel || '',
+              sourceRank: meta.sourceRank || 0,
+              avatarConfig: meta.avatarConfig || {},
+              retryCount: normalizeNonNegativeInteger(meta.retryCount, 0),
+              maxRetries: normalizeNonNegativeInteger(meta.maxRetries, getAutoPilotSlotRetryLimit(config)),
+              fallbackCandidates: Array.isArray(meta.fallbackCandidates) ? meta.fallbackCandidates : []
+            };
             const vjob = verticalQueueService.enqueue({
               sourceType: 'material_driven_avatar',
               title: meta.title || '',
@@ -872,18 +1217,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               sourcePartitionId: meta.sourcePartitionId || '',
               sourcePartitionLabel: meta.sourcePartitionLabel || '',
               sourceRank: meta.sourceRank || 0,
-              renderOptions: {}
+              renderOptions: {},
+              autoPilot: autoPilotMeta
             });
-            autoPilotJobs.set(vjob.id, {
-              rank,
-              activeKey,
-              sourceMode: meta.sourceMode || '',
-              pipelineMode: meta.pipelineMode || 'avatar',
-              platforms: meta.platforms || DEFAULT_AUTO_PILOT_PLATFORMS,
-              sourcePartitionId: meta.sourcePartitionId || '',
-              sourcePartitionLabel: meta.sourcePartitionLabel || '',
-              sourceRank: meta.sourceRank || 0
-            });
+            autoPilotJobs.set(vjob.id, autoPilotMeta);
             logInfo('[AutoPilot:Avatar] 数字人成片已送入竖屏渲染队列', {
               avatarJobId,
               queueJobId: vjob.id,
@@ -896,6 +1233,10 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
     }
 
     if (verticalQueueService && publishStore && generatePublishDescription && publishAssetsService) {
+      recoverAutoPilotVerticalJobs(config);
+    }
+
+    if (autoPilotJobs.size > 0 && verticalQueueService && publishStore && generatePublishDescription && publishAssetsService) {
       for (const [vjobId, meta] of Array.from(autoPilotJobs.entries())) {
         const rank = typeof meta === 'object' ? meta.rank : meta;
         const activeKey = typeof meta === 'object' ? meta.activeKey : '';
@@ -921,6 +1262,9 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             rank: rank + 1,
             status: vjob.status
           });
+          if (pipelineMode === 'avatar') {
+            enqueueAvatarReplacement(config, meta, `avatar_render_${vjob.status}`);
+          }
           continue;
         }
 
@@ -942,6 +1286,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             logWarn('[AutoPilot] 无法在素材库中找到渲染成品，跳过创建发布任务', {
               queueJobId: vjobId
             });
+            autoPilotJobs.set(vjobId, meta);
+            if (activeKey) autoPilotActiveKeys.add(activeKey);
             continue;
           }
 
@@ -960,6 +1306,18 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               asset
             });
             if (existingJob) {
+              if (taskStore && typeof taskStore.updateTask === 'function') {
+                const completedAt = new Date().toISOString();
+                try {
+                  taskStore.updateTask(vjobId, {
+                    status: 'completed',
+                    progress: 100,
+                    message: '竖屏视频已完成，已存在对应发布任务',
+                    completedAt
+                  });
+                  taskStore.appendLog(vjobId, `自动发布恢复：已存在对应发布任务 ${existingJob.id || ''}，跳过重复创建`);
+                } catch (_err) {}
+              }
               logWarn('[AutoPilot] 已存在同源视频或同成片发布任务，跳过重复创建', {
                 queueJobId: vjobId,
                 existingJobId: existingJob.id || '',
@@ -974,6 +1332,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               rank: rank + 1,
               error: err.message
             });
+            autoPilotJobs.set(vjobId, meta);
+            if (activeKey) autoPilotActiveKeys.add(activeKey);
             continue;
           }
 
@@ -993,6 +1353,8 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               rank: rank + 1,
               title: asset.compactLabel || asset.label
             });
+            autoPilotJobs.set(vjobId, meta);
+            if (activeKey) autoPilotActiveKeys.add(activeKey);
             continue;
           }
 
@@ -1004,34 +1366,31 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             coverUrl: ''
           };
 
-          const pcfg = config.wechatChannels;
           const modeSchedule = getAutoPilotModeSchedule(config, pipelineMode);
           const targetAccountIds = modeSchedule.accountIds || [];
           const assignedAccountId = String(targetAccountIds[rank] || '').trim();
-          const shouldPublishWechat = selectedPlatforms.includes('wechatChannels');
+          const primaryPlatform = selectedPlatforms[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
+          const account = getPlatformAccount(config, primaryPlatform, assignedAccountId);
 
-          let account = null;
-          if (shouldPublishWechat && assignedAccountId && Array.isArray(pcfg?.accounts)) {
-            account = pcfg.accounts.find((item) => item.id === assignedAccountId) || null;
-          }
-
-          if (shouldPublishWechat && !account) {
+          if (!account) {
             if (targetAccountIds.length > 0) {
               logWarn('[AutoPilot] 映射表中未找到该排名对应的有效账号，已跳过创建发布任务', {
                 queueJobId: vjobId,
                 rank: rank + 1,
+                platform: primaryPlatform,
                 assignedAccountId
               });
+              autoPilotJobs.set(vjobId, meta);
+              if (activeKey) autoPilotActiveKeys.add(activeKey);
               continue;
-            } else if (Array.isArray(pcfg?.accounts) && pcfg.accounts.length > 0) {
-              account = pcfg.accounts[0];
             }
           }
 
-          if (shouldPublishWechat && !account) {
-            logWarn('[AutoPilot] 没有任何可用微信账号配置，发布任务将创建为空记录', {
+          if (!account) {
+            logWarn('[AutoPilot] 没有任何可用平台账号配置，发布任务将创建为空记录', {
               queueJobId: vjobId,
-              rank: rank + 1
+              rank: rank + 1,
+              platform: primaryPlatform
             });
           }
 
@@ -1051,13 +1410,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             asset,
             publishData,
             selectedPlatforms,
-            platformSelections: shouldPublishWechat
-              ? {
-                wechatChannels: account
-                  ? { accountId: account.id, accountLabel: account.displayName || account.finderUserName || account.helperAccount || '' }
-                  : {}
-              }
-              : {},
+            platformSelections: buildAutoPilotPlatformSelections(config, selectedPlatforms, account?.id || assignedAccountId),
             platformErrors: [],
             autoPilot: {
               queueJobId: vjobId,
@@ -1070,7 +1423,15 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
               sourceMode: typeof meta === 'object' ? meta.sourceMode || '' : '',
               sourcePartitionId: sourcePartitionId || asset.metadata?.sourcePartitionId || '',
               sourcePartitionLabel: sourcePartitionLabel || asset.metadata?.sourcePartitionLabel || '',
-              sourceRank: sourceRank || asset.metadata?.sourceRank || 0
+              sourceRank: sourceRank || asset.metadata?.sourceRank || 0,
+              ...(pipelineMode === 'avatar'
+                ? {
+                  avatarConfig: {
+                    audioPreset: meta?.avatarConfig?.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
+                    imagePreset: meta?.avatarConfig?.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET
+                  }
+                }
+                : {})
             }
           };
 
@@ -1083,6 +1444,18 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             asset
           });
           if (existingJobCheck) {
+            if (taskStore && typeof taskStore.updateTask === 'function') {
+              const completedAt = new Date().toISOString();
+              try {
+                taskStore.updateTask(vjobId, {
+                  status: 'completed',
+                  progress: 100,
+                  message: '竖屏视频已完成，已存在对应发布任务',
+                  completedAt
+                });
+                taskStore.appendLog(vjobId, `自动发布恢复：写入前发现对应发布任务 ${existingJobCheck.id || ''}，跳过重复创建`);
+              } catch (_err) {}
+            }
             logWarn('[AutoPilot] 写入前发现同源视频或同成片发布任务，跳过重复创建', {
               queueJobId: vjobId,
               existingJobId: existingJobCheck.id || '',
@@ -1106,10 +1479,23 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
             localTargetTime: targetTime,
             publishTimingMode: scheduledAlreadyDue ? 'catch_up_after_render' : 'scheduled',
             assignedAccountId: account?.id || '',
-            assignedAccountLabel: account?.displayName || account?.finderUserName || account?.helperAccount || '',
+            assignedAccountLabel: getPlatformAccountLabel(primaryPlatform, account),
             platformErrors: storedJob.platformErrors || [],
             wechatTaskStatus: (storedJob.platformTasks || []).find((task) => task.platform === 'wechatChannels')?.status || ''
           });
+
+          if (taskStore && typeof taskStore.updateTask === 'function') {
+            const completedAt = new Date().toISOString();
+            try {
+              taskStore.updateTask(vjobId, {
+                status: 'completed',
+                progress: 100,
+                message: `竖屏视频已完成，已创建发布任务 ${storedJob.id}`,
+                completedAt
+              });
+              taskStore.appendLog(vjobId, `自动发布恢复：已创建发布任务 ${storedJob.id}`);
+            } catch (_err) {}
+          }
 
           if (scheduledAlreadyDue) {
             logInfo('[AutoPilot] 目标发布时间早于渲染完成时间，本轮会在成片后立即补发', {
@@ -1356,6 +1742,7 @@ function startScheduler({ publishStore, wechatRpaService, xaiService, verticalQu
   }
 
   return {
+    recoverAutoPilotVerticalJobs,
     triggerAutoPilotNow
   };
 }

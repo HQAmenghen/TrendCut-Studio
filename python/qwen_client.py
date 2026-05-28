@@ -6,7 +6,6 @@ import os
 import time
 import sys
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,7 +21,7 @@ if str(PYTHON_ROOT) not in sys.path:
 from pipeline.skills.prompt_skill_loader import load_prompt_text
 
 
-DEFAULT_GENERATE_RETRIES = 4
+DEFAULT_GENERATE_RETRIES = 8
 DEFAULT_QWEN_TEXT_REQUEST_TIMEOUT_SECONDS = int(
     os.getenv("QWEN_TEXT_REQUEST_TIMEOUT_SECONDS", "120") or 120
 )
@@ -32,6 +31,7 @@ DEFAULT_QWEN_MULTIMODAL_REQUEST_TIMEOUT_SECONDS = int(
 DEFAULT_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
 DEFAULT_QWEN_MULTIMODAL_EMBEDDING_MODEL = "tongyi-embedding-vision-flash-2026-03-06"
 DEFAULT_QWEN_RERANK_MODEL = "gte-rerank-v2"
+DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS = 15 * 60
 RETRYABLE_ERROR_MARKERS = (
     "server disconnected without sending a response",
     "connection reset",
@@ -51,6 +51,41 @@ RETRYABLE_ERROR_MARKERS = (
     "max retries exceeded",
     "connection aborted",
 )
+KEY_FAILOVER_ERROR_MARKERS = (
+    "401",
+    "402",
+    "403",
+    "429",
+    "access denied",
+    "accessdenied",
+    "api key",
+    "apikey",
+    "arrear",
+    "arrearage",
+    "balance not enough",
+    "balanceerror",
+    "balancenotenough",
+    "billing",
+    "exceeded your current quota",
+    "forbidden",
+    "insufficient balance",
+    "insufficient quota",
+    "insufficient_balance",
+    "insufficient_quota",
+    "invalid api key",
+    "invalidapikey",
+    "payment required",
+    "prepaidbalancenotenough",
+    "quota exceeded",
+    "quotaexceeded",
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "throttling",
+    "unauthorized",
+    "欠费",
+    "余额不足",
+)
 QWEN_ASR_SYSTEM_PROMPT = load_prompt_text("qwen_client_skill.md", "ASR System Prompt")
 
 
@@ -61,12 +96,25 @@ class KeyRotator:
         if not self.keys:
             raise ValueError("API Key 列表不能为空")
         self.cycle = itertools.cycle(self.keys)
+        self.disabled_until = {}
         self.lock = threading.Lock()
         self.count = len(self.keys)
 
     def next(self) -> str:
         with self.lock:
+            now = time.time()
+            for _ in range(self.count):
+                key = next(self.cycle)
+                if self.disabled_until.get(key, 0) <= now:
+                    return key
+            self.disabled_until.clear()
             return next(self.cycle)
+
+    def mark_unavailable(self, key: str, *, cooldown_seconds: int) -> None:
+        if self.count <= 1 or not key:
+            return
+        with self.lock:
+            self.disabled_until[key] = time.time() + max(1, int(cooldown_seconds or 1))
 
 
 class QwenClient:
@@ -83,6 +131,9 @@ class QwenClient:
     @property
     def key_count(self) -> int:
         return self.rotator.count
+
+    def mark_key_unavailable(self, api_key: str) -> None:
+        self.rotator.mark_unavailable(api_key, cooldown_seconds=_key_failure_cooldown_seconds())
 
 
 TEXT_MODEL_ALIASES = {
@@ -165,6 +216,8 @@ def _ensure_no_proxy_for_dashscope(base_url: str) -> None:
 
 def _retry_wait_seconds(exc: Exception, attempt: int) -> int:
     message = str(exc or "").lower()
+    if _is_key_failover_error(exc):
+        return 0
     if "there are no suitable clusters" in message or "internalerror.algo" in message:
         return min(20, 8 * attempt)
     if "timed out" in message or "timeout" in message:
@@ -193,16 +246,124 @@ def create_qwen_client() -> QwenClient:
 
 def describe_qwen_runtime(client: QwenClient) -> str:
     """返回脱敏后的运行时信息，便于排查环境变量污染"""
-    masked = "****"
-    if client.api_key and len(client.api_key) >= 4:
-        masked = client.api_key[-4:]
-    return f"QWEN_RUNTIME|base_url={client.base_url}|key_suffix={masked}"
+    return f"QWEN_RUNTIME|base_url={client.base_url}|key_suffix={mask_api_key(client.api_keys[0] if client.api_keys else '')}"
+
+
+def mask_api_key(api_key: str) -> str:
+    key = str(api_key or "").strip()
+    if len(key) >= 4:
+        return f"****{key[-4:]}"
+    return "****"
+
+
+def _key_failure_cooldown_seconds() -> int:
+    value = str(os.getenv("QWEN_KEY_FAILOVER_COOLDOWN_SECONDS") or "").strip()
+    if not value:
+        return DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        return DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS
+    return parsed if parsed > 0 else DEFAULT_KEY_FAILURE_COOLDOWN_SECONDS
+
+
+def _env_int(name: str, default: int) -> int:
+    value = str(os.getenv(name) or "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _error_text(exc: Exception) -> str:
+    parts = [str(exc or "")]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if status_code:
+            parts.append(str(status_code))
+        text = getattr(response, "text", None)
+        if text:
+            parts.append(str(text))
+        try:
+            payload = response.json()
+            if payload:
+                parts.append(json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
+    return " ".join(part for part in parts if part).lower()
 
 
 def _is_retryable_error(exc: Exception) -> bool:
     """判断是否为可重试的错误"""
-    message = str(exc or "").lower()
-    return any(marker in message for marker in RETRYABLE_ERROR_MARKERS)
+    message = _error_text(exc)
+    return any(marker in message for marker in RETRYABLE_ERROR_MARKERS) or _is_key_failover_error(exc)
+
+
+def _is_key_failover_error(exc: Exception) -> bool:
+    """判断是否适合切换到备用 Key。"""
+    message = _error_text(exc)
+    return any(marker in message for marker in KEY_FAILOVER_ERROR_MARKERS)
+
+
+def is_retryable_error(exc: Exception) -> bool:
+    return _is_retryable_error(exc)
+
+
+def is_key_failover_error(exc: Exception) -> bool:
+    return _is_key_failover_error(exc)
+
+
+def _resolve_attempts(retries: int | None, client: QwenClient) -> int:
+    try:
+        requested = int(retries or 1)
+    except (TypeError, ValueError):
+        requested = 1
+    minimum = _env_int("QWEN_GENERATE_MIN_RETRIES", DEFAULT_GENERATE_RETRIES)
+    return max(1, requested, minimum, getattr(client, "key_count", 1))
+
+
+def _call_with_failover(
+    client: QwenClient,
+    *,
+    operation: str,
+    call,
+    retries: int | None = DEFAULT_GENERATE_RETRIES,
+    request_timeout: int | None = None,
+):
+    attempts = _resolve_attempts(retries, client)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        api_key = client.api_key
+        try:
+            return call(api_key)
+        except Exception as exc:
+            last_error = exc
+            key_failover = _is_key_failover_error(exc)
+            if key_failover:
+                client.mark_key_unavailable(api_key)
+            should_retry = attempt < attempts and _is_retryable_error(exc)
+            if not should_retry:
+                raise
+            wait_seconds = _retry_wait_seconds(exc, attempt)
+            timeout_label = f", timeout={request_timeout}s" if request_timeout else ""
+            if key_failover and client.key_count > 1:
+                retry_label = "retrying with next configured key"
+            else:
+                retry_label = f"retrying in {wait_seconds}s"
+            print(
+                f"[qwen_client] {operation} attempt {attempt}/{attempts} failed "
+                f"(key={mask_api_key(api_key)}{timeout_label}); {retry_label}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+    if last_error:
+        raise last_error
 
 
 def _mime_to_content_key(mime_type: str) -> str:
@@ -394,60 +555,88 @@ def generate_content(
     文本、图像、视频、音频统一走原生 messages 协议。
     """
     messages = _convert_contents_to_messages(contents)
-    attempts = max(1, int(retries or 1))
     resolved_timeout = _resolve_request_timeout(contents, request_timeout)
-    last_error = None
 
-    for attempt in range(1, attempts + 1):
-        try:
-            if _contents_are_text_only(contents):
-                if use_multimodal_text_api(model):
-                    response = MultiModalConversation.call(
-                        api_key=client.api_key,
-                        model=model,
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [{"text": _convert_contents_to_text_prompt(contents)}],
-                            }
-                        ],
-                        request_timeout=resolved_timeout,
-                    )
-                else:
-                    model = normalize_qwen_text_model(model)
-                    response = Generation.call(
-                        api_key=client.api_key,
-                        model=model,
-                        messages=[
-                            {"role": "user", "content": _convert_contents_to_text_prompt(contents)}
-                        ],
-                        result_format="message",
-                        request_timeout=resolved_timeout,
-                    )
-            else:
-                response = MultiModalConversation.call(
-                    api_key=client.api_key,
+    def call(api_key: str):
+        if _contents_are_text_only(contents):
+            if use_multimodal_text_api(model):
+                return MultiModalConversation.call(
+                    api_key=api_key,
                     model=model,
-                    messages=messages,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [{"text": _convert_contents_to_text_prompt(contents)}],
+                        }
+                    ],
                     request_timeout=resolved_timeout,
                 )
-            _raise_for_response_error(response)
-            return ResponseWrapper(response)
-        except Exception as exc:
-            last_error = exc
-            should_retry = attempt < attempts and _is_retryable_error(exc)
-            if not should_retry:
-                raise
-            wait_seconds = _retry_wait_seconds(exc, attempt)
-            print(
-                f"[qwen_client] native generate_content attempt {attempt}/{attempts} failed, retrying in {wait_seconds}s (timeout={resolved_timeout}s): {exc}",
-                file=sys.stderr,
-                flush=True,
+            normalized_model = normalize_qwen_text_model(model)
+            return Generation.call(
+                api_key=api_key,
+                model=normalized_model,
+                messages=[
+                    {"role": "user", "content": _convert_contents_to_text_prompt(contents)}
+                ],
+                result_format="message",
+                request_timeout=resolved_timeout,
             )
-            time.sleep(wait_seconds)
+        return MultiModalConversation.call(
+            api_key=api_key,
+            model=model,
+            messages=messages,
+            request_timeout=resolved_timeout,
+        )
 
-    if last_error:
-        raise last_error
+    response = _call_qwen_response_with_failover(
+        client,
+        operation="native generate_content",
+        retries=retries,
+        request_timeout=resolved_timeout,
+        call=call,
+    )
+    return ResponseWrapper(response)
+
+
+def _call_qwen_response_with_failover(
+    client: QwenClient,
+    *,
+    operation: str,
+    call,
+    retries: int | None = DEFAULT_GENERATE_RETRIES,
+    request_timeout: int | None = None,
+):
+    def checked_call(api_key: str):
+        response = call(api_key)
+        _raise_for_response_error(response)
+        return response
+
+    return _call_with_failover(
+        client,
+        operation=operation,
+        retries=retries,
+        request_timeout=request_timeout,
+        call=checked_call,
+    )
+
+
+def _extract_embedding_vectors(response) -> list:
+    output = getattr(response, "output", None) or {}
+    batch_embeddings = []
+    if isinstance(output, dict):
+        if isinstance(output.get("embeddings"), list):
+            batch_embeddings = output.get("embeddings") or []
+        elif isinstance(output.get("data"), list):
+            batch_embeddings = output.get("data") or []
+    if not batch_embeddings and isinstance(response, dict):
+        batch_embeddings = response.get("output", {}).get("embeddings") or response.get("output", {}).get("data") or []
+    vectors = []
+    for item in batch_embeddings:
+        if isinstance(item, dict):
+            vector = item.get("embedding") or item.get("vector") or item.get("embeddings")
+            if isinstance(vector, list):
+                vectors.append(vector)
+    return vectors
 
 
 def generate_embeddings(
@@ -466,31 +655,19 @@ def generate_embeddings(
         inputs = list(inputs or [])
 
     batch_size = max(1, min(10, int(os.getenv("QWEN_EMBEDDING_BATCH_SIZE", "10") or 10)))
-    embeddings = []
+    vectors = []
     for offset in range(0, len(inputs), batch_size):
         batch = inputs[offset:offset + batch_size]
-        response = TextEmbedding.call(
-            model=embedding_model,
-            input=batch,
-            api_key=client.api_key,
+        response = _call_qwen_response_with_failover(
+            client,
+            operation="generate_embeddings",
+            call=lambda api_key, batch=batch: TextEmbedding.call(
+                model=embedding_model,
+                input=batch,
+                api_key=api_key,
+            ),
         )
-        _raise_for_response_error(response)
-        output = getattr(response, "output", None) or {}
-        batch_embeddings = []
-        if isinstance(output, dict):
-            if isinstance(output.get("embeddings"), list):
-                batch_embeddings = output.get("embeddings") or []
-            elif isinstance(output.get("data"), list):
-                batch_embeddings = output.get("data") or []
-        if not batch_embeddings and isinstance(response, dict):
-            batch_embeddings = response.get("output", {}).get("embeddings") or response.get("output", {}).get("data") or []
-        embeddings.extend(batch_embeddings)
-    vectors = []
-    for item in embeddings:
-        if isinstance(item, dict):
-            vector = item.get("embedding") or item.get("vector") or item.get("embeddings")
-            if isinstance(vector, list):
-                vectors.append(vector)
+        vectors.extend(_extract_embedding_vectors(response))
     return vectors
 
 
@@ -509,12 +686,15 @@ def generate_multimodal_embeddings(
     for item in inputs:
         if isinstance(item, str):
             item = {"text": item}
-        response = MultiModalEmbedding.call(
-            model=embedding_model,
-            input=[item],
-            api_key=client.api_key,
+        response = _call_qwen_response_with_failover(
+            client,
+            operation="generate_multimodal_embeddings",
+            call=lambda api_key, item=item: MultiModalEmbedding.call(
+                model=embedding_model,
+                input=[item],
+                api_key=api_key,
+            ),
         )
-        _raise_for_response_error(response)
         output = getattr(response, "output", None) or {}
         embedding = None
         if isinstance(output, dict):
@@ -540,15 +720,18 @@ def rerank_documents(
     return_documents: bool = True,
 ):
     rerank_model = str(model or get_qwen_rerank_model()).strip() or get_qwen_rerank_model()
-    response = TextReRank.call(
-        model=rerank_model,
-        query=query,
-        documents=list(documents or []),
-        top_n=top_n,
-        return_documents=return_documents,
-        api_key=client.api_key,
+    response = _call_qwen_response_with_failover(
+        client,
+        operation="rerank_documents",
+        call=lambda api_key: TextReRank.call(
+            model=rerank_model,
+            query=query,
+            documents=list(documents or []),
+            top_n=top_n,
+            return_documents=return_documents,
+            api_key=api_key,
+        ),
     )
-    _raise_for_response_error(response)
     output = getattr(response, "output", None) or {}
     results = []
     if isinstance(output, dict):
@@ -563,13 +746,16 @@ def transcribe_audio(client: QwenClient, audio_path: str, model: str = "qwen3-as
     使用千问原生多模态接口进行语音识别。
     """
     system_prompt = QWEN_ASR_SYSTEM_PROMPT.format(language=language)
-    response = MultiModalConversation.call(
-        api_key=client.api_key,
-        model=model,
-        messages=[
-            {"role": "system", "content": [{"text": system_prompt}]},
-            {"role": "user", "content": [{"audio": _to_file_uri(audio_path)}]},
-        ],
+    response = _call_qwen_response_with_failover(
+        client,
+        operation="transcribe_audio",
+        call=lambda api_key: MultiModalConversation.call(
+            api_key=api_key,
+            model=model,
+            messages=[
+                {"role": "system", "content": [{"text": system_prompt}]},
+                {"role": "user", "content": [{"audio": _to_file_uri(audio_path)}]},
+            ],
+        ),
     )
-    _raise_for_response_error(response)
     return ResponseWrapper(response).text

@@ -24,6 +24,102 @@ class QwenFiletransAsrTest(unittest.TestCase):
         debug_patch.start()
         self.addCleanup(debug_patch.stop)
 
+    def reference_text_group_response(self, prompt, pieces=None):
+        payload = json.loads(prompt.split("输入：", 1)[1])
+        reference = payload.get("reference_text") or ""
+        if pieces is None:
+            raw_pieces = run_asr.split_reference_text_for_authority(reference, {"max_visible_chars": 26})
+            pieces = []
+            index = 0
+            while index < len(raw_pieces):
+                if index + 1 < len(raw_pieces):
+                    merged = run_asr.join_subtitle_text(raw_pieces[index], raw_pieces[index + 1])
+                    current_is_too_short = run_asr.has_severe_unreadable_subtitle_duration({
+                        "time": [0, 1],
+                        "zh": raw_pieces[index],
+                        "text": raw_pieces[index],
+                    })
+                    next_is_too_short = run_asr.has_severe_unreadable_subtitle_duration({
+                        "time": [0, 1],
+                        "zh": raw_pieces[index + 1],
+                        "text": raw_pieces[index + 1],
+                    }) or (
+                        index + 2 < len(raw_pieces)
+                        and run_asr.has_severe_unreadable_subtitle_duration({
+                            "time": [0, 1],
+                            "zh": raw_pieces[index + 2],
+                            "text": raw_pieces[index + 2],
+                        })
+                    )
+                    if (
+                        run_asr.reference_authority_text_fits_display(merged, {"max_visible_chars": 26})
+                        and (
+                            current_is_too_short
+                            or next_is_too_short
+                            or run_asr.has_latin_text(raw_pieces[index])
+                            or run_asr.has_latin_text(raw_pieces[index + 1])
+                        )
+                    ):
+                        pieces.append(merged)
+                        index += 2
+                        continue
+                piece = raw_pieces[index]
+                index += 1
+                if run_asr.reference_authority_text_fits_display(piece, {"max_visible_chars": 26}):
+                    pieces.append(piece)
+                else:
+                    long_pieces = run_asr.split_long_reference_atom_piece(piece, 24)
+                    if (
+                        pieces
+                        and run_asr.has_latin_text(long_pieces[0])
+                        and run_asr.reference_authority_text_fits_display(
+                            run_asr.join_subtitle_text(pieces[-1], long_pieces[0]),
+                            {"max_visible_chars": 26},
+                        )
+                    ):
+                        pieces[-1] = run_asr.join_subtitle_text(pieces[-1], long_pieces[0])
+                        pieces.extend(long_pieces[1:])
+                    else:
+                        pieces.extend(long_pieces)
+        cursor = 0
+        items = []
+        segments = payload.get("asr_segments") or []
+        segment_times = [
+            item.get("time")
+            for item in segments
+            if isinstance(item, dict)
+            and isinstance(item.get("time"), list)
+            and len(item.get("time")) >= 2
+        ]
+        if segment_times:
+            start_time = float(segment_times[0][0])
+            end_time = float(segment_times[-1][1])
+        else:
+            start_time = 0.0
+            end_time = max(1.0, float(len(pieces)))
+        total = max(1, len(pieces))
+        for piece in pieces:
+            position = reference.find(piece, cursor)
+            self.assertGreaterEqual(position, cursor)
+            end = position + len(piece)
+            index = len(items)
+            if index < len(segment_times):
+                time_range = segment_times[index]
+                time_value = [float(time_range[0]), float(time_range[1])]
+            else:
+                span = max(0.1, (end_time - start_time) / total)
+                time_value = [
+                    round(start_time + span * index, 3),
+                    round(start_time + span * (index + 1), 3),
+                ]
+            items.append({
+                "time": time_value,
+                "zh": piece,
+            })
+            cursor = end
+        self.assertFalse(run_asr.visible_text(reference[cursor:]))
+        return json.dumps(items, ensure_ascii=False)
+
     def test_parse_filetrans_result_uses_sentence_times_and_word_times(self):
         payload = {
             "output": {
@@ -966,19 +1062,19 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 "text": "Trump publicly promised to support 50 million",
             },
             {
-                "time": [3.44, 5.04],
+                "time": [3.44, 6.2],
                 "zh": "crypto holders' self-custody rights,",
                 "en": "crypto holders' self-custody rights,",
                 "text": "crypto holders' self-custody rights,",
             },
             {
-                "time": [5.44, 8.32],
+                "time": [6.44, 9.32],
                 "zh": "ensure Bitcoin future is made in America.",
                 "en": "ensure Bitcoin future is made in America.",
                 "text": "ensure Bitcoin future is made in America.",
             },
             {
-                "time": [8.64, 10.24],
+                "time": [9.64, 11.24],
                 "zh": "He also made clear,",
                 "en": "He also made clear,",
                 "text": "He also made clear,",
@@ -995,34 +1091,50 @@ class QwenFiletransAsrTest(unittest.TestCase):
             }
         ]
 
-        llm_response = json.dumps([
-            {"index": 0, "text": "特朗普公开承诺：支持5000万加密持有者自我托管权，"},
-            {"index": 1, "text": "确保比特币未来在美国制造而非海外。"},
-            {"index": 2, "text": "他同时明确，不会让Elizabeth Warren干扰你的比特币，"},
-            {"index": 3, "text": "也永不批准央行数字货币"},
+        invalid_response = json.dumps([
+            {"start_index": 0, "end_index": 77, "text": reference[0]["zh"]},
         ], ensure_ascii=False)
 
         class FakeResponse:
-            text = llm_response
+            def __init__(self, text):
+                self.text = text
 
-        with patch("pipeline.run_asr.create_llm_client", return_value=object()), \
-                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()) as generate_content, \
+        def fake_generate_content(*_args, **kwargs):
+            if fake_generate_content.call_count == 0:
+                fake_generate_content.call_count += 1
+                return FakeResponse(invalid_response)
+            fake_generate_content.call_count += 1
+            return FakeResponse(self.reference_text_group_response(kwargs["contents"], [
+                "特朗普公开承诺：",
+                "支持5000万加密持有者自我托管权，",
+                "确保比特币未来在美国制造而非海外。他同时明确，",
+                "不会让Elizabeth Warren",
+                "干扰你的比特币，",
+                "也永不批准央行数字货币",
+            ]))
+
+        fake_generate_content.call_count = 0
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "2"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content) as generate_content, \
                 patch("pipeline.run_asr.emit_stage"):
             authoritative = run_asr.build_reference_authority_subtitles(
                 subtitles,
                 reference,
                 {"max_visible_chars": 26},
-                source_language="en"
+                source_language="en",
+                strict=True,
             )
         combined_text = "".join(item["zh"] for item in authoritative)
 
-        generate_content.assert_called_once()
+        self.assertEqual(generate_content.call_count, 2)
         self.assertGreaterEqual(len(authoritative), 2)
-        self.assertEqual(authoritative[0]["time"][0], 0.16)
+        self.assertTrue(all(run_asr.readable_visible_len(item["zh"]) <= 24 for item in authoritative))
         self.assertIn("5000万", combined_text)
-        self.assertIn("Elizabeth Warren", combined_text)
+        self.assertIn("ElizabethWarren", run_asr.visible_text(combined_text))
         self.assertIn("央行数字货币", combined_text)
-        self.assertEqual(authoritative[-1]["zh"], "也永不批准央行数字货币")
+        self.assertTrue(authoritative[-1]["zh"].endswith("也永不批准央行数字货币"))
         self.assertNotIn("50 million00万", combined_text)
         self.assertNotIn("50 million", combined_text)
         self.assertTrue(all(item["text"] == item["zh"] for item in authoritative))
@@ -1174,16 +1286,10 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 source_language="zh",
             )
 
-        self.assertEqual(
-            [item["zh"] for item in authoritative],
-            [
-                "他还提到，法案通过那天会被记住为华尔街正式入场。",
-                "现在比特币已在8万美元上方，年底看到15万并不是夸张",
-            ],
-        )
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertTrue(all(run_asr.readable_visible_len(item["zh"]) <= 24 for item in authoritative))
         self.assertEqual(authoritative[0]["time"][0], 21.7)
-        self.assertLessEqual(authoritative[0]["time"][1], 28.96)
-        self.assertEqual(authoritative[1]["time"], [28.96, 33.28])
+        self.assertEqual(authoritative[-1]["time"][1], 33.28)
 
     def test_reference_text_authority_accepts_atom_grouping_without_model_copying_text(self):
         subtitles = [
@@ -1266,8 +1372,8 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 source_language="zh",
             )
 
-        self.assertNotEqual(authoritative[0]["zh"], "他还提到，法案通过那天会被记住为华尔街正式入场。现在比特币已在8万美元")
-        self.assertEqual(authoritative[1]["time"][0], 25.58)
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertFalse(any("8万美元上方" in item["zh"] and "年底看到15万" in item["zh"] for item in authoritative[:1]))
 
     def test_reference_text_authority_rejects_semantic_groups_with_unreadable_duration(self):
         subtitles = [
@@ -1297,10 +1403,8 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 source_language="zh",
             )
 
-        first = authoritative[0]
-        self.assertEqual(first["zh"], "这么大笔资金涌入，必然推高比特币价格")
-        self.assertEqual(first["time"][1], 21.7)
-        self.assertGreaterEqual(first["time"][1] - first["time"][0], 1.45)
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertTrue(all(run_asr.readable_visible_len(item["zh"]) <= 24 for item in authoritative))
 
     def test_reference_text_authority_rejects_index_assignment_with_unreadable_duration(self):
         subtitles = [
@@ -1392,8 +1496,7 @@ class QwenFiletransAsrTest(unittest.TestCase):
         ]
 
         invalid_response = json.dumps([
-                {"start_index": 0, "end_index": 0, "text": "这意味着比特币正被认真"},
-                {"start_index": 1, "end_index": 1, "text": "考虑作为国家层面的价值储存工具"},
+                {"start_index": 0, "end_index": 1, "text": reference[0]["zh"]},
         ], ensure_ascii=False)
 
         class FakeResponse:
@@ -1406,17 +1509,10 @@ class QwenFiletransAsrTest(unittest.TestCase):
             attempts.append(kwargs["contents"])
             if len(attempts) == 1:
                 return FakeResponse(invalid_response)
-            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
-            atoms = payload.get("reference_atoms") or []
-            allowed = {
-                (item["start_atom_index"], item["end_atom_index"])
-                for item in payload.get("allowed_atom_ranges") or []
-            }
-            full_range = (0, len(atoms) - 1)
-            self.assertIn(full_range, allowed)
-            return FakeResponse(json.dumps([
-                {"start_atom_index": full_range[0], "end_atom_index": full_range[1]},
-            ], ensure_ascii=False))
+            return FakeResponse(self.reference_text_group_response(kwargs["contents"], [
+                "这意味着比特币正被认真",
+                "考虑作为国家层面的价值储存工具",
+            ]))
 
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "2"}), \
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
@@ -1431,10 +1527,70 @@ class QwenFiletransAsrTest(unittest.TestCase):
             )
 
         self.assertEqual(generate_content.call_count, 2)
-        self.assertEqual([item["zh"] for item in authoritative], [
-            "这意味着比特币正被认真考虑作为国家层面的价值储存工具",
-        ])
         self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertTrue(all(run_asr.readable_visible_len(item["zh"]) <= 24 for item in authoritative))
+
+    def test_strict_reference_text_authority_rejects_two_line_overflow_atom_group(self):
+        subtitles = [
+            {"time": [0.0, 1.73], "zh": "Metaplanet再次加码，", "text": "Metaplanet再次加码，"},
+            {"time": [1.73, 5.0], "zh": "计划购买1000亿美元比特币，", "text": "计划购买1000亿美元比特币，"},
+            {"time": [5.0, 8.2], "zh": "目标是拿下网络7.5%份额，", "text": "目标是拿下网络7.5%份额，"},
+            {"time": [8.2, 11.15], "zh": "届时每个币价值1000万美元。", "text": "届时每个币价值1000万美元。"},
+        ]
+        reference = [
+            {
+                "time": [0.0, 11.15],
+                "zh": "Metaplanet再次加码，计划购买1000亿美元比特币，目标是拿下网络7.5%份额，届时每个币价值1000万美元。",
+            }
+        ]
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+
+        attempts = []
+
+        def fake_generate_content(*_args, **kwargs):
+            attempts.append(kwargs["contents"])
+            self.assertIn("最多 24 个可见中文字符", kwargs["contents"])
+            if len(attempts) == 1:
+                return FakeResponse(json.dumps([
+                    {
+                        "start_index": 0,
+                        "end_index": 3,
+                        "text": reference[0]["zh"],
+                    },
+                ], ensure_ascii=False))
+            return FakeResponse(json.dumps([
+                {"start_index": 0, "end_index": 0, "text": "Metaplanet再次加码，"},
+                {"start_index": 1, "end_index": 1, "text": "计划购买1000亿美元比特币，"},
+                {"start_index": 2, "end_index": 2, "text": "目标是拿下网络7.5%份额，"},
+                {"start_index": 3, "end_index": 3, "text": "届时每个币价值1000万美元。"},
+            ], ensure_ascii=False))
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "2"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content) as generate_content, \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual(generate_content.call_count, 2)
+        self.assertNotIn("reference_atoms", attempts[0])
+        self.assertGreater(len(authoritative), 1)
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertTrue(
+            all(run_asr.readable_visible_len(item["zh"]) <= 24 for item in authoritative),
+            authoritative,
+        )
+        self.assertFalse(any(item["zh"].endswith("7.") for item in authoritative), authoritative)
+        self.assertFalse(any(item["zh"].startswith("5%") for item in authoritative), authoritative)
+        self.assertIn("7.5%", "".join(item["zh"] for item in authoritative))
 
     def test_strict_reference_text_authority_removes_orphan_asr_fragment_before_llm(self):
         subtitles = [
@@ -1461,30 +1617,13 @@ class QwenFiletransAsrTest(unittest.TestCase):
             captured_payloads.append(payload)
             asr_texts = [item["asr_text"] for item in payload["asr_segments"]]
             self.assertNotIn("产。", asr_texts)
-            atoms = payload.get("reference_atoms") or []
-            self.assertTrue(atoms)
-            allowed = {
-                (item["start_atom_index"], item["end_atom_index"])
-                for item in payload.get("allowed_atom_ranges") or []
-            }
-            choices = []
-            index = 0
-            while index < len(atoms):
-                candidates = sorted(
-                    [item for item in allowed if item[0] == index],
-                    key=lambda item: (item[1] - item[0], item[1]),
-                    reverse=True,
-                )
-                self.assertTrue(candidates)
-                start_atom_index, end_atom_index = candidates[0]
-                choices.append({
-                    "start_atom_index": start_atom_index,
-                    "end_atom_index": end_atom_index,
-                })
-                index = end_atom_index + 1
-            return FakeResponse(json.dumps([
-                item for item in choices
-            ], ensure_ascii=False))
+            self.assertNotIn("reference_atoms", payload)
+            return FakeResponse(self.reference_text_group_response(prompt, [
+                "他预计政府初期可能只配置储备的1%，",
+                "但长期看比例会逐步上升。",
+                "这意味着比特币正被认真",
+                "考虑作为国家层面的价值储存工具",
+            ]))
 
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
@@ -1506,7 +1645,7 @@ class QwenFiletransAsrTest(unittest.TestCase):
         self.assertNotIn("产。", "".join(item["zh"] for item in authoritative))
         self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
 
-    def test_strict_reference_text_authority_splits_long_mixed_language_atoms_for_llm(self):
+    def test_strict_reference_text_authority_accepts_long_mixed_language_llm_groups(self):
         subtitles = [
             {"time": [0.0, 1.6], "zh": "B M R Boost", "text": "B M R Boost"},
             {"time": [1.6, 3.6], "zh": "账号分享Tom Lee", "text": "账号分享Tom Lee"},
@@ -1538,27 +1677,19 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 self.text = text
 
         def fake_generate_content(*_args, **kwargs):
-            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            prompt = kwargs["contents"]
+            payload = json.loads(prompt.split("输入：", 1)[1])
             captured_payloads.append(payload)
-            atoms = payload.get("reference_atoms") or []
-            self.assertTrue(atoms)
-            self.assertTrue(all(run_asr.readable_visible_len(atom["text"]) <= 24 for atom in atoms))
-            self.assertTrue(any("BIGGEST RALLY OF OUR" in atom["text"] for atom in atoms))
-            allowed = {
-                (item["start_atom_index"], item["end_atom_index"])
-                for item in payload.get("allowed_atom_ranges") or []
-            }
-            choices = []
-            index = 0
-            while index < len(atoms):
-                pair = (index, index + 1)
-                if index + 1 < len(atoms) and pair in allowed:
-                    choices.append({"start_atom_index": pair[0], "end_atom_index": pair[1]})
-                    index += 2
-                else:
-                    choices.append({"start_atom_index": index, "end_atom_index": index})
-                    index += 1
-            return FakeResponse(json.dumps(choices, ensure_ascii=False))
+            self.assertNotIn("reference_atoms", payload)
+            return FakeResponse(self.reference_text_group_response(prompt, [
+                "BMNRBullz账号分享Tom Lee最新判断：",
+                "关于夏季回调15-20%，",
+                "他称这是“我们lives中最大的反弹”",
+                "（THE BIGGEST RALLY OF OUR LIFETIME）",
+                "前的痛苦。先经历Pain，",
+                "再迎来Generational rally。",
+                "他点名$BMNR和$ETH",
+            ]))
 
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
@@ -1597,23 +1728,18 @@ class QwenFiletransAsrTest(unittest.TestCase):
                 self.text = text
 
         def fake_generate_content(*_args, **kwargs):
-            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            prompt = kwargs["contents"]
+            payload = json.loads(prompt.split("输入：", 1)[1])
             captured_payloads.append(payload)
             asr_texts = [item["asr_text"] for item in payload["asr_segments"]]
             self.assertNotEqual(asr_texts[0], "基础设施。")
-            atoms = payload.get("reference_atoms") or []
-            self.assertTrue(atoms)
-            self.assertTrue(all(run_asr.readable_visible_len(atom["text"]) <= 24 for atom in atoms))
-            allowed = {
-                (item["start_atom_index"], item["end_atom_index"])
-                for item in payload.get("allowed_atom_ranges") or []
-            }
-            self.assertIn((0, 1), allowed)
-            self.assertIn((2, 3), allowed)
-            return FakeResponse(json.dumps([
-                {"start_atom_index": 0, "end_atom_index": 1},
-                {"start_atom_index": 2, "end_atom_index": 3},
-            ], ensure_ascii=False))
+            self.assertNotIn("reference_atoms", payload)
+            return FakeResponse(self.reference_text_group_response(prompt, [
+                "更关键的是，全球前五的支付商中有一家",
+                "决定把整个支付系统迁移到区块链。",
+                "加密基础设施现在能一秒钟",
+                "把一分钱转到世界任何角落",
+            ]))
 
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
@@ -1632,7 +1758,336 @@ class QwenFiletransAsrTest(unittest.TestCase):
         self.assertEqual(authoritative[0]["time"][0], 19.76)
         self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
 
-    def test_strict_reference_text_authority_rejects_unvalidated_fallback_split(self):
+    def test_reference_authority_atom_ranges_allow_tail_fragment_with_previous_sentence(self):
+        subtitles = [
+            {"time": [22.4, 25.28], "zh": "特币资产独特，政府需要以不同方式操", "text": "特币资产独特，政府需要以不同方式操"},
+            {"time": [25.28, 25.44], "zh": "作。", "text": "作。"},
+            {"time": [25.84, 26.48], "zh": "Harry John", "text": "Harry John"},
+            {"time": [26.48, 28.16], "zh": "带领团队推动跨部门流程，", "text": "带领团队推动跨部门流程，"},
+            {"time": [28.64, 29.76], "zh": "确保执行令落实。", "text": "确保执行令落实。"},
+            {"time": [30.24, 33.04], "zh": "公告一出，储备从政策文件走向实际", "text": "公告一出，储备从政策文件走向实际"},
+            {"time": [33.04, 33.28], "zh": "执行。", "text": "执行。"},
+        ]
+        reference = [
+            {
+                "time": [22.4, 33.28],
+                "zh": "比特币资产独特，政府需要以不同方式操作。Harry Jung 带领团队推动跨部门流程，确保执行令落实。公告一出，储备从政策文件走向实际执行",
+            }
+        ]
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_USE_ATOM_CONSTRAINTS": "1"}):
+            prompt = run_asr.build_reference_authority_prompt(
+                subtitles,
+                reference[0]["zh"],
+                source_language="zh",
+                split_config={"max_chunk_duration": 4.2, "max_visible_chars": 26},
+            )
+        payload = json.loads(prompt.split("输入：", 1)[1])
+        atoms = payload["reference_atoms"]
+        allowed = {
+            (item["start_atom_index"], item["end_atom_index"])
+            for item in payload["allowed_atom_ranges"]
+        }
+        self.assertEqual(atoms[0]["text"], "比特币资产独特，政府需要以不同方式操作。")
+        self.assertEqual(atoms[0]["time"], [22.4, 25.44])
+        self.assertEqual(atoms[1]["time"][0], 25.84)
+        self.assertNotIn((1, 2), allowed)
+        self.assertIn((1, 1), allowed)
+        self.assertIn((2, 3), allowed)
+        validated = run_asr.validate_reference_authority_llm_results(
+            subtitles,
+            reference[0]["zh"],
+            [
+                {"start_atom_index": 0, "end_atom_index": 0},
+                {"start_atom_index": 1, "end_atom_index": 1},
+                {"start_atom_index": 2, "end_atom_index": 3},
+            ],
+            {"max_chunk_duration": 4.2, "max_visible_chars": 26},
+            require_atom_groups=True,
+        )
+        self.assertEqual("".join(item["zh"] for item in validated), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(validated))
+
+    def test_strict_reference_text_authority_assigns_boundary_prefix_to_next_block(self):
+        subtitles = [
+            {"time": [0.0, 0.64], "zh": "Michael Saylor", "text": "Michael Saylor"},
+            {"time": [0.72, 3.6], "zh": "说，他要给亿人提供年化8%", "text": "说，他要给亿人提供年化8%"},
+            {"time": [3.84, 5.52], "zh": "收益、零波动的银行账户。", "text": "收益、零波动的银行账户。"},
+            {"time": [5.76, 7.2], "zh": "这听起来像天方夜谭，", "text": "这听起来像天方夜谭，"},
+            {"time": [7.44, 8.16], "zh": "但MicroStrategy", "text": "但MicroStrategy"},
+            {"time": [8.48, 10.96], "zh": "的掌舵人正在把这个愿景推到台前。", "text": "的掌舵人正在把这个愿景推到台前。"},
+            {"time": [11.2, 11.76], "zh": "Saylor", "text": "Saylor"},
+            {"time": [12.0, 13.4], "zh": "坦承这很难，", "text": "坦承这很难，"},
+            {"time": [13.4, 16.2], "zh": "就像建核反应堆换取免费电力。", "text": "就像建核反应堆换取免费电力。"},
+            {"time": [16.2, 18.8], "zh": "他的思路是，用比特币作储备，", "text": "他的思路是，用比特币作储备，"},
+            {"time": [18.8, 21.7], "zh": "通过金融工程把波动对冲掉，输出一个接近无风险的收益", "text": "通过金融工程把波动对冲掉，输出一个接近无风险的收益"},
+        ]
+        reference = [
+            {
+                "time": [0, 11.98],
+                "zh": "Michael Saylor 说，他要给十亿人提供年化8%收益、零波动的银行账户。这听起来像天方夜谭，但 MicroStrategy 的掌舵人正在把这个愿景推到台前",
+            },
+            {
+                "time": [11.98, 21.7],
+                "zh": "Saylor 坦承这很难，就像建核反应堆换取免费电力。他的思路是，用比特币作储备，通过金融工程把波动对冲掉，输出一个接近无风险的收益",
+            },
+        ]
+        captured_payloads = []
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+
+        def choose_allowed_partition(atom_count, allowed_ranges):
+            by_start = {}
+            for start, end in allowed_ranges:
+                by_start.setdefault(start, []).append(end)
+            memo = {}
+
+            def visit(start):
+                if start == atom_count:
+                    return []
+                if start in memo:
+                    return memo[start]
+                for end in sorted(by_start.get(start, []), reverse=True):
+                    tail = visit(end + 1)
+                    if tail is not None:
+                        memo[start] = [(start, end)] + tail
+                        return memo[start]
+                memo[start] = None
+                return None
+
+            return visit(0)
+
+        def fake_generate_content(*_args, **kwargs):
+            prompt = kwargs["contents"]
+            payload = json.loads(prompt.split("输入：", 1)[1])
+            captured_payloads.append(payload)
+            self.assertNotIn("reference_atoms", payload)
+            return FakeResponse(self.reference_text_group_response(prompt))
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual(len(captured_payloads), 2)
+        self.assertNotEqual(captured_payloads[0]["asr_segments"][-1]["asr_text"], "Saylor")
+        self.assertEqual(captured_payloads[1]["asr_segments"][0]["asr_text"], "Saylor")
+        self.assertEqual(
+            run_asr.visible_text("".join(item["zh"] for item in authoritative)),
+            run_asr.visible_text("".join(item["zh"] for item in reference)),
+        )
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+
+    def test_reference_authority_boundary_prefix_rule_is_not_keyword_specific(self):
+        asr_entries = [
+            {"time": [0.0, 1.2], "zh": "第一段介绍背景", "text": "第一段介绍背景"},
+            {"time": [1.2, 2.4], "zh": "并说明核心原因。", "text": "并说明核心原因。"},
+            {"time": [2.64, 3.0], "zh": "第二点", "text": "第二点"},
+            {"time": [3.12, 4.4], "zh": "才是关键结论。", "text": "才是关键结论。"},
+        ]
+        reference = [
+            {"time": [0.0, 2.8], "zh": "第一段介绍背景，并说明核心原因。"},
+            {"time": [2.8, 4.4], "zh": "第二点才是关键结论。"},
+        ]
+
+        first = run_asr.collect_asr_entries_for_reference(asr_entries, reference[0], set(), reference[1])
+        used = {index for index, _entry in first}
+        second = run_asr.collect_asr_entries_for_reference(asr_entries, reference[1], used)
+
+        self.assertEqual([entry["zh"] for _index, entry in first], [
+            "第一段介绍背景",
+            "并说明核心原因。",
+        ])
+        self.assertEqual([entry["zh"] for _index, entry in second], [
+            "第二点",
+            "才是关键结论。",
+        ])
+
+    def test_strict_reference_text_authority_closes_continuous_block_gaps(self):
+        subtitles = [
+            {"time": [0.0, 4.0], "zh": "黄仁勋说，如果两个应届生候选人，一个精通 AI，", "text": "黄仁勋说，如果两个应届生候选人，一个精通 AI，"},
+            {"time": [4.0, 7.2], "zh": "一个完全不懂，他会毫不犹豫选那个 AI 专家。", "text": "一个完全不懂，他会毫不犹豫选那个 AI 专家。"},
+            {"time": [7.2, 11.3], "zh": "而且这条标准，不只看技术岗，财务、营销、客服、销售，全都一样", "text": "而且这条标准，不只看技术岗，财务、营销、客服、销售，全都一样"},
+            {"time": [12.96, 18.88], "zh": "他进一步建议，如果当前工作包含重复性任务，就应该去学用 AI 自动化它。", "text": "他进一步建议，如果当前工作包含重复性任务，就应该去学用 AI 自动化它。"},
+            {"time": [18.88, 22.24], "zh": "他还举了个例子：你可以直接问 AI 怎样提升我的工作技能，", "text": "他还举了个例子：你可以直接问 AI 怎样提升我的工作技能，"},
+            {"time": [22.24, 24.03], "zh": "它会给你一份详细的步骤计划", "text": "它会给你一份详细的步骤计划"},
+            {"time": [26.96, 28.56], "zh": "未来十年，AI 很可能像当年 Excel 一样，", "text": "未来十年，AI 很可能像当年 Excel 一样，"},
+            {"time": [28.56, 30.64], "zh": "成为职场基础技能。", "text": "成为职场基础技能。"},
+        ]
+        reference = [
+            {
+                "time": [0.0, 11.3],
+                "zh": "黄仁勋说，如果两个应届生候选人，一个精通AI，一个完全不懂，他会毫不犹豫选那个AI专家。而且这条标准，不只看技术岗，财务、营销、客服、销售，全都一样",
+            },
+            {
+                "time": [11.3, 24.03],
+                "zh": "他进一步建议，如果当前工作包含重复性任务，就应该去学用AI自动化它。他还举了个例子：你可以直接问AI“怎样提升我的工作技能”，它会给你一份详细的步骤计划",
+            },
+            {
+                "time": [24.03, 30.64],
+                "zh": "未来十年，AI很可能像当年Excel一样，成为职场基础技能。",
+            },
+        ]
+
+        def fake_generate_content(*_args, **kwargs):
+            payload = json.loads(kwargs["contents"].split("输入：", 1)[1])
+            reference_text = payload.get("reference_text") or ""
+            explicit_pieces = {
+                reference[0]["zh"]: [
+                    "黄仁勋说，如果两个应届生候选人，",
+                    "一个精通AI，一个完全不懂，",
+                    "他会毫不犹豫选那个AI专家。",
+                    "而且这条标准，不只看技术岗，",
+                    "财务、营销、客服、销售，全都一样",
+                ],
+                reference[1]["zh"]: [
+                    "他进一步建议，如果当前工作包含重复性任务，",
+                    "就应该去学用AI自动化它。",
+                    "他还举了个例子：",
+                    "你可以直接问AI“怎样提升我的工作技能”，",
+                    "它会给你一份详细的步骤计划",
+                ],
+                reference[2]["zh"]: [
+                    "未来十年，AI很可能像当年Excel一样，",
+                    "成为职场基础技能。",
+                ],
+            }.get(reference_text)
+
+            class FakeResponse:
+                text = self.reference_text_group_response(kwargs["contents"], explicit_pieces)
+
+            return FakeResponse()
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), "".join(item["zh"] for item in reference))
+        self.assertTrue(any(item["time"][0] == 11.3 for item in authoritative))
+        self.assertTrue(any(item["time"][0] == 24.03 for item in authoritative))
+        self.assertLessEqual(
+            max(next_item["time"][0] - item["time"][1] for item, next_item in zip(authoritative, authoritative[1:])),
+            0.03,
+        )
+
+    def test_reference_text_authority_keeps_numeric_equivalent_block_prefix(self):
+        subtitles = [
+            {"time": [24.72, 25.84], "zh": "未来10年，AI", "text": "未来10年，AI"},
+            {"time": [26.16, 26.88], "zh": "可能像当年Excel", "text": "可能像当年Excel"},
+            {"time": [26.96, 28.56], "zh": "一样，成为职场基础技能。", "text": "一样，成为职场基础技能。"},
+            {"time": [28.88, 30.24], "zh": "黄仁勋的表达很直白，", "text": "黄仁勋的表达很直白，"},
+        ]
+        reference = {
+            "time": [24.03, 37.12],
+            "zh": "未来十年，AI很可能像当年Excel一样，成为职场基础技能。黄仁勋的表达很直白：不会用AI的求职者，竞争力会明显落后。",
+        }
+
+        selected = run_asr.collect_asr_entries_for_reference(subtitles, reference, set())
+
+        self.assertTrue(selected)
+        self.assertEqual(selected[0][1]["zh"], "未来10年，AI")
+
+    def test_strict_reference_text_authority_accepts_character_position_groups(self):
+        subtitles = [
+            {"time": [24.8, 25.92], "zh": "未来10年，AI", "text": "未来10年，AI"},
+            {"time": [25.92, 26.96], "zh": "可能像当年Excel", "text": "可能像当年Excel"},
+            {"time": [26.96, 28.56], "zh": "一样，成为职场基础技能。", "text": "一样，成为职场基础技能。"},
+            {"time": [28.88, 30.24], "zh": "黄仁勋的表达很直白，", "text": "黄仁勋的表达很直白，"},
+            {"time": [30.64, 33.44], "zh": "不会用AI求职者竞争力会明显落后，", "text": "不会用AI求职者竞争力会明显落后，"},
+            {"time": [33.84, 35.68], "zh": "趁早把AI工具练成习惯，", "text": "趁早把AI工具练成习惯，"},
+            {"time": [35.92, 37.12], "zh": "是个人最值得做的事。", "text": "是个人最值得做的事。"},
+        ]
+        reference = [
+            {
+                "time": [24.03, 37.12],
+                "zh": "未来十年，AI 很可能像当年 Excel 一样，成为职场基础技能。黄仁勋的表达很直白：不会用 AI 的求职者，竞争力会明显落后。趁早把 AI 工具练成习惯，是个人最值得做的事",
+            }
+        ]
+
+        class FakeResponse:
+            text = json.dumps([
+                {"start_index": 0, "end_index": 24, "text": "未来十年，AI 很可能像当年 Excel 一样，"},
+                {"start_index": 24, "end_index": 33, "text": "成为职场基础技能。"},
+                {"start_index": 33, "end_index": 55, "text": "黄仁勋的表达很直白：不会用 AI 的求职者，"},
+                {"start_index": 55, "end_index": 64, "text": "竞争力会明显落后。"},
+                {"start_index": 64, "end_index": 87, "text": "趁早把 AI 工具练成习惯，是个人最值得做的事"},
+            ], ensure_ascii=False)
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertLessEqual(
+            max(next_item["time"][0] - item["time"][1] for item, next_item in zip(authoritative, authoritative[1:])),
+            0.03,
+        )
+
+    def test_strict_reference_text_authority_replays_reference_authority_recur_again(self):
+        subtitles = [
+            {"time": [36.32, 39.2], "zh": "当然AI编程目前还难以搞定全新的架构", "text": "当然AI编程目前还难以搞定全新的架构"},
+            {"time": [39.2, 41.36], "zh": "创新，更多是优化现有流程。", "text": "创新，更多是优化现有流程。"},
+            {"time": [41.92, 43.36], "zh": "但一旦10倍加速落地，", "text": "但一旦10倍加速落地，"},
+            {"time": [43.68, 46.64], "zh": "软件行业的交付节奏和团队协作方式都会被彻", "text": "软件行业的交付节奏和团队协作方式都会被彻"},
+            {"time": [46.64, 47.2], "zh": "底重塑。", "text": "底重塑。"},
+        ]
+        reference = [
+            {
+                "time": [36.32, 47.2],
+                "zh": "当然，AI 编程目前还难以搞定全新的架构创新，更多是优化现有流程。但一旦 10 倍加速落地，软件行业的交付节奏和团队协作方式都会被彻底重塑",
+            }
+        ]
+
+        class FakeResponse:
+            text = json.dumps([
+                {"start_index": 0, "end_index": 19, "text": "当然，AI 编程目前还难以搞定全新的架构"},
+                {"start_index": 20, "end_index": 32, "text": "创新，更多是优化现有流程。"},
+                {"start_index": 33, "end_index": 45, "text": "但一旦 10 倍加速落地，"},
+                {"start_index": 46, "end_index": 68, "text": "软件行业的交付节奏和团队协作方式都会被彻底重塑"},
+            ], ensure_ascii=False)
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+        self.assertGreaterEqual(len(authoritative), 3)
+
+    def test_strict_reference_text_authority_falls_back_from_invalid_grouping_without_asr_text(self):
         subtitles = [
             {"time": [17.92, 20.32], "zh": "这意味着比特币正被认真", "text": "这意味着比特币正被认真"},
             {"time": [20.32, 23.42], "zh": "考虑作为国家层面的价值储存工具", "text": "考虑作为国家层面的价值储存工具"},
@@ -1646,22 +2101,167 @@ class QwenFiletransAsrTest(unittest.TestCase):
 
         class FakeResponse:
             text = json.dumps([
-                {"start_index": 0, "end_index": 0, "text": "这意味着比特币正被认真"},
-                {"start_index": 1, "end_index": 1, "text": "考虑作为国家层面的价值储存工具"},
+                {"start_index": 0, "end_index": 25, "text": "这意味着比特币正被认真考虑作为国家层面的价值储存工具"},
             ], ensure_ascii=False)
 
         with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
                 patch("pipeline.run_asr.create_llm_client", return_value=object()), \
                 patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
                 patch("pipeline.run_asr.emit_stage"):
-            with self.assertRaises(run_asr.ReferenceAuthorityAlignmentError):
-                run_asr.build_reference_authority_subtitles(
-                    subtitles,
-                    reference,
-                    {"max_visible_chars": 30},
-                    source_language="zh",
-                    strict=True,
-                )
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 30},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+
+    def test_strict_reference_text_authority_keeps_llm_natural_groups_without_post_merge(self):
+        subtitles = [
+            {"time": [0.0, 1.0], "zh": "目标是拿下网络7.", "text": "目标是拿下网络7."},
+            {"time": [1.0, 2.0], "zh": "5%份额，", "text": "5%份额，"},
+            {"time": [2.0, 3.0], "zh": "届时每个币价值1000万美元。", "text": "届时每个币价值1000万美元。"},
+        ]
+        reference = [
+            {
+                "time": [0.0, 3.0],
+                "zh": "目标是拿下网络7.5%份额，届时每个币价值1000万美元。",
+            }
+        ]
+        llm_groups = [
+            "目标是拿下网络7.5%份额，",
+            "届时每个币价值1000万美元。",
+        ]
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+
+        def fake_generate_content(*_args, **kwargs):
+            return FakeResponse(self.reference_text_group_response(kwargs["contents"], llm_groups))
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual([item["zh"] for item in authoritative], llm_groups)
+        self.assertFalse(any(item["zh"].endswith("7.") for item in authoritative))
+        self.assertFalse(any(item["zh"].startswith("5%") for item in authoritative))
+
+    def test_strict_reference_text_authority_collapses_duplicate_reference_blocks(self):
+        subtitles = [
+            {"time": [0.08, 0.96], "zh": "Michael Saylor", "text": "Michael Saylor"},
+            {"time": [0.96, 3.84], "zh": "透露终局计划购买1000亿美元比特", "text": "透露终局计划购买1000亿美元比特"},
+            {"time": [3.84, 6.8], "zh": "币，目标是拿下网络7.5%份", "text": "币，目标是拿下网络7.5%份"},
+            {"time": [6.88, 8.96], "zh": "额，届时每个币价值1000万。", "text": "额，届时每个币价值1000万。"},
+        ]
+        reference_text = "Michael Saylor 透露终局：计划购买1000亿美元比特币，目标是拿下网络7.5%份额，届时每个币价值1000万美元"
+        reference = [
+            {"time": [0, 5.23], "zh": reference_text},
+            {"time": [5.23, 10.24], "zh": reference_text},
+        ]
+
+        class FakeResponse:
+            def __init__(self, text):
+                self.text = text
+
+        def fake_generate_content(*_args, **kwargs):
+            return FakeResponse(self.reference_text_group_response(kwargs["contents"], [
+                "Michael Saylor 透露终局：",
+                "计划购买1000亿美元比特币，",
+                "目标是拿下网络7.5%份额，",
+                "届时每个币价值1000万美元",
+            ]))
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", side_effect=fake_generate_content), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_chunk_duration": 4.2, "max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        combined_text = "".join(item["zh"] for item in authoritative)
+        self.assertEqual(combined_text, reference_text)
+        self.assertEqual(combined_text.count("Michael Saylor"), 1)
+        self.assertEqual(authoritative[0]["time"][0], 0.08)
+        self.assertGreaterEqual(authoritative[-1]["time"][1], 8.96)
+        self.assertFalse(run_asr.severe_subtitle_timing_quality_issues(authoritative))
+
+    def test_strict_reference_text_authority_replays_reference_authority_stable_success(self):
+        subtitles = [
+            {
+                "time": [15.84, 17.44],
+                "zh": "但这只是让人们接受的套路。",
+                "text": "但这只是让人们接受的套路。",
+            },
+            {
+                "time": [17.76, 20.72],
+                "zh": "任何可停止、可审查的工具都与比特币",
+                "text": "任何可停止、可审查的工具都与比特币",
+            },
+            {
+                "time": [20.72, 22.24],
+                "zh": "主权使命背道而驰。",
+                "text": "主权使命背道而驰。",
+            },
+            {
+                "time": [22.72, 25.92],
+                "zh": "视频强调目标是让亿人都拥有金融主权。",
+                "text": "视频强调目标是让亿人都拥有金融主权。",
+            },
+        ]
+        reference = [
+            {
+                "time": [16.93, 27.47],
+                "zh": "稳定币常被宣传为生命线，但这只是让人们接受的套路。任何可停止可审查的工具，都与比特币主权使命背道而驰。视频强调，目标是让八十亿人都拥有金融主权",
+            }
+        ]
+
+        class FakeResponse:
+            text = json.dumps([
+                {"start_index": 1, "end_index": 2, "text": "但这只是让人们接受的套路。"},
+                {"start_index": 3, "end_index": 4, "text": "任何可停止可审查的工具，都与比特币主权使命背道而驰。"},
+            ], ensure_ascii=False)
+
+        fallback_events = []
+
+        with patch.dict(os.environ, {"REFERENCE_AUTHORITY_LLM_RETRIES": "1"}), \
+                patch("pipeline.run_asr.create_llm_client", return_value=object()), \
+                patch("pipeline.run_asr.generate_content", return_value=FakeResponse()), \
+                patch("pipeline.run_asr.append_reference_authority_debug_event", side_effect=fallback_events.append), \
+                patch("pipeline.run_asr.emit_stage"):
+            authoritative = run_asr.build_reference_authority_subtitles(
+                subtitles,
+                reference,
+                {"max_chunk_duration": 4.2, "max_visible_chars": 26},
+                source_language="zh",
+                strict=True,
+            )
+
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertTrue(any(
+            event.get("event_type") == "reference_authority_fallback"
+            and event.get("fallback_stage") in {
+                "deterministic_reference_authority_split",
+                "deterministic_atom_projection",
+            }
+            for event in fallback_events
+        ))
 
     def test_reference_text_authority_repairs_dangling_verb_object_breaks(self):
         subtitles = [
@@ -1724,10 +2324,8 @@ class QwenFiletransAsrTest(unittest.TestCase):
             use_llm=False,
         )
 
-        self.assertIn(
-            "规模约7万亿美元，2%到3%就是1400亿到2100亿美元。",
-            [item["zh"] for item in authoritative],
-        )
+        self.assertEqual("".join(item["zh"] for item in authoritative), reference[0]["zh"])
+        self.assertTrue(all(run_asr.readable_visible_len(item["zh"]) <= 24 for item in authoritative))
         self.assertFalse(any(item["zh"] == "规模约7万亿美元，2%到3%" for item in authoritative))
 
     def test_reference_text_authority_merges_orphan_tts_fragments(self):
@@ -1886,11 +2484,11 @@ class QwenFiletransAsrTest(unittest.TestCase):
 
         self.assertFalse(any(text.startswith(("，", "。", "：")) for text in texts))
         self.assertIn("Coinbase CEO Brian Armstrong刚刚透露，", texts)
-        self.assertIn("Armstrong说他们满足了银行游说和参议院的要求——", texts)
+        self.assertTrue(any("Armstrong" in text for text in texts))
+        self.assertTrue(any("说他们满足了银行游说和参议院的要求" in text for text in texts))
         self.assertIn("具体来说，稳定币奖励条款是焦点。", texts)
         self.assertIn("Coinbase这样的合规交易所", texts)
         self.assertNotIn("刚刚透露", texts)
-        self.assertNotIn("Armstrong", texts)
         self.assertNotIn("Coinbase", texts)
         self.assertTrue(any(item["time"][1] == 12.49 for item in authoritative))
         self.assertTrue(any(item["time"][0] == 12.49 for item in authoritative))

@@ -12,6 +12,8 @@ DEFAULT_GENERATE_RETRIES = 5
 RETRYABLE_ERROR_MARKERS = (
     "server disconnected without sending a response",
     "connection reset",
+    "connection aborted",
+    "remote end closed connection without response",
     "timed out",
     "timeout",
     "temporarily unavailable",

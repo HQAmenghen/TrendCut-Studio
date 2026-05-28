@@ -38,6 +38,7 @@ from pipeline.skills.copywriting_skill import CopywritingSkill
 from pipeline.skills.clip_selector import ClipSelectorSkill
 from pipeline.skills.content_router import ContentRouterSkill
 from pipeline.skills.editing_style_skill import EditingStyleSkill
+from pipeline.skills.fresh_context import build_fresh_context
 from pipeline.skills.script_polisher_skill import ScriptPolisherSkill
 from pipeline.skills.script_rewriter_skill import ScriptRewriterSkill
 from pipeline.skills.script_builder import ScriptBuilderSkill
@@ -80,6 +81,7 @@ class MaterialDrivenPipeline:
         self.script_units_json = self.output_dir / "script_units.json"
         self.script_rewriter_skill_json = self.output_dir / "script_rewriter_skill.json"
         self.script_polisher_skill_json = self.output_dir / "script_polisher_skill.json"
+        self.fresh_context_json = self.output_dir / "fresh_context.json"
         self.copywriting_skill_json = self.output_dir / "copywriting_skill.json"
         self.editing_style_skill_json = self.output_dir / "editing_style_skill.json"
         self.edit_plan_json = self.output_dir / "edit_plan.json"
@@ -1180,6 +1182,15 @@ class MaterialDrivenPipeline:
         selected_segments = self.load_json_file(self.output_dir / "selected_segments.json", {})
         source_post = self.load_source_post()
         director_plan = []
+        fresh_context = build_fresh_context(source_post)
+        if fresh_context.get("required"):
+            status = str(fresh_context.get("status") or "unknown")
+            if status == "ready":
+                self.log("口播稿已完成联网事实保鲜检索", "info")
+            else:
+                self.log(f"口播稿联网事实保鲜未完成: {status} {fresh_context.get('error') or ''}".strip(), "warning")
+        if not self.save_json_file(self.fresh_context_json, fresh_context):
+            self.log("写入 fresh_context.json 失败", "warning")
 
         router = ContentRouterSkill()
         route_result = router.run({
@@ -1253,6 +1264,7 @@ class MaterialDrivenPipeline:
                 "audio": audio_items,
                 "selected_segments": selected_segments,
                 "source_post": source_post,
+                "fresh_context": fresh_context,
                 "route": route_result.output,
             })
             script_units = rewrite_result.output.get("script_units") or []
@@ -1312,6 +1324,7 @@ class MaterialDrivenPipeline:
                 "outline": outline,
                 "audio": audio_items,
                 "selected_segments": selected_segments,
+                "fresh_context": fresh_context,
                 "source_anchor": (
                     rewrite_result.meta.get("source_anchor")
                     or rewrite_result.output.get("decision_meta", {}).get("source_anchor")

@@ -1,8 +1,9 @@
 const https = require('https');
 const axios = require('axios');
 const { uploadToComfyUI, waitForCompletion } = require('./comfy');
-const { createRunningHubClient, DEFAULT_RUNNINGHUB_BASE_URL } = require('./runningHub');
+const { createRunningHubClient, DEFAULT_RUNNINGHUB_BASE_URL, RUNNINGHUB_SUBMITTED_ERROR_CODE } = require('./runningHub');
 const { prepareAvatarExternalAudioWorkflow } = require('../materialDriven/avatarWorkflow');
+const { RUNNINGHUB_INFINITETALK_3INPUT } = require('../../config/runningHub');
 
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 const NATIVE_PROVIDER = 'comfyui';
@@ -49,14 +50,14 @@ function resolveRetryConfig(overrides = {}) {
   };
 }
 
-async function withRetry(fn, { label = 'render', maxRetries, baseDelayMs, maxDelayMs, onRetry } = {}) {
+async function withRetry(fn, { label = 'render', maxRetries, baseDelayMs, maxDelayMs, onRetry, shouldRetry = () => true } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err) {
       lastError = err;
-      if (attempt >= maxRetries || !isRetryableError(err)) throw err;
+      if (attempt >= maxRetries || !shouldRetry(err) || !isRetryableError(err)) throw err;
       const delay = Math.min(baseDelayMs * (2 ** (attempt - 1)), maxDelayMs);
       if (onRetry) {
         onRetry({ attempt, maxRetries, delay, error: err.message });
@@ -105,9 +106,16 @@ function createDefaultNativeClient(deps = {}) {
 
       const remoteAudioName = await uploadToComfyUI(options.audioPath, baseUrl);
       const remoteImageName = await uploadToComfyUI(options.imagePath, baseUrl);
+      const poseNodeId = String(cfg.poseNodeId || process.env.AVATAR_POSE_NODE_ID || '').trim();
+      const remotePoseName = options.posePath && poseNodeId
+        ? await uploadToComfyUI(options.posePath, baseUrl)
+        : '';
       const preparedWorkflow = prepareAvatarExternalAudioWorkflow(options.workflow, {
         audioName: remoteAudioName,
-        imageName: remoteImageName
+        imageName: remoteImageName,
+        poseName: remotePoseName || undefined,
+        poseNodeId,
+        poseFieldName: cfg.poseFieldName || process.env.AVATAR_POSE_FIELD_NAME || 'pose'
       });
 
       let promptRes;
@@ -133,6 +141,7 @@ function createDefaultNativeClient(deps = {}) {
         videoUrl,
         remoteAudioName,
         remoteImageName,
+        remotePoseName,
         preparedWorkflow,
         seed: preparedWorkflow['27']?.inputs?.seed
       };
@@ -154,16 +163,20 @@ function createDefaultRunningHubClient() {
         instanceType: cfg.runningHubInstanceType,
         usePersonalQueue: cfg.runningHubUsePersonalQueue === true || cfg.runningHubUsePersonalQueue === 'true',
         retainSeconds: cfg.runningHubRetainSeconds,
-        audioNodeId: cfg.runningHubAudioNodeId || '6',
-        audioFieldName: cfg.runningHubAudioFieldName || 'audio',
-        imageNodeId: cfg.runningHubImageNodeId || '180',
-        imageFieldName: cfg.runningHubImageFieldName || 'image',
-        outputNodeId: cfg.runningHubOutputNodeId || '',
+        audioNodeId: cfg.runningHubAudioNodeId || RUNNINGHUB_INFINITETALK_3INPUT.audioNodeId,
+        audioFieldName: cfg.runningHubAudioFieldName || RUNNINGHUB_INFINITETALK_3INPUT.audioFieldName,
+        imageNodeId: cfg.runningHubImageNodeId || RUNNINGHUB_INFINITETALK_3INPUT.imageNodeId,
+        imageFieldName: cfg.runningHubImageFieldName || RUNNINGHUB_INFINITETALK_3INPUT.imageFieldName,
+        poseNodeId: cfg.runningHubPoseNodeId || process.env.RUNNINGHUB_POSE_NODE_ID || RUNNINGHUB_INFINITETALK_3INPUT.poseNodeId,
+        poseFieldName: cfg.runningHubPoseFieldName || process.env.RUNNINGHUB_POSE_FIELD_NAME || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName,
+        outputNodeId: cfg.runningHubOutputNodeId || RUNNINGHUB_INFINITETALK_3INPUT.outputNodeId,
         audioPath: options.audioPath,
         imagePath: options.imagePath,
+        posePath: options.posePath,
         resumeTaskId: options.runningHubTaskId || options.resumeTaskId,
         remoteAudioName: options.runningHubRemoteAudioName || options.remoteAudioName,
         remoteImageName: options.runningHubRemoteImageName || options.remoteImageName,
+        remotePoseName: options.runningHubRemotePoseName || options.remotePoseName,
         nodeInfoList: options.runningHubNodeInfoList || options.nodeInfoList,
         onSubmitted: options.onRunningHubSubmitted,
         maxAttempts: options.runningHubMaxAttempts,
@@ -185,15 +198,32 @@ function createAvatarRenderer(deps = {}) {
 
     if (provider === RUNNINGHUB_PROVIDER) {
       const speechAudioPath = options.speechAudioPath || options.audioPath;
+      const cfg = options.avatarConfig || {};
+      const runningHubOptions = {
+        ...options,
+        poseNodeId: options.poseNodeId || cfg.runningHubPoseNodeId || process.env.RUNNINGHUB_POSE_NODE_ID || RUNNINGHUB_INFINITETALK_3INPUT.poseNodeId,
+        poseFieldName: options.poseFieldName || cfg.runningHubPoseFieldName || process.env.RUNNINGHUB_POSE_FIELD_NAME || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName
+      };
       if (!speechAudioPath) {
         throw new Error('缺少 QwenTTS 合成口播音频');
       }
+      if (options.runningHubTaskId || options.resumeTaskId) {
+        return runningHubClient.render({
+          ...runningHubOptions,
+          audioPath: speechAudioPath
+        });
+      }
       return withRetry(
         () => runningHubClient.render({
-          ...options,
+          ...runningHubOptions,
           audioPath: speechAudioPath
         }),
-        { label: providerLabel, ...retryCfg, onRetry }
+        {
+          label: providerLabel,
+          ...retryCfg,
+          onRetry,
+          shouldRetry: (err) => String(err?.code || '') !== RUNNINGHUB_SUBMITTED_ERROR_CODE && !err?.submitted
+        }
       );
     }
     return withRetry(

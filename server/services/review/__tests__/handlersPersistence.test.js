@@ -215,4 +215,142 @@ describe('review handlers persistence boundaries', () => {
       renamed: false
     }));
   });
+
+  test('reviewVideo repairs default suggested title without losing saved title', async () => {
+    const videoPath = path.join(tempRoot, 'vertical_output.mp4');
+    fs.writeFileSync(videoPath, 'video');
+
+    const sendError = jest.fn();
+    const writeMediaMetadata = jest.fn();
+    const resetPublishAssetsCache = jest.fn();
+    const handlers = createReviewHandlers({
+      sendError,
+      readMediaMetadata: jest.fn(() => ({
+        title: '黄仁勋警告\n不会AI的求职者没戏了？',
+        suggestedTitle: 'vertical output',
+        suggestedShortTitle: 'vertical output'
+      })),
+      writeMediaMetadata,
+      resetPublishAssetsCache
+    });
+
+    store.readReviewConfig.mockReturnValue({
+      enabled: 1,
+      auto_skip_on_error: 0
+    });
+    executeReviewScript.mockResolvedValue({
+      status: 'passed',
+      overall_score: 82,
+      scores: {
+        content: 84,
+        subtitle: 85,
+        title: 80,
+        editing: 81
+      },
+      content_analysis: {},
+      subtitle_analysis: {},
+      title_analysis: {},
+      editing_analysis: {},
+      fix_suggestions: [],
+      passed: true
+    });
+
+    const res = createResponse();
+    await handlers.reviewVideo({
+      body: {
+        videoPath,
+        assetId: 'asset_2'
+      }
+    }, res);
+
+    const savedMetadataItems = writeMediaMetadata.mock.calls.map((call) => call[1]);
+    expect(savedMetadataItems).toHaveLength(2);
+    savedMetadataItems.forEach((metadata) => {
+      expect(metadata).toEqual(expect.objectContaining({
+        title: '黄仁勋警告\n不会AI的求职者没戏了？',
+        suggestedTitle: '黄仁勋警告\n不会AI的求职者没戏了？',
+        suggestedShortTitle: '黄仁勋警告\n不会AI的求职者没戏了？'
+      }));
+      expect(metadata.suggestedTitle).not.toBe('vertical output');
+    });
+    expect(sendError).not.toHaveBeenCalled();
+  });
+
+  test('regenerateVideo recovers runtime content title before enqueueing subtitle repair', async () => {
+    const queueRoot = path.join(tempRoot, 'data', 'uploads', 'xai_vertical_queue');
+    const publicRoot = path.join(tempRoot, 'public', 'xai_vertical_queue');
+    const jobDir = path.join(queueRoot, 'queue_title_repair');
+    const videoPath = path.join(publicRoot, 'queue_title_repair', 'vertical_output.mp4');
+    fs.mkdirSync(jobDir, { recursive: true });
+    fs.mkdirSync(path.dirname(videoPath), { recursive: true });
+    fs.writeFileSync(path.join(jobDir, 'source.mp4'), 'source video');
+    fs.writeFileSync(path.join(jobDir, 'content.json'), JSON.stringify({
+      title: '运行目录保留标题'
+    }));
+    fs.writeFileSync(videoPath, 'reviewed video');
+
+    const sendError = jest.fn();
+    const writeMediaMetadata = jest.fn();
+    const enqueue = jest.fn((params) => ({ id: 'regen_title_repair', params }));
+    const cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(tempRoot);
+    const handlers = createReviewHandlers({
+      sendError,
+      readMediaMetadata: jest.fn(() => ({
+        taskDir: jobDir,
+        sourceType: 'xai_queue',
+        videoUrl: 'https://cdn.example.com/source.mp4',
+        title: 'vertical output',
+        suggestedTitle: 'vertical output',
+        suggestedShortTitle: '',
+        aiReview: {
+          reviewId: 'review_subtitle',
+          overallScore: 65,
+          scores: {
+            content: 82,
+            subtitle: 60,
+            title: 86,
+            editing: 80
+          },
+          fixSuggestions: [
+            {
+              category: 'subtitle',
+              severity: 'high',
+              issue: '字幕错位',
+              suggestion: '重新打轴'
+            }
+          ]
+        }
+      })),
+      writeMediaMetadata,
+      verticalQueueService: { enqueue },
+      resetPublishAssetsCache: jest.fn()
+    });
+
+    const res = createResponse();
+    try {
+      await handlers.regenerateVideo({
+        body: { videoPath }
+      }, res);
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      title: '运行目录保留标题'
+    }));
+    expect(writeMediaMetadata).toHaveBeenCalledWith(videoPath, expect.objectContaining({
+      title: '运行目录保留标题',
+      suggestedTitle: '运行目录保留标题',
+      suggestedShortTitle: '运行目录保留标题',
+      regeneration: expect.objectContaining({
+        status: 'queued',
+        queueJobId: 'regen_title_repair'
+      })
+    }));
+    expect(sendError).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      jobId: 'regen_title_repair'
+    }));
+  });
 });

@@ -311,8 +311,8 @@ function createXaiService(deps) {
     }
     const paths = getPathsForPartition(partition.id);
 
-    const sse = getProgressClient(clientId);
     const pushEvent = (payload) => {
+      const sse = getProgressClient(clientId);
       if (sse) sendProgressEvent(sse, payload);
     };
 

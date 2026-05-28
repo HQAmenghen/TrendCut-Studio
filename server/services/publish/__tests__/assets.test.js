@@ -126,4 +126,140 @@ describe('publish assets collection', () => {
 
     expect(assets).toHaveLength(0);
   });
+
+  test('uses saved title for review center labels when suggested title is a default filename', () => {
+    const publicQueueDir = path.join(tempRoot, 'public', 'xai_vertical_queue', 'queue_title_regression');
+    fs.mkdirSync(publicQueueDir, { recursive: true });
+    const videoPath = path.join(publicQueueDir, 'vertical_output.mp4');
+    fs.writeFileSync(videoPath, 'queue video');
+    writeJson(`${videoPath}.meta.json`, {
+      taskType: 'xai_queue',
+      title: '黄仁勋警告\n不会AI的求职者没戏了？',
+      suggestedTitle: 'vertical output',
+      suggestedShortTitle: 'vertical output',
+      subtitles: [{ zh: '黄仁勋说，如果两个应届生候选人，一个精通 AI。' }]
+    });
+
+    const service = createPublishAssetsService({
+      fs,
+      path,
+      crypto: require('crypto'),
+      projectRoot: tempRoot,
+      verticalPublicDir: path.join(tempRoot, 'public', 'xai_vertical_queue'),
+      verticalQueueRoot: path.join(tempRoot, 'data', 'uploads', 'xai_vertical_queue'),
+      getVerticalJobById: jest.fn(),
+      readJsonIfExists: (filePath, fallback) => {
+        if (!fs.existsSync(filePath)) return fallback;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      },
+      readMediaMetadata: (candidatePath) => {
+        const metadataPath = `${candidatePath}.meta.json`;
+        if (!fs.existsSync(metadataPath)) return null;
+        return JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      },
+      sanitizePublishDescriptionText: (text) => String(text || '').trim()
+    });
+
+    const assets = service.collectPublishAssets();
+    const queueAsset = assets.find((asset) => asset.path === videoPath);
+
+    expect(queueAsset).toEqual(expect.objectContaining({
+      compactLabel: '黄仁勋警告 不会AI的求职者没戏了？'
+    }));
+    expect(queueAsset.displayLabel).toContain('黄仁勋警告 不会AI的求职者没戏了？');
+    expect(queueAsset.compactLabel).not.toBe('vertical output');
+  });
+
+  test('falls back to queue content title when refreshed media metadata has a blank title', () => {
+    const publicQueueDir = path.join(tempRoot, 'public', 'xai_vertical_queue', 'queue_blank_title');
+    const runtimeQueueDir = path.join(tempRoot, 'data', 'uploads', 'xai_vertical_queue', 'queue_blank_title');
+    fs.mkdirSync(publicQueueDir, { recursive: true });
+    fs.mkdirSync(runtimeQueueDir, { recursive: true });
+    const videoPath = path.join(publicQueueDir, 'vertical_output.mp4');
+    fs.writeFileSync(videoPath, 'queue video');
+    writeJson(`${videoPath}.meta.json`, {
+      taskType: 'xai_queue',
+      title: 'vertical output',
+      suggestedTitle: 'vertical output',
+      subtitles: [{ zh: '字幕修复后的内容' }]
+    });
+    writeJson(path.join(runtimeQueueDir, 'content.json'), {
+      title: '字幕修复前已有标题'
+    });
+    writeJson(path.join(runtimeQueueDir, 'subtitles.json'), [
+      { zh: '字幕修复后的内容' }
+    ]);
+
+    const service = createPublishAssetsService({
+      fs,
+      path,
+      crypto: require('crypto'),
+      projectRoot: tempRoot,
+      verticalPublicDir: path.join(tempRoot, 'public', 'xai_vertical_queue'),
+      verticalQueueRoot: path.join(tempRoot, 'data', 'uploads', 'xai_vertical_queue'),
+      getVerticalJobById: jest.fn(),
+      readJsonIfExists: (filePath, fallback) => {
+        if (!fs.existsSync(filePath)) return fallback;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      },
+      readMediaMetadata: (candidatePath) => {
+        const metadataPath = `${candidatePath}.meta.json`;
+        if (!fs.existsSync(metadataPath)) return null;
+        return JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      },
+      sanitizePublishDescriptionText: (text) => String(text || '').trim()
+    });
+
+    const assets = service.collectPublishAssets();
+    const queueAsset = assets.find((asset) => asset.path === videoPath);
+
+    expect(queueAsset).toEqual(expect.objectContaining({
+      compactLabel: '字幕修复前已有标题'
+    }));
+    expect(queueAsset.metadata.title).toBe('字幕修复前已有标题');
+    expect(queueAsset.displayLabel).toContain('字幕修复前已有标题');
+  });
+
+  test('deletes a publish asset video and adjacent metadata by asset id', () => {
+    const publicQueueDir = path.join(tempRoot, 'public', 'xai_vertical_queue', 'queue_delete_asset');
+    fs.mkdirSync(publicQueueDir, { recursive: true });
+    const videoPath = path.join(publicQueueDir, 'vertical_output.mp4');
+    const metadataPath = `${videoPath}.meta.json`;
+    fs.writeFileSync(videoPath, 'queue video to delete');
+    writeJson(metadataPath, {
+      taskType: 'xai_queue',
+      title: '需要删除的测试成片'
+    });
+
+    const service = createPublishAssetsService({
+      fs,
+      path,
+      crypto: require('crypto'),
+      projectRoot: tempRoot,
+      verticalPublicDir: path.join(tempRoot, 'public', 'xai_vertical_queue'),
+      verticalQueueRoot: path.join(tempRoot, 'data', 'uploads', 'xai_vertical_queue'),
+      getVerticalJobById: jest.fn(),
+      readJsonIfExists: (filePath, fallback) => {
+        if (!fs.existsSync(filePath)) return fallback;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      },
+      readMediaMetadata: (candidatePath) => {
+        const candidateMetadataPath = `${candidatePath}.meta.json`;
+        if (!fs.existsSync(candidateMetadataPath)) return null;
+        return JSON.parse(fs.readFileSync(candidateMetadataPath, 'utf8'));
+      },
+      sanitizePublishDescriptionText: (text) => String(text || '').trim()
+    });
+
+    const asset = service.collectPublishAssets().find((item) => item.path === videoPath);
+    const result = service.deletePublishAsset(asset.id);
+
+    expect(result).toEqual(expect.objectContaining({
+      deletedPath: videoPath,
+      deletedMetadata: true
+    }));
+    expect(fs.existsSync(videoPath)).toBe(false);
+    expect(fs.existsSync(metadataPath)).toBe(false);
+    expect(service.collectPublishAssets()).toHaveLength(0);
+  });
 });
