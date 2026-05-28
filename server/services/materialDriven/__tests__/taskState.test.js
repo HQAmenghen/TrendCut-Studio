@@ -48,7 +48,14 @@ describe('material-driven task state persistence', () => {
         runningHubAudioFieldName: 'audio',
         runningHubImageNodeId: '180',
         runningHubImageFieldName: 'image',
+        runningHubPoseNodeId: '301',
+        runningHubPoseFieldName: 'pose_sequence',
         runningHubOutputNodeId: '151',
+        poseNodeId: '301',
+        poseFieldName: 'pose_sequence',
+        avatarMotionEnabled: true,
+        avatarMotionRequired: false,
+        avatarActionPresetDir: 'C:/avatar_actions',
         trimSeconds: 1.5,
         maxDuration: 42,
         audioPreset: 'new-voice.mp3',
@@ -122,6 +129,11 @@ describe('material-driven task state persistence', () => {
   });
 
   test('falls back to default state when no persisted file exists', () => {
-    expect(readTaskState(tempDir)).toEqual(createDefaultTaskState());
+    const state = createDefaultTaskState();
+    expect(state.avatarConfig.runningHubWorkflowId).toBe('2059563685034680322');
+    expect(state.avatarConfig.runningHubPoseNodeId).toBe('279');
+    expect(state.avatarConfig.runningHubPoseFieldName).toBe('video');
+    expect(state.avatarConfig.runningHubOutputNodeId).toBe('151');
+    expect(readTaskState(tempDir)).toEqual(state);
   });
 });

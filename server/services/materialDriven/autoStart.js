@@ -10,10 +10,12 @@ const axios = require('axios');
 const { spawn } = require('child_process');
 const { makeJobId, ensureDir } = require('../../core/runtime');
 const { DEFAULT_RUNNINGHUB_BASE_URL } = require('../pipeline/runningHub');
+const { RUNNINGHUB_INFINITETALK_3INPUT } = require('../../config/runningHub');
 const { createAvatarGenerationService } = require('./avatarGeneration');
 const { resolvePresetFile } = require('./presetResolver');
 const { buildMaterialDrivenPipelineArgs } = require('./retryPlan');
 const { normalizeSourceMeta, writeTaskState } = require('./taskState');
+const { syncMaterialTask } = require('./taskStoreBridge');
 const { activeTasks } = require('./sharedState');
 const { buildVersionedProjectFileUrl } = require('./utils');
 
@@ -52,6 +54,64 @@ function addTaskLog(task, message, type = 'info') {
   const line = { time: nowIso(), message: String(message).trim(), type };
   task.logs = Array.isArray(task.logs) ? [...task.logs, line].slice(-200) : [line];
   task.updatedAt = nowIso();
+}
+
+function applyProcessOutput(jobId, task, output) {
+  if (!task || !output) return;
+  const lines = String(output || '').split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith(PYTHON_PROTOCOL_PREFIX)) {
+      try {
+        const event = JSON.parse(trimmed.slice(PYTHON_PROTOCOL_PREFIX.length));
+        if (event.type === 'stage' && event.stage) {
+          const stageMeta = STAGE_PROGRESS_MAP[event.stage];
+          const message = String(event.message || stageMeta?.message || event.stage).trim();
+          if (stageMeta) {
+            task.currentStep = stageMeta.step;
+            task.progress = Math.max(Number(task.progress || 0), stageMeta.percent);
+          }
+          task.statusText = message;
+        } else if ((event.type === 'result' || event.type === 'error') && event.message) {
+          task.statusText = String(event.message).trim();
+        }
+      } catch (_err) {}
+    }
+
+    const stepMatch = trimmed.match(/步骤(\d+):/);
+    if (stepMatch) {
+      task.currentStep = parseInt(stepMatch[1], 10);
+      const mappedPercent = Object.values(STAGE_PROGRESS_MAP).find(item => item.step === task.currentStep)?.percent;
+      if (mappedPercent) task.progress = Math.max(Number(task.progress || 0), mappedPercent);
+      task.statusText = trimmed;
+    } else if (!trimmed.startsWith(PYTHON_PROTOCOL_PREFIX)) {
+      task.statusText = trimmed;
+    }
+
+    const progressMatch = trimmed.match(/(\d+)%/);
+    if (progressMatch) {
+      task.progress = Math.max(0, Math.min(100, parseInt(progressMatch[1], 10)));
+    }
+
+    task.updatedAt = nowIso();
+    addTaskLog(task, trimmed, 'info');
+  }
+  activeTasks.set(jobId, task);
+}
+
+function appendProcessWarning(jobId, task, output) {
+  if (!task || !output) return;
+  const lines = String(output || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6);
+  for (const line of lines) {
+    addTaskLog(task, line, 'warning');
+  }
+  activeTasks.set(jobId, task);
 }
 
 function resolvePresetFileWithFallback(dirPath, requestedName = '', fallbackRequests = []) {
@@ -136,7 +196,8 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     useSmartClip = true,
     useCache = true,
     autoGenerate = true,
-    allowRuleFallback = true
+    allowRuleFallback = true,
+    taskStore = null
   } = params;
 
   if (!videoUrl) {
@@ -154,17 +215,24 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     serverUrl: String(rawAvatarConfig.serverUrl || '').trim(),
     runningHubApiKey: String(rawAvatarConfig.runningHubApiKey || '').trim(),
     runningHubBaseUrl: String(rawAvatarConfig.runningHubBaseUrl || DEFAULT_RUNNINGHUB_BASE_URL).trim(),
-    runningHubWorkflowId: String(rawAvatarConfig.runningHubWorkflowId || process.env.RUNNINGHUB_WORKFLOW_ID || '2051840324212936706').trim(),
+    runningHubWorkflowId: String(rawAvatarConfig.runningHubWorkflowId || RUNNINGHUB_INFINITETALK_3INPUT.workflowId).trim(),
     runningHubRunPath: String(rawAvatarConfig.runningHubRunPath || '').trim(),
     runningHubAccessPassword: String(rawAvatarConfig.runningHubAccessPassword || '').trim(),
     runningHubInstanceType: String(rawAvatarConfig.runningHubInstanceType || '').trim(),
     runningHubUsePersonalQueue: rawAvatarConfig.runningHubUsePersonalQueue === true || rawAvatarConfig.runningHubUsePersonalQueue === 'true',
     runningHubRetainSeconds: Number(rawAvatarConfig.runningHubRetainSeconds || 0),
-    runningHubAudioNodeId: String(rawAvatarConfig.runningHubAudioNodeId || '6').trim(),
-    runningHubAudioFieldName: String(rawAvatarConfig.runningHubAudioFieldName || 'audio').trim(),
-    runningHubImageNodeId: String(rawAvatarConfig.runningHubImageNodeId || '180').trim(),
-    runningHubImageFieldName: String(rawAvatarConfig.runningHubImageFieldName || 'image').trim(),
-    runningHubOutputNodeId: String(rawAvatarConfig.runningHubOutputNodeId || '').trim(),
+    runningHubAudioNodeId: String(rawAvatarConfig.runningHubAudioNodeId || RUNNINGHUB_INFINITETALK_3INPUT.audioNodeId).trim(),
+    runningHubAudioFieldName: String(rawAvatarConfig.runningHubAudioFieldName || RUNNINGHUB_INFINITETALK_3INPUT.audioFieldName).trim(),
+    runningHubImageNodeId: String(rawAvatarConfig.runningHubImageNodeId || RUNNINGHUB_INFINITETALK_3INPUT.imageNodeId).trim(),
+    runningHubImageFieldName: String(rawAvatarConfig.runningHubImageFieldName || RUNNINGHUB_INFINITETALK_3INPUT.imageFieldName).trim(),
+    runningHubPoseNodeId: String(rawAvatarConfig.runningHubPoseNodeId || RUNNINGHUB_INFINITETALK_3INPUT.poseNodeId).trim(),
+    runningHubPoseFieldName: String(rawAvatarConfig.runningHubPoseFieldName || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName).trim(),
+    runningHubOutputNodeId: String(rawAvatarConfig.runningHubOutputNodeId || RUNNINGHUB_INFINITETALK_3INPUT.outputNodeId).trim(),
+    poseNodeId: String(rawAvatarConfig.poseNodeId || '').trim(),
+    poseFieldName: String(rawAvatarConfig.poseFieldName || 'pose').trim(),
+    avatarMotionEnabled: rawAvatarConfig.avatarMotionEnabled === true || rawAvatarConfig.avatarMotionEnabled === 'true',
+    avatarMotionRequired: rawAvatarConfig.avatarMotionRequired === true || rawAvatarConfig.avatarMotionRequired === 'true',
+    avatarActionPresetDir: String(rawAvatarConfig.avatarActionPresetDir || '').trim(),
     audioPreset: String(rawAvatarConfig.audioPreset || '').trim(),
     imagePreset: String(rawAvatarConfig.imagePreset || '').trim(),
     audioUploadPath: '',
@@ -283,6 +351,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   addTaskLog(task, `素材文件已就位: material.mp4 (${formatBytes(fs.statSync(materialPath).size)})`, 'success');
   addTaskLog(task, `AutoPilot 模式: smartClip=${useSmartClip ? 'on' : 'off'}, cache=${useCache ? 'on' : 'off'}, autoGenerate=${autoGenerate ? 'on' : 'off'}`, 'info');
   if (title) addTaskLog(task, `素材来源: ${title.slice(0, 80)}`, 'info');
+  syncMaterialTask(taskStore, task);
 
   activeTasks.set(jobId, task);
 
@@ -309,6 +378,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   task.currentStep = 1;
   task.progress = 5;
   addTaskLog(task, '启动 Python 流水线: start-from=1, end-at=5', 'info');
+  syncMaterialTask(taskStore, task);
 
   let stderrBuffer = '';
 
@@ -362,16 +432,18 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
         task.statusText = '口播稿已生成，等待确认后再生成数字人';
         task.updatedAt = nowIso();
         addTaskLog(task, '步骤1-5完成，已停在口播确认点', 'success');
+        syncMaterialTask(taskStore, task);
         return;
       }
       task.statusText = '前置步骤完成，开始自动生成数字人...';
       addTaskLog(task, '步骤1-5完成，自动触发数字人生成', 'success');
+      syncMaterialTask(taskStore, task);
 
       // 自动生成数字人
       try {
-        await generateAvatar(paths, jobId, task);
+        await generateAvatar(paths, jobId, task, taskStore);
         // 从步骤6继续
-        launchFromStep6(paths, jobId, task);
+        launchFromStep6(paths, jobId, task, taskStore);
       } catch (err) {
         task.status = 'failed';
         task.error = err?.message || '自动生成数字人失败';
@@ -379,6 +451,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
         task.completedAt = nowIso();
         task.updatedAt = nowIso();
         addTaskLog(task, task.error, 'error');
+        syncMaterialTask(taskStore, task, { error: task.error });
         console.error(`[autoStart:${jobId}] 数字人生成失败:`, err.message);
       }
     } else {
@@ -389,6 +462,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
       task.completedAt = nowIso();
       task.updatedAt = nowIso();
       addTaskLog(task, message, 'error');
+      syncMaterialTask(taskStore, task, { error: message });
       console.error(`[autoStart:${jobId}] 流水线失败:`, message);
     }
   });
@@ -396,7 +470,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   return { jobId, outputPath: outputDir };
 }
 
-async function generateAvatar(paths, jobId, task) {
+async function generateAvatar(paths, jobId, task, taskStore = null) {
   const audioPresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'audio');
   const imagePresetDir = path.join(paths.PROJECT_ROOT, 'public', 'presets', 'image');
   const cfg = task.avatarConfig || {};
@@ -440,7 +514,8 @@ async function generateAvatar(paths, jobId, task) {
         sourceMeta: latestTask.sourceMeta || {},
         avatarConfig: latestTask.avatarConfig
       });
-    }
+    },
+    taskStore
   });
   await avatarGeneration.autoGenerateAvatar(jobId, task);
 }
@@ -448,7 +523,7 @@ async function generateAvatar(paths, jobId, task) {
 /**
  * 从步骤6继续执行（数字人映射 + 混剪）
  */
-function launchFromStep6(paths, jobId, task) {
+function launchFromStep6(paths, jobId, task, taskStore = null) {
   const scriptPath = path.join(paths.PROJECT_ROOT, 'python/pipeline/run_material_driven.py');
   const materialPath = path.join(task.outputPath, 'material.mp4');
   const args = buildMaterialDrivenPipelineArgs({
@@ -475,6 +550,7 @@ function launchFromStep6(paths, jobId, task) {
   task.statusText = '继续处理数字人映射并执行混剪';
   task.updatedAt = nowIso();
   addTaskLog(task, '从步骤6继续执行：数字人映射 + 智能混剪', 'info');
+  syncMaterialTask(taskStore, task);
 
   let stderrBuffer = '';
 
@@ -482,11 +558,13 @@ function launchFromStep6(paths, jobId, task) {
     const output = data.toString();
     task.lastStdout = `${String(task.lastStdout || '')}${output}`.slice(-40000);
     console.log(`[autoStart:${jobId}:step6] ${output.trim()}`);
+    applyProcessOutput(jobId, task, output);
   });
 
   pythonProcess.stderr.on('data', (data) => {
     const text = String(data || '');
     stderrBuffer = `${stderrBuffer}${text}`.slice(-60000);
+    appendProcessWarning(jobId, task, text);
   });
 
   pythonProcess.on('close', (code) => {
@@ -505,6 +583,7 @@ function launchFromStep6(paths, jobId, task) {
       task.completedAt = nowIso();
       task.updatedAt = nowIso();
       addTaskLog(task, '[AutoPilot] 素材驱动工作流全部完成', 'success');
+      syncMaterialTask(taskStore, task, { videoUrl });
       console.log(`[autoStart:${jobId}] 制作完成, videoUrl=${videoUrl}`);
     } else {
       const message = summarizeFailureMessage(stderrBuffer, code);
@@ -514,6 +593,7 @@ function launchFromStep6(paths, jobId, task) {
       task.completedAt = nowIso();
       task.updatedAt = nowIso();
       addTaskLog(task, message, 'error');
+      syncMaterialTask(taskStore, task, { error: message });
       console.error(`[autoStart:${jobId}] 步骤6-7失败:`, message);
     }
   });

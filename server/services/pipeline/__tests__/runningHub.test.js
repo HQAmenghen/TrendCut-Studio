@@ -102,6 +102,66 @@ describe('RunningHub workflow API helpers', () => {
     );
   });
 
+  test('adds InfiniteTalk reference video input to RunningHub nodeInfoList by default', async () => {
+    const responses = [
+      { data: { code: 0, data: { fileName: 'api/avatar.wav' } } },
+      { data: { code: 0, data: { fileName: 'api/avatar.png' } } },
+      { data: { code: 0, data: { fileName: 'api/avatar_pose.json' } } },
+      { data: { code: 0, data: { taskId: 'task-1', taskStatus: 'RUNNING' } } },
+      {
+        data: {
+          code: 0,
+          data: {
+            taskStatus: 'SUCCESS',
+            results: [{ fileUrl: 'https://example.com/avatar.mp4', fileType: 'mp4' }]
+          }
+        }
+      }
+    ];
+    const fakeAxios = {
+      post: jest.fn(async () => responses.shift())
+    };
+    const fakeForm = {
+      append: jest.fn(),
+      getHeaders: () => ({ 'content-type': 'multipart/form-data; boundary=test' })
+    };
+    const client = createRunningHubClient({
+      axiosClient: fakeAxios,
+      formDataFactory: () => fakeForm,
+      fsImpl: {
+        createReadStream: (filePath) => ({ filePath })
+      },
+      setTimeoutFn: (callback) => callback()
+    });
+
+    await expect(client.renderExternalAudio({
+      apiKey: 'rh-key',
+      baseUrl: 'https://www.runninghub.cn/openapi/v2',
+      workflowId: '2051840324212936706',
+      audioPath: 'C:/tmp/avatar.wav',
+      imagePath: 'C:/tmp/avatar.png',
+      posePath: 'C:/tmp/avatar_motion_source.mp4',
+      maxAttempts: 1,
+      pollIntervalMs: 1
+    })).resolves.toMatchObject({
+      remotePoseName: 'api/avatar_pose.json',
+      nodeInfoList: expect.arrayContaining([
+        { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_pose.json' }
+      ])
+    });
+
+    expect(fakeAxios.post).toHaveBeenNthCalledWith(
+      4,
+      'https://www.runninghub.cn/openapi/v2/run/workflow/2051840324212936706',
+      expect.objectContaining({
+        nodeInfoList: expect.arrayContaining([
+          { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_pose.json' }
+        ])
+      }),
+      expect.any(Object)
+    );
+  });
+
   test('extracts the requested video output URL from flexible query responses', () => {
     const outputUrl = extractRunningHubOutputUrl({
       data: {

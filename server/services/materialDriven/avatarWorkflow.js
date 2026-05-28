@@ -729,6 +729,8 @@ function prepareAvatarExternalAudioWorkflow(workflow, options = {}) {
 
   const audioNodeId = String(options.audioNodeId || DEFAULT_EXTERNAL_AUDIO_NODE_ID);
   const imageNodeId = String(options.imageNodeId || DEFAULT_AVATAR_IMAGE_NODE_ID);
+  const poseNodeId = String(options.poseNodeId || '').trim();
+  const poseFieldName = String(options.poseFieldName || 'pose').trim();
   if (!workflow[audioNodeId]?.inputs) {
     throw new Error(`数字人工作流缺少音频输入节点: ${audioNodeId}`);
   }
@@ -749,6 +751,13 @@ function prepareAvatarExternalAudioWorkflow(workflow, options = {}) {
       throw new Error(`数字人工作流缺少人物图片节点: ${imageNodeId}`);
     }
     preparedWorkflow[imageNodeId].inputs.image = String(options.imageName || '');
+  }
+
+  if (options.poseName !== undefined && poseNodeId) {
+    if (!preparedWorkflow[poseNodeId]?.inputs) {
+      throw new Error(`数字人工作流缺少姿态输入节点: ${poseNodeId}`);
+    }
+    preparedWorkflow[poseNodeId].inputs[poseFieldName] = String(options.poseName || '');
   }
 
   for (const nodeId of EXTERNAL_AUDIO_CONSUMER_NODE_IDS) {

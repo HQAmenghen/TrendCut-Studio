@@ -2,6 +2,7 @@ const fs = require('fs');
 const https = require('https');
 const axios = require('axios');
 const FormData = require('form-data');
+const { RUNNINGHUB_INFINITETALK_3INPUT } = require('../../config/runningHub');
 
 const DEFAULT_RUNNINGHUB_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -12,6 +13,7 @@ const VIDEO_FILE_TYPES = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'video']);
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 const TRANSIENT_QUERY_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 554]);
 const TRANSIENT_QUERY_ERROR_CODES = new Set(['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT']);
+const RUNNINGHUB_SUBMITTED_ERROR_CODE = 'RUNNINGHUB_TASK_SUBMITTED_POLLING_FAILED';
 
 function sanitizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/u, '');
@@ -329,6 +331,7 @@ function createRunningHubClient(deps = {}) {
         videoUrl: output.outputUrl,
         remoteAudioName: String(options.remoteAudioName || ''),
         remoteImageName: String(options.remoteImageName || ''),
+        remotePoseName: String(options.remotePoseName || ''),
         nodeInfoList: Array.isArray(options.nodeInfoList) ? options.nodeInfoList : [],
         outputResponse: output.response
       };
@@ -336,18 +339,29 @@ function createRunningHubClient(deps = {}) {
 
     const audioFileName = await uploadResource(options.audioPath, options);
     const imageFileName = await uploadResource(options.imagePath, options);
+    const poseNodeId = String(options.poseNodeId || RUNNINGHUB_INFINITETALK_3INPUT.poseNodeId).trim();
+    const poseFileName = options.posePath && poseNodeId
+      ? await uploadResource(options.posePath, options)
+      : '';
     const nodeInfoList = [
       {
-        nodeId: String(options.audioNodeId || '6'),
-        fieldName: String(options.audioFieldName || 'audio'),
+        nodeId: String(options.audioNodeId || RUNNINGHUB_INFINITETALK_3INPUT.audioNodeId),
+        fieldName: String(options.audioFieldName || RUNNINGHUB_INFINITETALK_3INPUT.audioFieldName),
         fieldValue: audioFileName
       },
       {
-        nodeId: String(options.imageNodeId || '180'),
-        fieldName: String(options.imageFieldName || 'image'),
+        nodeId: String(options.imageNodeId || RUNNINGHUB_INFINITETALK_3INPUT.imageNodeId),
+        fieldName: String(options.imageFieldName || RUNNINGHUB_INFINITETALK_3INPUT.imageFieldName),
         fieldValue: imageFileName
       }
     ];
+    if (poseFileName) {
+      nodeInfoList.push({
+        nodeId: poseNodeId,
+        fieldName: String(options.poseFieldName || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName),
+        fieldValue: poseFileName
+      });
+    }
     const submission = await submitWorkflow({
       ...options,
       nodeInfoList
@@ -359,6 +373,7 @@ function createRunningHubClient(deps = {}) {
         status: submission.status,
         remoteAudioName: audioFileName,
         remoteImageName: imageFileName,
+        remotePoseName: poseFileName,
         nodeInfoList,
         submitResponse: submission.response
       });
@@ -373,7 +388,10 @@ function createRunningHubClient(deps = {}) {
       err.runningHubTaskId = submission.taskId;
       err.remoteAudioName = audioFileName;
       err.remoteImageName = imageFileName;
+      err.remotePoseName = poseFileName;
       err.nodeInfoList = nodeInfoList;
+      err.code = err.code || RUNNINGHUB_SUBMITTED_ERROR_CODE;
+      err.submitted = true;
       throw err;
     }
 
@@ -384,6 +402,7 @@ function createRunningHubClient(deps = {}) {
       videoUrl: output.outputUrl,
       remoteAudioName: audioFileName,
       remoteImageName: imageFileName,
+      remotePoseName: poseFileName,
       nodeInfoList,
       submitResponse: submission.response,
       outputResponse: output.response
@@ -401,6 +420,7 @@ function createRunningHubClient(deps = {}) {
 
 module.exports = {
   DEFAULT_RUNNINGHUB_BASE_URL,
+  RUNNINGHUB_SUBMITTED_ERROR_CODE,
   buildRunningHubRunUrl,
   createRunningHubClient,
   extractRunningHubFailureReason,

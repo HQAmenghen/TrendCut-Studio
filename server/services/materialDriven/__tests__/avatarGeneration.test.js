@@ -571,6 +571,164 @@ describe('createAvatarGenerationService', () => {
     expect(fs.existsSync(path.join(outputPath, AVATAR_RENDER_STATE_FILE))).toBe(true);
   });
 
+  test('does not resume a RunningHub task submitted before the current speech audio existed', async () => {
+    const { outputPath, paths } = createBaseProject();
+    writeJson(path.join(outputPath, AVATAR_RENDER_STATE_FILE), {
+      provider: 'runninghub',
+      status: 'downloaded',
+      taskId: 'old-task',
+      submittedAt: '2000-01-01T00:00:00.000Z',
+      remoteAudioName: 'api/old.wav',
+      remoteImageName: 'api/avatar.png',
+      videoUrl: 'https://example.com/old.mp4'
+    });
+
+    const render = jest.fn(async (options) => {
+      options.onRunningHubSubmitted({
+        taskId: 'new-task',
+        remoteAudioName: 'api/new.wav',
+        remoteImageName: 'api/avatar.png',
+        nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/new.wav' }]
+      });
+      return {
+        provider: 'runninghub',
+        taskId: 'new-task',
+        videoUrl: 'https://example.com/new.mp4',
+        remoteAudioName: 'api/new.wav',
+        remoteImageName: 'api/avatar.png',
+        nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/new.wav' }]
+      };
+    });
+    const synthesizeSpeech = jest.fn(async () => {
+      const outputFile = path.join(outputPath, 'avatar_qwen3tts.wav');
+      fs.writeFileSync(outputFile, 'new-audio', 'utf8');
+      return {
+        outputPath: outputFile,
+        model: 'qwen3-tts'
+      };
+    });
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech,
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({
+      runningHubTaskId: '',
+      runningHubRemoteAudioName: '',
+      runningHubRemoteImageName: ''
+    }));
+    expect(downloadFile).toHaveBeenCalledWith(
+      'https://example.com/new.mp4',
+      path.join(outputPath, 'aiman.mp4'),
+      expect.any(Object)
+    );
+    expect(task.logs.some((item) => item.message.includes('早于当前口播音频'))).toBe(true);
+  });
+
+  test('does not reuse a terminally failed RunningHub task id on retry', async () => {
+    const { outputPath, paths } = createBaseProject();
+    const render = jest
+      .fn()
+      .mockImplementationOnce(async (options) => {
+        options.onRunningHubSubmitted({
+          taskId: 'task-false-failed',
+          remoteAudioName: 'api/avatar.wav',
+          remoteImageName: 'api/avatar.png',
+          nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' }]
+        });
+        throw Object.assign(new Error('[RunningHub 任务失败] temporary false negative'), {
+          runningHubTaskId: 'task-false-failed',
+          remoteAudioName: 'api/avatar.wav',
+          remoteImageName: 'api/avatar.png',
+          nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' }]
+        });
+      })
+      .mockImplementationOnce(async () => ({
+        provider: 'runninghub',
+        taskId: 'task-after-terminal-failure',
+        videoUrl: 'https://example.com/retried.mp4',
+        remoteAudioName: 'api/retried.wav',
+        remoteImageName: 'api/avatar.png',
+        nodeInfoList: []
+      }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(async () => ({
+        outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+        model: 'qwen3-tts'
+      })),
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await expect(service.autoGenerateAvatar('job-1', task)).rejects.toThrow('temporary false negative');
+    expect(readAvatarRenderState(outputPath)).toMatchObject({
+      status: 'failed',
+      taskId: 'task-false-failed'
+    });
+    fs.writeFileSync(path.join(outputPath, 'avatar_qwen3tts.wav'), 'cached-audio', 'utf8');
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({
+      runningHubTaskId: '',
+      runningHubRemoteAudioName: '',
+      runningHubRemoteImageName: ''
+    }));
+    expect(downloadFile).toHaveBeenCalledWith(
+      'https://example.com/retried.mp4',
+      path.join(outputPath, 'aiman.mp4'),
+      expect.any(Object)
+    );
+    expect(task.logs.some((item) => item.message.includes('已结束且不可恢复'))).toBe(true);
+  });
+
   test('reuses downloaded aiman video when the previous RunningHub task already completed', async () => {
     const { outputPath, paths } = createBaseProject();
     const cachedAudioPath = path.join(outputPath, 'avatar_qwen3tts.wav');
