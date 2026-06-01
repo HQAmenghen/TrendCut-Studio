@@ -1094,6 +1094,128 @@ h3 {
   padding: 12px 14px 14px;
 }
 
+.task-queue-list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-queue-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 58px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--glass-panel);
+  padding: 10px;
+  box-shadow: 0 1px 0 var(--glass-highlight) inset;
+}
+
+.task-queue-row.state-running {
+  border-color: color-mix(in srgb, var(--brand-a) 32%, var(--line-soft));
+  background: color-mix(in srgb, var(--brand-a) 8%, var(--glass-panel));
+}
+
+.task-queue-row.state-waiting {
+  background: color-mix(in srgb, var(--input-bg) 58%, var(--glass-panel));
+}
+
+.task-queue-row.state-danger {
+  border-color: rgba(239, 68, 68, 0.34);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.task-type-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--input-bg) 78%, transparent);
+  color: var(--muted);
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.task-queue-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.task-queue-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-queue-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--strong-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-queue-title em {
+  flex: none;
+  color: var(--brand-a);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.task-queue-main > span,
+.task-queue-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-queue-meta {
+  max-width: 132px;
+  justify-self: end;
+}
+
+.task-queue-side {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-action-button {
+  min-height: 28px;
+  padding: 5px 9px;
+}
+
+.spin-icon {
+  animation: hot-refresh-spin 0.9s linear infinite;
+}
+
+.mini-progress-rail {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--input-bg) 82%, transparent);
+}
+
+.mini-progress-rail span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand-a), var(--brand-b));
+  transition: width 0.24s ease;
+}
+
 .panel-heading {
   display: flex;
   align-items: flex-start;
