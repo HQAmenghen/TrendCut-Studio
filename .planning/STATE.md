@@ -124,6 +124,7 @@ None yet.
 | 2026-06-01 | 重写开源项目标准 README 文档并推送 | `.planning/quick/260601-dyi-readme/SUMMARY.md` |
 | 2026-06-01 | 加固 Node/Python 协议契约、Python 依赖锁和外部能力自检 | `.planning/quick/20260601-runtime-contracts-hardening/SUMMARY.md` |
 | 2026-06-01 | 拆分 reference-authority 字幕逻辑，降低 ASR 巨模块耦合 | `.planning/quick/20260601-reference-authority-decoupling/SUMMARY.md` |
+| 2026-06-01 | 拆分 agent handler 纯工具层，降低请求编排模块耦合 | `.planning/quick/20260601-agent-handler-helper-decoupling/SUMMARY.md` |
 
 ## Session Continuity
 
