@@ -1,232 +1,45 @@
 import { computed, ref, watch } from 'vue';
 import axios from 'axios';
-
-const PLATFORM_DEFS = [
-  { key: 'wechatChannels', label: '微信视频号', runModes: ['draft', 'publish'] },
-  { key: 'douyin', label: '抖音', runModes: ['draft', 'publish'] },
-  { key: 'xiaohongshu', label: '小红书', runModes: ['draft', 'publish'] },
-  { key: 'x', label: 'X', runModes: ['publish'] },
-  { key: 'youtube', label: 'YouTube', runModes: [] }
-];
-
-const AUTO_PILOT_PLATFORM_KEYS = ['wechatChannels', 'douyin', 'xiaohongshu', 'x'];
-const DEFAULT_AUTO_PILOT_PLATFORMS = ['wechatChannels'];
-const SAU_PLATFORM_KEYS = ['douyin', 'xiaohongshu'];
-
-const AUTO_PILOT_PIPELINE_DEFS = [
-  { key: 'vertical', label: '不带数字人', description: '直接生成竖屏成片并进入定时发布' },
-  { key: 'avatar', label: '带数字人', description: '先生成数字人口播，再进入竖屏成片与定时发布' }
-];
-const DEFAULT_XAI_PARTITION_ID = 'crypto';
-const DEFAULT_AVATAR_AUDIO_PRESET = '毕.mp3';
-const DEFAULT_AVATAR_IMAGE_PRESET = '毕（保守）.png';
-
-const FIELD_LABELS = {
-  wechatChannels: {
-    enabled: '启用',
-    displayName: '账号备注',
-    finderUserName: '视频号 ID',
-    helperAccount: '视频号助手账号',
-    openPlatformAppId: '开放平台 AppID',
-    appId: '应用 ID',
-    appSecret: '应用密钥',
-    refreshToken: '刷新令牌',
-    accountId: '账号 ID'
-  },
-  douyin: {
-    enabled: '启用',
-    displayName: '账号备注',
-    sauAccountName: '登录账号别名',
-    clientKey: '客户端 Key',
-    clientSecret: '客户端密钥',
-    accessToken: '访问令牌',
-    openId: 'Open ID'
-  },
-  xiaohongshu: {
-    enabled: '启用',
-    displayName: '账号备注',
-    sauAccountName: '登录账号别名',
-    appId: '应用 ID',
-    appSecret: '应用密钥',
-    accessToken: '访问令牌',
-    accountId: '账号 ID'
-  },
-  x: {
-    enabled: '启用',
-    displayName: '账号备注',
-    username: 'X 用户名',
-    userId: 'X 用户 ID',
-    clientId: 'OAuth2 Client ID',
-    clientSecret: 'OAuth2 Client Secret',
-    accessToken: 'OAuth2 Access Token',
-    refreshToken: 'OAuth2 Refresh Token',
-    scopes: '授权范围',
-    markMadeWithAi: '标记 Made with AI'
-  },
-  youtube: {
-    enabled: '启用',
-    displayName: '频道备注',
-    clientId: '客户端 ID',
-    clientSecret: '客户端密钥',
-    refreshToken: '刷新令牌',
-    channelId: '频道 ID'
-  }
-};
-
-const SECRET_HINT_FIELDS = new Set(['appSecret', 'refreshToken', 'clientSecret', 'accessToken', 'accessSecret', 'bearerToken', 'apiSecret']);
-
-function normalizeTags(tags) {
-  if (Array.isArray(tags)) return tags.map((item) => String(item).trim()).filter(Boolean);
-  return String(tags || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function normalizeStringArray(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item ?? '').trim());
-  }
-  if (value === null || value === undefined || value === '') {
-    return [];
-  }
-  if (typeof value === 'string') {
-    return [value.trim()];
-  }
-  return [];
-}
-
-function normalizePlatformSelection(value, fallback = DEFAULT_AUTO_PILOT_PLATFORMS) {
-  const source = Array.isArray(value)
-    ? value
-    : String(value || '')
-      .split(',')
-      .map((item) => item.trim());
-  const selected = [];
-  for (const item of source) {
-    const platformKey = String(item || '').trim();
-    if (AUTO_PILOT_PLATFORM_KEYS.includes(platformKey) && !selected.includes(platformKey)) {
-      selected.push(platformKey);
-    }
-  }
-  if (selected.length) return selected;
-  return Array.isArray(fallback) ? [...fallback] : [...DEFAULT_AUTO_PILOT_PLATFORMS];
-}
-
-function normalizeAutoPilotPlatformRows(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => normalizePlatformSelection(item, []));
-}
-
-function normalizeAutoPilotPipelineModes(value, fallback = 'vertical') {
-  const allowedModes = new Set(AUTO_PILOT_PIPELINE_DEFS.map((item) => item.key));
-  const source = Array.isArray(value) ? value : [fallback];
-  const modes = [];
-  for (const item of source) {
-    const mode = String(item || '').trim();
-    if (allowedModes.has(mode) && !modes.includes(mode)) {
-      modes.push(mode);
-    }
-  }
-  return modes.length ? modes : ['vertical'];
-}
-
-function normalizeAutoPilotModeSchedules(value = {}) {
-  const source = value && typeof value === 'object' ? value : {};
-  const schedules = {};
-  for (const mode of AUTO_PILOT_PIPELINE_DEFS.map((item) => item.key)) {
-    const item = source[mode] && typeof source[mode] === 'object' ? source[mode] : {};
-    schedules[mode] = {
-      accountIds: normalizeStringArray(item.accountIds),
-      times: normalizeStringArray(item.times),
-      partitionIds: normalizeStringArray(item.partitionIds),
-      sourceRanks: normalizeStringArray(item.sourceRanks),
-      platforms: normalizeAutoPilotPlatformRows(item.platforms),
-      audioPresets: normalizeStringArray(item.audioPresets),
-      imagePresets: normalizeStringArray(item.imagePresets)
-    };
-  }
-  return schedules;
-}
-
-function normalizePresetPayload(payload = {}) {
-  return {
-    audio: Array.isArray(payload.audio) ? payload.audio.map((item) => String(item || '').trim()).filter(Boolean) : [],
-    image: Array.isArray(payload.image) ? payload.image.map((item) => String(item || '').trim()).filter(Boolean) : []
-  };
-}
-
-function normalizeXaiPartitionId(value, fallback = DEFAULT_XAI_PARTITION_ID) {
-  const normalized = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return normalized || fallback;
-}
-
-function normalizeApiError(err, fallbackMessage = '请求失败') {
-  const payload = err?.response?.data || {};
-  return {
-    message: payload?.error || err?.message || fallbackMessage,
-    code: payload?.code || '',
-    stage: payload?.stage || '',
-    hint: payload?.hint || '',
-    details: payload?.details || ''
-  };
-}
-
-function pickPublishTitleFromAsset(asset = {}) {
-  return String(
-    asset?.metadata?.suggestedTitle
-    || asset?.metadata?.title
-    || asset?.metadata?.suggestedShortTitle
-    || asset?.compactLabel
-    || asset?.displayLabel
-    || asset?.label
-    || ''
-  ).trim();
-}
-
-function pickAccountFields(source = {}, fields = []) {
-  return fields.reduce((acc, field) => {
-    if (source[field] !== undefined) {
-      acc[field] = String(source[field] ?? '');
-    }
-    return acc;
-  }, {});
-}
-
-function createSauAccount(platformKey, initial = {}) {
-  return {
-    id: `${platformKey}_${Math.random().toString(36).slice(2, 10)}`,
-    displayName: '',
-    sauAccountName: '',
-    openId: '',
-    accountId: '',
-    notes: '',
-    ...pickAccountFields(initial, ['displayName', 'sauAccountName', 'openId', 'accountId', 'notes'])
-  };
-}
-
-function createXAccount(initial = {}) {
-  return {
-    id: `x_${Math.random().toString(36).slice(2, 10)}`,
-    displayName: '',
-    username: '',
-    userId: '',
-    clientId: '',
-    clientSecret: '',
-    accessToken: '',
-    refreshToken: '',
-    scopes: 'tweet.read users.read tweet.write media.write offline.access',
-    markMadeWithAi: true,
-    notes: '',
-    ...pickAccountFields(initial, ['displayName', 'username', 'userId', 'clientId', 'clientSecret', 'accessToken', 'refreshToken', 'scopes', 'notes']),
-    markMadeWithAi: initial.markMadeWithAi !== undefined ? Boolean(initial.markMadeWithAi) : true
-  };
-}
+import {
+  buildActiveAutoPilotMappings,
+  buildAutoPilotAvatarPresetSummary,
+  buildAutoPilotConfiguredPlans,
+  buildAutoPilotMappingsForMode,
+  buildAutoPilotSummaryItems,
+  buildGeneratedAutoPilotJobs,
+  formatAutoPilotJobTime,
+  getAutoPilotModeSchedule as getAutoPilotModeScheduleFromGlobal,
+  getAvatarPresetLabel
+} from './publishCenter/autoPilot.mjs';
+import {
+  AUTO_PILOT_PIPELINE_DEFS,
+  AUTO_PILOT_PLATFORM_KEYS,
+  DEFAULT_AUTO_PILOT_PLATFORMS,
+  DEFAULT_AVATAR_AUDIO_PRESET,
+  DEFAULT_AVATAR_IMAGE_PRESET,
+  DEFAULT_XAI_PARTITION_ID,
+  FIELD_LABELS,
+  PLATFORM_DEFS,
+  SAU_PLATFORM_KEYS,
+  SECRET_HINT_FIELDS,
+  buildPlatformAccountOptions,
+  buildPlatformCards,
+  createSauAccount,
+  createWechatAccount,
+  createXAccount,
+  getPlatformAccounts,
+  normalizeApiError,
+  normalizeAutoPilotModeSchedules,
+  normalizeAutoPilotPipelineModes,
+  normalizeAutoPilotPlatformRows,
+  normalizePlatformSelection,
+  normalizePresetPayload,
+  normalizeStringArray,
+  normalizeTags,
+  normalizeXaiPartitionId,
+  pickPublishTitleFromAsset,
+  resolvePlatformAccountLabel
+} from './publishCenter/domain.mjs';
 
 export function usePublishCenter() {
   const loading = ref(false);
@@ -610,38 +423,13 @@ export function usePublishCenter() {
     enabledPlatformCount: Object.values(config.value || {}).filter((item) => item?.enabled).length
   }));
 
-  const wechatAccounts = computed(() => Array.isArray(config.value?.wechatChannels?.accounts) ? config.value.wechatChannels.accounts : []);
-  const getSauAccounts = (platformKey) => Array.isArray(config.value?.[platformKey]?.accounts) ? config.value[platformKey].accounts : [];
+  const wechatAccounts = computed(() => getPlatformAccounts(config.value, 'wechatChannels'));
+  const getSauAccounts = (platformKey) => getPlatformAccounts(config.value, platformKey);
   const douyinAccounts = computed(() => getSauAccounts('douyin'));
   const xiaohongshuAccounts = computed(() => getSauAccounts('xiaohongshu'));
-  const xAccounts = computed(() => Array.isArray(config.value?.x?.accounts) ? config.value.x.accounts : []);
-  const getPlatformAccountOptions = (platformKey) => {
-    if (platformKey === 'wechatChannels') {
-      return wechatAccounts.value.map((account) => ({
-        id: account.id,
-        label: account.displayName || account.helperAccount || account.finderUserName || account.id
-      }));
-    }
-    if (SAU_PLATFORM_KEYS.includes(platformKey)) {
-      return getSauAccounts(platformKey).map((account) => ({
-        id: account.id,
-        label: account.displayName || account.sauAccountName || account.accountId || account.openId || account.id
-      }));
-    }
-    if (platformKey === 'x') {
-      return xAccounts.value.map((account) => ({
-        id: account.id,
-        label: account.displayName || account.username || account.userId || account.id
-      }));
-    }
-    return [];
-  };
-  const getPlatformAccountLabel = (platformKey, accountId) => {
-    const normalizedId = String(accountId || '').trim();
-    if (!normalizedId) return '未指定账号';
-    const account = getPlatformAccountOptions(platformKey).find((item) => item.id === normalizedId);
-    return account?.label || normalizedId;
-  };
+  const xAccounts = computed(() => getPlatformAccounts(config.value, 'x'));
+  const getPlatformAccountOptions = (platformKey) => buildPlatformAccountOptions(config.value, platformKey);
+  const getPlatformAccountLabel = (platformKey, accountId) => resolvePlatformAccountLabel(config.value, platformKey, accountId);
   const ensureEditorPlatformSelection = (platformKey) => {
     if (!editor.value.platformSelections[platformKey]) {
       editor.value.platformSelections[platformKey] = { accountId: '' };
@@ -686,268 +474,68 @@ export function usePublishCenter() {
       ? DEFAULT_AVATAR_IMAGE_PRESET
       : (avatarImagePresetOptions.value[0] || '')
   );
-  const getAvatarPresetLabel = (fileName) => {
-    const raw = String(fileName || '').trim();
-    if (!raw) return '未选择';
-    return raw.replace(/\.[^.]+$/u, '');
-  };
-  const getAutoPilotAvatarPresetSummary = (mapping = {}) => {
-    if (mapping.pipelineMode !== 'avatar' && mapping.mode !== 'avatar') return '';
-    const audio = mapping.audioPreset || getDefaultAvatarAudioPreset();
-    const image = mapping.imagePreset || getDefaultAvatarImagePreset();
-    return `${getAvatarPresetLabel(image)} / ${getAvatarPresetLabel(audio)}`;
-  };
+  const getAutoPilotAvatarPresetSummary = (mapping = {}) => buildAutoPilotAvatarPresetSummary(mapping, {
+    defaultAudioPreset: getDefaultAvatarAudioPreset(),
+    defaultImagePreset: getDefaultAvatarImagePreset()
+  });
   const activeAutoPilotPipelineModes = computed(() => normalizeAutoPilotPipelineModes(
     config.value?.global?.autoPilotPipelineModes,
     config.value?.global?.pipelineMode || 'vertical'
   ));
 
-  const getAutoPilotModeSchedule = (mode) => {
-    const global = config.value?.global || {};
-    const schedules = normalizeAutoPilotModeSchedules(global.autoPilotModeSchedules);
-    const schedule = schedules[mode] || {};
-    const accountIds = normalizeStringArray(schedule.accountIds);
-    const times = normalizeStringArray(schedule.times);
-    const partitionIds = normalizeStringArray(schedule.partitionIds);
-    const sourceRanks = normalizeStringArray(schedule.sourceRanks);
-    const platforms = normalizeAutoPilotPlatformRows(schedule.platforms);
-    const audioPresets = normalizeStringArray(schedule.audioPresets);
-    const imagePresets = normalizeStringArray(schedule.imagePresets);
-    if (accountIds.length || times.length || partitionIds.length || sourceRanks.length || platforms.length || audioPresets.length || imagePresets.length) {
-      return { accountIds, times, partitionIds, sourceRanks, platforms, audioPresets, imagePresets };
-    }
-    return {
-      accountIds: normalizeStringArray(global.autoPilotAccountIds),
-      times: normalizeStringArray(global.autoPilotTimes),
-      partitionIds: [],
-      sourceRanks: [],
-      platforms: [],
-      audioPresets: [],
-      imagePresets: []
-    };
-  };
+  const getAutoPilotModeSchedule = (mode) => getAutoPilotModeScheduleFromGlobal(config.value?.global || {}, mode);
 
-  const getAutoPilotMappingsForMode = (mode) => {
-    const { accountIds, times, partitionIds, sourceRanks, platforms, audioPresets, imagePresets } = getAutoPilotModeSchedule(mode);
-    const global = config.value?.global || {};
-    const mappings = [];
-    const maxLen = Math.max(accountIds.length, times.length, partitionIds.length, sourceRanks.length, platforms.length, audioPresets.length, imagePresets.length);
-    for (let i = 0; i < maxLen; i++) {
-      const selectedPlatforms = normalizePlatformSelection(platforms[i]);
-      const platformKey = selectedPlatforms[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
-      const hasConfiguredSlot = Boolean(
-        String(accountIds[i] || '').trim()
-        || String(times[i] || '').trim()
-        || String(partitionIds[i] || '').trim()
-        || String(sourceRanks[i] || '').trim()
-        || String(audioPresets[i] || '').trim()
-        || String(imagePresets[i] || '').trim()
-        || (Array.isArray(platforms[i]) && platforms[i].length > 0)
-      );
-      if (hasConfiguredSlot) {
-        const partitionId = normalizeXaiPartitionId(partitionIds[i] || global.autoPilotPartitionId, global.autoPilotPartitionId || DEFAULT_XAI_PARTITION_ID);
-        const partition = xaiPartitionOptions.value.find((item) => item.id === partitionId);
-        const sourceRank = Math.max(1, Math.min(10, parseInt(sourceRanks[i] || '1', 10) || 1));
-        const audioPreset = mode === 'avatar'
-          ? String(audioPresets[i] || global.avatarPipelineConfig?.audioPreset || getDefaultAvatarAudioPreset()).trim()
-          : '';
-        const imagePreset = mode === 'avatar'
-          ? String(imagePresets[i] || global.avatarPipelineConfig?.imagePreset || getDefaultAvatarImagePreset()).trim()
-          : '';
-        mappings.push({
-          slot: i + 1,
-          rank: i + 1,
-          sourceRank,
-          accountId: accountIds[i],
-          time: times[i] || global.autoPilotTime || '08:00',
-          partitionId,
-          partitionLabel: partition?.label || partitionId,
-          platforms: selectedPlatforms,
-          platformKey,
-          platformLabel: getPlatformLabel(platformKey),
-          platformLabels: getPlatformLabels(selectedPlatforms),
-          audioPreset,
-          imagePreset
-        });
-      }
-    }
-    return mappings;
-  };
-
-  const activeAutoPilotMappings = computed(() => {
-    const mappings = [];
-    for (const mode of activeAutoPilotPipelineModes.value) {
-      const modeDef = AUTO_PILOT_PIPELINE_DEFS.find((item) => item.key === mode);
-      for (const mapping of getAutoPilotMappingsForMode(mode)) {
-        mappings.push({
-          ...mapping,
-          pipelineMode: mode,
-          pipelineLabel: modeDef?.label || mode
-        });
-      }
-    }
-    return mappings;
+  const getAutoPilotMappingsForMode = (mode) => buildAutoPilotMappingsForMode({
+    mode,
+    global: config.value?.global || {},
+    xaiPartitionOptions: xaiPartitionOptions.value,
+    getDefaultAvatarAudioPreset,
+    getDefaultAvatarImagePreset,
+    getPlatformLabel,
+    getPlatformLabels
   });
 
-  const autoPilotConfiguredPlans = computed(() => activeAutoPilotMappings.value.map((mapping) => {
-    const platformKey = mapping.platformKey || mapping.platforms?.[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
-    const accountLabel = getPlatformAccountLabel(platformKey, mapping.accountId);
-    return {
-      id: `plan_${mapping.pipelineMode}_${mapping.slot}`,
-      title: `${mapping.pipelineLabel}自动化计划`,
-      rank: mapping.sourceRank,
-      slot: mapping.slot,
-      pipelineMode: mapping.pipelineMode,
-      pipelineLabel: mapping.pipelineLabel,
-      scheduledAt: '',
-      scheduledLabel: `每天 ${mapping.time || config.value?.global?.autoPilotTime || '08:00'}`,
-      status: 'configured',
-      statusLabel: '计划已配置',
-      accountLabel,
-      platforms: mapping.platforms,
-      platformKey,
-      platformLabel: getPlatformLabel(platformKey),
-      platformLabels: mapping.platformLabels,
-      partitionId: mapping.partitionId,
-      partitionLabel: mapping.partitionLabel,
-      avatarPresetLabel: getAutoPilotAvatarPresetSummary(mapping),
-      sourceMode: config.value?.global?.autoPilotUseCurrentRanking ? 'current_ranking' : 'refresh_ranking',
-      queueJobId: ''
-    };
+  const activeAutoPilotMappings = computed(() => buildActiveAutoPilotMappings({
+    activeModes: activeAutoPilotPipelineModes.value,
+    global: config.value?.global || {},
+    xaiPartitionOptions: xaiPartitionOptions.value,
+    getDefaultAvatarAudioPreset,
+    getDefaultAvatarImagePreset,
+    getPlatformLabel,
+    getPlatformLabels
   }));
 
-  const generatedAutoPilotJobs = computed(() => jobs.value
-    .filter((job) => job?.autoPilot && !job.archived)
-    .map((job) => {
-      const task = (Array.isArray(job.platformTasks) ? job.platformTasks : []).find((item) => item.platform === 'wechatChannels') || null;
-      const pipelineMode = String(job?.autoPilot?.pipelineMode || job?.autoPilot?.mode || 'vertical').trim() || 'vertical';
-      const modeDef = AUTO_PILOT_PIPELINE_DEFS.find((item) => item.key === pipelineMode);
-      return {
-        id: job.id,
-        title: job.publishData?.title || job.asset?.label || '自动化任务',
-        rank: Number(job?.autoPilot?.rank || 0),
-        sourceRank: Number(job?.autoPilot?.sourceRank || job?.asset?.metadata?.sourceRank || job?.autoPilot?.rank || 0),
-        pipelineMode,
-        pipelineLabel: modeDef?.label || pipelineMode,
-        scheduledAt: job.scheduledAt || '',
-        scheduledLabel: '',
-        status: getJobTerminalState(job),
-        statusLabel: getJobStatusLabel(job),
-        accountLabel: task?.accountLabel || task?.accountId || job?.platformSelections?.wechatChannels?.accountLabel || job?.platformSelections?.wechatChannels?.accountId || '未指定账号',
-        platforms: Array.isArray(job?.selectedPlatforms) && job.selectedPlatforms.length ? job.selectedPlatforms : ['wechatChannels'],
-        platformLabels: getPlatformLabels(Array.isArray(job?.selectedPlatforms) && job.selectedPlatforms.length ? job.selectedPlatforms : ['wechatChannels']),
-        partitionId: job?.autoPilot?.sourcePartitionId || job?.asset?.metadata?.sourcePartitionId || '',
-        partitionLabel: job?.autoPilot?.sourcePartitionLabel || job?.asset?.metadata?.sourcePartitionLabel || '',
-        avatarPresetLabel: getAutoPilotAvatarPresetSummary(job?.autoPilot || {}),
-        sourceMode: job?.autoPilot?.sourceMode || '',
-        queueJobId: job?.autoPilot?.queueJobId || ''
-      };
-    })
-    .sort((a, b) => {
-      const aTime = new Date(a.scheduledAt || 0).getTime() || 0;
-      const bTime = new Date(b.scheduledAt || 0).getTime() || 0;
-      if (aTime !== bTime) return aTime - bTime;
-      return String(b.id).localeCompare(String(a.id));
-    }));
+  const autoPilotConfiguredPlans = computed(() => buildAutoPilotConfiguredPlans({
+    mappings: activeAutoPilotMappings.value,
+    global: config.value?.global || {},
+    getPlatformAccountLabel,
+    getPlatformLabel,
+    getAvatarPresetSummary: getAutoPilotAvatarPresetSummary
+  }));
+
+  const generatedAutoPilotJobs = computed(() => buildGeneratedAutoPilotJobs({
+    jobs: jobs.value,
+    getJobTerminalState,
+    getJobStatusLabel,
+    getPlatformLabels,
+    getAvatarPresetSummary: getAutoPilotAvatarPresetSummary
+  }));
 
   const autoPilotJobs = computed(() => [
     ...autoPilotConfiguredPlans.value,
     ...generatedAutoPilotJobs.value
   ]);
 
-  const formatAutoPilotJobTime = (value) => {
-    if (!value) return '未设定';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleString('zh-CN', { hour12: false });
-  };
-
-  const autoPilotSummaryItems = computed(() => {
-    const global = config.value?.global || {};
-    const enabled = Boolean(global.autoPilotEnabled);
-    const fetchTime = String(global.autoPilotFetchTime || '07:30').trim();
-    const useCurrentRanking = Boolean(global.autoPilotUseCurrentRanking);
-    const pipelineLabels = AUTO_PILOT_PIPELINE_DEFS
-      .filter((item) => activeAutoPilotPipelineModes.value.includes(item.key))
-      .map((item) => item.label);
-    
-    const assignedAccounts = activeAutoPilotMappings.value.map(m => {
-      const platformKey = m.platformKey || m.platforms?.[0] || DEFAULT_AUTO_PILOT_PLATFORMS[0];
-      const target = getPlatformAccountLabel(platformKey, m.accountId);
-      const avatarPreset = m.pipelineMode === 'avatar' ? ` -> ${getAutoPilotAvatarPresetSummary(m)}` : '';
-      return `${m.pipelineLabel}: ${m.partitionLabel || '默认分区'} Top ${m.sourceRank || 1} -> ${getPlatformLabel(platformKey)} -> ${target}${avatarPreset} @ ${m.time}`;
-    });
-
-    if (!assignedAccounts.length) {
-      assignedAccounts.push(`未配置任何映射 (将使用默认策略)`);
-    }
-
-    const now = new Date();
-    const nextTrigger = new Date(now);
-    const [hour, minute] = fetchTime.split(':').map((item) => Number(item || 0));
-    nextTrigger.setHours(hour || 0, minute || 0, 0, 0);
-    if (nextTrigger.getTime() <= now.getTime()) {
-      nextTrigger.setDate(nextTrigger.getDate() + 1);
-    }
-
-    return [
-      { label: '托管状态', value: enabled ? '已开启' : '未开启' },
-      { label: '制作模式', value: pipelineLabels.join(' + ') || '不带数字人' },
-      { label: '榜单来源', value: useCurrentRanking ? '使用当前榜单' : '到点重新抓榜' },
-      { label: '抓榜时间', value: useCurrentRanking ? '保存配置即触发' : fetchTime },
-      { label: '触发计划', value: enabled ? (useCurrentRanking ? '保存配置时立即检测任务' : `周期性触发 (下次: ${nextTrigger.toLocaleString('zh-CN', { hour12: false })})`) : '托管关闭' },
-      { label: '分发策略', value: assignedAccounts.join(' | ') }
-    ];
-  });
-
-  const platformCards = computed(() => platformDefs.map((platform) => {
-    const item = config.value?.[platform.key] || {};
-    if (platform.key === 'wechatChannels') {
-      const accounts = Array.isArray(item.accounts) ? item.accounts : [];
-      const filled = accounts.filter((account) => String(account.finderUserName || '').trim() && String(account.helperAccount || '').trim()).length;
-      const total = accounts.length || 1;
-      return {
-        ...platform,
-        config: item,
-        percent: item.enabled ? Math.round((filled / total) * 100) : 0,
-        fieldKeys: ['accounts'],
-        accountCount: accounts.length
-      };
-    }
-    if (SAU_PLATFORM_KEYS.includes(platform.key)) {
-      const accounts = Array.isArray(item.accounts) ? item.accounts : [];
-      const filled = accounts.filter((account) => String(account.sauAccountName || '').trim()).length;
-      const total = accounts.length || 1;
-      return {
-        ...platform,
-        config: item,
-        percent: item.enabled ? Math.round((filled / total) * 100) : 0,
-        fieldKeys: ['accounts'],
-        accountCount: accounts.length
-      };
-    }
-    if (platform.key === 'x') {
-      const accounts = Array.isArray(item.accounts) ? item.accounts : [];
-      const filled = accounts.filter((account) => String(account.accessToken || '').trim()).length;
-      const total = accounts.length || 1;
-      return {
-        ...platform,
-        config: item,
-        percent: item.enabled ? Math.round((filled / total) * 100) : 0,
-        fieldKeys: ['accounts'],
-        accountCount: accounts.length
-      };
-    }
-    const fieldKeys = Object.keys(item).filter((key) => key !== 'enabled');
-    const filled = fieldKeys.filter((key) => String(item[key] ?? '').trim()).length;
-    const total = fieldKeys.length || 1;
-    return {
-      ...platform,
-      config: item,
-      percent: item.enabled ? Math.round((filled / total) * 100) : 0,
-      fieldKeys
-    };
+  const autoPilotSummaryItems = computed(() => buildAutoPilotSummaryItems({
+    global: config.value?.global || {},
+    activeModes: activeAutoPilotPipelineModes.value,
+    activeMappings: activeAutoPilotMappings.value,
+    getPlatformAccountLabel,
+    getPlatformLabel,
+    getAvatarPresetSummary: getAutoPilotAvatarPresetSummary
   }));
+
+  const platformCards = computed(() => buildPlatformCards(config.value, platformDefs));
 
   const filteredJobs = computed(() => {
     if (jobFilter.value === 'all') return jobs.value;
@@ -1296,20 +884,6 @@ export function usePublishCenter() {
     }
     return 10;
   };
-
-  const createWechatAccount = (initial = {}) => ({
-    id: `wechat_${Math.random().toString(36).slice(2, 10)}`,
-    displayName: '',
-    finderUserName: '',
-    helperAccount: '',
-    openPlatformAppId: '',
-    appId: '',
-    appSecret: '',
-    refreshToken: '',
-    accountId: '',
-    notes: '',
-    ...pickAccountFields(initial, ['displayName', 'finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'])
-  });
 
   const addWechatAccount = (initial = {}) => {
     const nextAccount = createWechatAccount(initial);

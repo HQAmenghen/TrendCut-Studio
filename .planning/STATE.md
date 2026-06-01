@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
-last_updated: "2026-06-01T15:52:00+08:00"
-last_activity: 2026-06-01 — Completed quick task: 优化三个热点大文件结构边界
+last_updated: "2026-06-01T15:59:59+08:00"
+last_activity: 2026-06-01 — Completed quick task: 按领域边界重构发布中心规则
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-06-01 — Completed quick task: 优化三个热点大文件结构边界
+Last activity: 2026-06-01 — Completed quick task: 按领域边界重构发布中心规则
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -132,6 +132,7 @@ None yet.
 | 2026-06-01 | 修复 dashboard 拆分后的液态玻璃样式回归 | `.planning/quick/20260601-fix-dashboard-glass-style-regression/SUMMARY.md` |
 | 2026-06-01 | 修复发布信息弹窗账号下拉菜单滚动显示 | `.planning/quick/20260601-fix-publish-dropdown-scroll/SUMMARY.md` |
 | 2026-06-01 | 优化三个热点大文件结构边界 | `.planning/quick/20260601-optimize-three-large-files/SUMMARY.md` |
+| 2026-06-01 | 按领域边界重构发布中心规则 | `.planning/quick/20260601-domain-refactor-publish-asr-dashboard/SUMMARY.md` |
 
 ## Session Continuity
 
