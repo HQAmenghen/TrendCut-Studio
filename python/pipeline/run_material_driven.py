@@ -23,7 +23,6 @@ import subprocess
 import re
 import math
 from pathlib import Path
-from datetime import datetime
 from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +46,7 @@ from pipeline.material_state import (
     get_narration_text,
     normalize_source_post,
 )
+from pipeline.material_runtime import MaterialRuntimeMixin
 
 try:
     from pipeline.smart_video_composer import SmartVideoComposer
@@ -56,7 +56,7 @@ except Exception:
 load_project_env(__file__)
 
 
-class MaterialDrivenPipeline:
+class MaterialDrivenPipeline(MaterialRuntimeMixin):
     """素材驱动的视频制作流程"""
 
     def __init__(
@@ -100,18 +100,6 @@ class MaterialDrivenPipeline:
         self.avatar_segments_json = self.output_dir / "avatar_segments.json"
         self.avatar_tail_trim_json = self.output_dir / "avatar_tail_trim.json"
         self.output_file = self.output_dir / "output_final.mp4"
-
-    def log(self, message: str, level: str = "info"):
-        """日志输出"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        prefix = {
-            "info": "ℹ️",
-            "success": "✅",
-            "warning": "⚠️",
-            "error": "❌",
-            "step": "📍"
-        }.get(level, "ℹ️")
-        print(f"[{timestamp}] {prefix} {message}")
 
     def _compute_script_signature(self, script_units: list) -> str:
         return compute_script_signature(script_units)
@@ -163,74 +151,6 @@ class MaterialDrivenPipeline:
                     stale_file.unlink()
             except Exception:
                 pass
-
-    def run_script(self, script_name: str, args: list = None, cwd: str = None) -> bool:
-        """运行Python脚本"""
-        script_path = self.pipeline_dir / script_name
-        if not script_path.exists():
-            self.log(f"脚本不存在: {script_name}", "error")
-            return False
-
-        cmd = [sys.executable, str(script_path)]
-        if args:
-            cmd.extend(args)
-
-        self.log(f"执行: {script_name}", "step")
-
-        try:
-            env = os.environ.copy()
-            env["MATERIAL_REQUIRE_LLM_SCORING"] = "1" if self.require_llm else "0"
-            result = subprocess.run(
-                cmd,
-                cwd=cwd or str(self.output_dir),
-                capture_output=False,
-                text=True,
-                env=env,
-            )
-            if result.returncode == 0:
-                self.log(f"{script_name} 完成", "success")
-                return True
-            else:
-                self.log(f"{script_name} 失败 (返回码: {result.returncode})", "error")
-                return False
-        except Exception as e:
-            self.log(f"{script_name} 执行异常: {e}", "error")
-            return False
-
-    def check_file(self, file_path: Path, description: str) -> bool:
-        """检查文件是否存在"""
-        if file_path.exists():
-            self.log(f"{description} 存在: {file_path.name}", "success")
-            return True
-        else:
-            self.log(f"{description} 不存在: {file_path.name}", "warning")
-            return False
-
-    def has_cached_files(self, file_paths: list[Path]) -> bool:
-        """检查一组缓存文件是否都存在。"""
-        return all(Path(item).exists() for item in file_paths)
-
-    def load_json_file(self, file_path: Path, default=None):
-        """读取 JSON 文件，失败时返回默认值。"""
-        if default is None:
-            default = {}
-        if not file_path.exists():
-            return default
-        try:
-            return json.loads(file_path.read_text(encoding="utf-8"))
-        except Exception:
-            return default
-
-    def save_json_file(self, file_path: Path, data) -> bool:
-        """写入 JSON 文件。"""
-        try:
-            file_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-            return True
-        except Exception:
-            return False
 
     def clean_text_for_match(self, text: str) -> str:
         """清理文本，便于句子对齐。"""
@@ -1626,26 +1546,6 @@ class MaterialDrivenPipeline:
             self.log(f"素材已复制到: {self.material_file}", "success")
 
         return True
-
-    def _run_script_async(self, script_name: str, args: list = None, cwd: str = None):
-        """异步运行 Python 脚本，返回 subprocess.Popen 对象。"""
-        script_path = self.pipeline_dir / script_name
-        if not script_path.exists():
-            self.log(f"脚本不存在: {script_name}", "error")
-            return None
-        cmd = [sys.executable, str(script_path)]
-        if args:
-            cmd.extend(args)
-        self.log(f"异步启动: {script_name}", "info")
-        env = os.environ.copy()
-        env["MATERIAL_REQUIRE_LLM_SCORING"] = "1" if self.require_llm else "0"
-        return subprocess.Popen(
-            cmd,
-            cwd=cwd or str(self.output_dir),
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            env=env,
-        )
 
     def step2_analyze_material(self) -> bool:
         """步骤2: 分析素材（ASR + VLM）"""

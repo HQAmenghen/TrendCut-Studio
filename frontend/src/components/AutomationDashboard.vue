@@ -918,55 +918,10 @@
 
         <section class="support-section cockpit-support-section">
           <div class="support-grid">
-            <GlassPanel class="ops-panel support-panel live-queue-panel">
-              <div class="support-card-heading">
-                <div>
-                  <span class="panel-kicker">Live Queue</span>
-                  <h3>实时任务队列</h3>
-                </div>
-                <span class="support-status" :class="{ active: activeTaskCount > 0 }">
-                  {{ liveTaskSummaryLabel }}
-                </span>
-              </div>
-
-              <div class="support-body">
-                <div class="task-queue-list">
-                  <div
-                    v-for="item in liveTaskItems"
-                    :key="item.id"
-                    class="task-queue-row"
-                    :class="`state-${item.state}`"
-                  >
-                    <span class="task-type-pill">{{ item.type }}</span>
-                    <div class="task-queue-main">
-                      <div class="task-queue-title">
-                        <strong>{{ item.title }}</strong>
-                        <em>{{ item.statusLabel }}</em>
-                      </div>
-                      <span>{{ item.detail }}</span>
-                      <div v-if="item.progress !== null" class="mini-progress-rail">
-                        <span :style="{ width: `${Math.max(3, item.progress)}%` }"></span>
-                      </div>
-                    </div>
-                    <div class="task-queue-side">
-                      <button
-                        v-if="item.action === 'resume-material'"
-                        type="button"
-                        class="mini-button task-action-button"
-                        :disabled="item.actionBusy"
-                        @click="resumeMaterialTask(item)"
-                      >
-                        <RefreshCw v-if="item.actionBusy" class="icon-sm spin-icon" aria-hidden="true" />
-                        <Play v-else class="icon-sm" aria-hidden="true" />
-                        {{ item.actionBusy ? '恢复中' : '继续' }}
-                      </button>
-                      <span class="task-queue-meta">{{ item.meta }}</span>
-                    </div>
-                  </div>
-                  <div v-if="!liveTaskItems.length" class="empty-row">暂无运行任务</div>
-                </div>
-              </div>
-            </GlassPanel>
+            <LiveTaskQueuePanel
+              :items="liveTaskItems"
+              @resume-material-task="resumeMaterialTask"
+            />
 
             <GlassPanel class="ops-panel support-panel publish-panel">
               <div class="support-card-heading">
@@ -1464,6 +1419,7 @@ import { computed, nextTick, ref } from 'vue';
 import GlassPanel from './GlassPanel.vue';
 import ModalBackdrop from './ModalBackdrop.vue';
 import ProductionProgressPanel from './ProductionProgressPanel.vue';
+import LiveTaskQueuePanel from './materialDriven/LiveTaskQueuePanel.vue';
 import {
   Activity,
   AlertTriangle,
@@ -2022,16 +1978,6 @@ const liveTaskItems = computed(() => {
   return items
     .sort((a, b) => a.order - b.order || String(a.meta || '').localeCompare(String(b.meta || '')))
     .slice(0, 10);
-});
-
-const activeTaskCount = computed(() => liveTaskItems.value.filter((item) => item.state === 'running').length);
-const waitingTaskCount = computed(() => liveTaskItems.value.filter((item) => item.state === 'waiting').length);
-const failedTaskCount = computed(() => liveTaskItems.value.filter((item) => item.state === 'danger').length);
-const liveTaskSummaryLabel = computed(() => {
-  if (failedTaskCount.value) return `${failedTaskCount.value} 个需处理`;
-  if (activeTaskCount.value) return `${activeTaskCount.value} 运行 / ${waitingTaskCount.value} 等待`;
-  if (waitingTaskCount.value) return `${waitingTaskCount.value} 个等待`;
-  return '暂无任务';
 });
 
 const resumeMaterialTask = (item) => {
@@ -4116,131 +4062,6 @@ h3 {
   padding: 12px 14px 14px;
 }
 
-.task-queue-list {
-  display: grid;
-  gap: 8px;
-  max-height: 340px;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-.task-queue-row {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 58px;
-  border: 1px solid var(--line-soft);
-  border-radius: 7px;
-  background: var(--glass-panel);
-  padding: 10px;
-  box-shadow: 0 1px 0 var(--glass-highlight) inset;
-}
-
-.task-queue-row.state-running {
-  border-color: color-mix(in srgb, var(--brand-a) 32%, var(--line-soft));
-  background: color-mix(in srgb, var(--brand-a) 8%, var(--glass-panel));
-}
-
-.task-queue-row.state-waiting {
-  background: color-mix(in srgb, var(--input-bg) 58%, var(--glass-panel));
-}
-
-.task-queue-row.state-danger {
-  border-color: rgba(239, 68, 68, 0.34);
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.task-type-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--input-bg) 78%, transparent);
-  color: var(--muted);
-  padding: 4px 7px;
-  font-size: 11px;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.task-queue-main {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-
-.task-queue-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.task-queue-title strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--strong-text);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-queue-title em {
-  flex: none;
-  color: var(--brand-a);
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 850;
-}
-
-.task-queue-main > span,
-.task-queue-meta {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-queue-meta {
-  max-width: 132px;
-  justify-self: end;
-}
-
-.task-queue-side {
-  display: grid;
-  justify-items: end;
-  gap: 6px;
-  min-width: 0;
-}
-
-.task-action-button {
-  min-height: 28px;
-  padding: 5px 9px;
-}
-
-.spin-icon {
-  animation: hot-refresh-spin 0.9s linear infinite;
-}
-
-.mini-progress-rail {
-  height: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--input-bg) 82%, transparent);
-}
-
-.mini-progress-rail span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--brand-a), var(--brand-b));
-  transition: width 0.24s ease;
-}
-
 .panel-heading {
   display: flex;
   align-items: flex-start;
@@ -5502,19 +5323,6 @@ select.account-config-input {
 
   .hot-row em {
     grid-column: 2;
-  }
-
-  .task-queue-row {
-    grid-template-columns: 1fr;
-  }
-
-  .task-type-pill,
-  .task-queue-meta {
-    justify-self: start;
-  }
-
-  .task-queue-meta {
-    max-width: 100%;
   }
 
   .step-row {
