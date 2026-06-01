@@ -187,6 +187,7 @@ function normalizeAvatarSegmentSubtitles(payload) {
 
 function readBestSubtitles(taskPath) {
   const subtitleFiles = [
+    { fileName: 'speech_subtitles.json', normalize: normalizeExistingSubtitles },
     { fileName: 'aiman_subtitles.json', normalize: normalizeExistingSubtitles },
     { fileName: 'execution_plan.json', normalize: normalizeExecutionPlanSubtitles },
     { fileName: 'avatar_segments.json', normalize: normalizeAvatarSegmentSubtitles },
@@ -332,6 +333,7 @@ module.exports = {
   listMaterialTasks,
   normalizeExecutionPlanSubtitles,
   normalizeAvatarSegmentSubtitles,
+  normalizeExistingSubtitles,
   normalizeNarrationReferenceSubtitles,
   collapseRepeatedAdjacentSubtitles,
   resolveMaterialTaskImport,

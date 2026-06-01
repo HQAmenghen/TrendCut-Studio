@@ -383,6 +383,20 @@ def write_partial(stage: str, done: int, total: int, collected: int) -> None:
     )
 
 
+def should_abort_candidate_scan(total_accounts: int, candidates: list[dict], failures: list[dict]) -> bool:
+    return total_accounts > 0 and len(candidates) == 0 and len(failures) >= total_accounts
+
+
+def format_candidate_scan_failure(failures: list[dict]) -> str:
+    first = failures[0] if failures else {}
+    account = str(first.get("account") or "unknown").strip()
+    message = str(first.get("message") or "unknown error").strip()
+    return (
+        f"All candidate scans failed before any video candidates were collected. "
+        f"First failure @{account}: {message}"
+    )
+
+
 def resolve_partition_prompt_profile(partition: dict | None = None) -> dict:
     source = partition if isinstance(partition, dict) else CURRENT_PARTITION
     partition_id = normalize_partition_id(source.get("id") if isinstance(source, dict) else None)
@@ -1345,6 +1359,7 @@ def main() -> int:
     until_iso = now_bj.isoformat()
 
     candidates = []
+    candidate_failures = []
     completed = 0
     total_accounts = len(accounts)
     log(f"Starting candidate scan for {total_accounts} accounts in partition {partition.get('id')} with concurrency {CANDIDATE_WORKERS}.")
@@ -1362,9 +1377,16 @@ def main() -> int:
             try:
                 candidates.extend(future.result())
             except Exception as exc:
+                candidate_failures.append({
+                    "account": account,
+                    "message": str(exc),
+                })
                 log_error(f"Candidate scan failed for @{account}: {exc}")
                 log_error(traceback.format_exc())
             write_partial("candidate_scan", completed, total_accounts, len(candidates))
+
+    if should_abort_candidate_scan(total_accounts, candidates, candidate_failures):
+        raise RuntimeError(format_candidate_scan_failure(candidate_failures))
 
     deduped_candidates = {}
     for item in candidates:

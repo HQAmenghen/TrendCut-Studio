@@ -165,6 +165,19 @@ function createPlatformRpaService(deps) {
     return resolveStandaloneRuntimeVideoPath(job) || String(job?.asset?.path || '').trim();
   }
 
+  function resolvePublishTitle(job) {
+    return String(
+      job?.publishData?.title
+      || job?.asset?.metadata?.suggestedTitle
+      || job?.asset?.metadata?.title
+      || job?.asset?.metadata?.suggestedShortTitle
+      || job?.asset?.compactLabel
+      || job?.asset?.displayLabel
+      || job?.asset?.label
+      || ''
+    ).trim();
+  }
+
   function buildProfileDir(platformKey, platformConfig = {}) {
     const accountKey = String(
       platformConfig.accountId
@@ -185,7 +198,7 @@ function createPlatformRpaService(deps) {
       uploadUrl: definition.uploadUrl,
       videoPath,
       userDataDir: buildProfileDir(platformKey, platformConfig),
-      title: job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布',
+      title: resolvePublishTitle(job) || '视频发布',
       description: job.publishData?.description || job.asset?.metadata?.suggestedDescription || '',
       tags: Array.isArray(job.publishData?.tags) ? job.publishData.tags : [],
       accountId: platformConfig.accountId || platformConfig.openId || '',
@@ -398,7 +411,7 @@ function createPlatformRpaService(deps) {
       publishMode,
       accountName: getSauAccountName(platformKey, platformConfig),
       videoPath,
-      title: job.publishData?.title || job.asset?.metadata?.suggestedTitle || job.asset?.label || '视频发布',
+      title: resolvePublishTitle(job) || '视频发布',
       description: job.publishData?.description || job.asset?.metadata?.suggestedDescription || '',
       tags: Array.isArray(job.publishData?.tags) ? job.publishData.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
       headless: false
@@ -438,6 +451,9 @@ function createPlatformRpaService(deps) {
     if (!job) throw new Error('发布任务不存在');
     const task = (job.platformTasks || []).find((item) => item.platform === platformKey);
     if (!task) throw new Error(`该任务未选择${definition.label}`);
+    if (platformKey === 'xiaohongshu' && !resolvePublishTitle(job)) {
+      throw new Error('小红书发布需要标题，请在发布弹窗填写标题后重新创建任务');
+    }
 
     const publishConfig = readPublishConfig();
     const platformRootConfig = publishConfig[platformKey] || { enabled: false };
@@ -604,11 +620,6 @@ function createPlatformRpaService(deps) {
         return;
       }
       const config = readPublishConfig();
-      const platformConfigRoot = config?.[normalizedPlatform] || {};
-      if (!platformConfigRoot.enabled) {
-        reject(new Error(`${definition.label}尚未启用`));
-        return;
-      }
       const { account, platformConfig } = resolveSauAccount(normalizedPlatform, accountId, config);
       if (!account) {
         reject(new Error(`未找到${definition.label}账号: ${accountId}`));

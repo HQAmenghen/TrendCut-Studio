@@ -308,6 +308,48 @@ describe('platform RPA service', () => {
     expect(service.checkPlatformLoginStatus('douyin', { id: 'dy_sau', sauAccountName: 'dy_sau' }).status).toBe('logged_in');
   });
 
+  test('checks social account login even when platform publishing is disabled', async () => {
+    const sauDir = path.join(tempRoot, 'social-auto-upload');
+    const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
+    const payloadDir = path.join(tempRoot, 'payloads');
+    fs.mkdirSync(sauDir, { recursive: true });
+    fs.writeFileSync(adapterScript, 'print("ok")');
+
+    let onStdout = null;
+    const runPythonScriptCancellable = jest.fn((_script, _args, options) => {
+      onStdout = options.onStdout;
+      return {
+        process: {},
+        promise: new Promise(() => {}),
+        cancel: jest.fn()
+      };
+    });
+    const service = createService({
+      config: {
+        xiaohongshu: {
+          enabled: false,
+          accounts: [{ id: 'xhs_a', displayName: '小红书 A', sauAccountName: 'xhs_a' }]
+        }
+      },
+      socialAutoUploadDir: sauDir,
+      socialAutoUploadAdapterScript: adapterScript,
+      platformRpaTaskDir: payloadDir,
+      runPythonScriptCancellable
+    });
+
+    const loginCheck = service.checkPlatformLogin('xiaohongshu', 'xhs_a');
+    onStdout('STATUS|need_login|social-auto-upload|请扫码|{"percent":20,"qrCodeBase64":"data:image/png;base64,xhs","qrCodePath":"C:/tmp/xhs-qr.png"}\n');
+
+    await expect(loginCheck).resolves.toMatchObject({
+      success: true,
+      status: 'need_scan',
+      platform: 'xiaohongshu',
+      accountId: 'xhs_a',
+      sauAccountName: 'xhs_a',
+      qrCodeBase64: 'data:image/png;base64,xhs'
+    });
+  });
+
   test('starts a new platform content manager session after the previous process was killed', async () => {
     const sauDir = path.join(tempRoot, 'social-auto-upload');
     const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
@@ -408,6 +450,30 @@ describe('platform RPA service', () => {
       if (previousSauPython === undefined) delete process.env.SOCIAL_AUTO_UPLOAD_PYTHON;
       else process.env.SOCIAL_AUTO_UPLOAD_PYTHON = previousSauPython;
     }
+  });
+
+  test('rejects xiaohongshu publish tasks without a resolvable title', async () => {
+    const videoPath = path.join(tempRoot, 'video.mp4');
+    const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
+    const payloadDir = path.join(tempRoot, 'tasks');
+    fs.writeFileSync(videoPath, 'video');
+    fs.writeFileSync(adapterScript, 'print("ok")');
+
+    const job = createJob('job_missing_title', videoPath, 'xiaohongshu');
+    job.publishData.title = '';
+    job.asset.label = '';
+    job.asset.metadata = {};
+
+    const service = createService({
+      jobs: [job],
+      socialAutoUploadDir: tempRoot,
+      socialAutoUploadAdapterScript: adapterScript,
+      platformRpaTaskDir: payloadDir
+    });
+
+    await expect(service.startPlatformRpa('job_missing_title', 'xiaohongshu', 'draft'))
+      .rejects
+      .toThrow('小红书发布需要标题');
   });
 
   test('prefers project vendored social-auto-upload when no override is configured', async () => {

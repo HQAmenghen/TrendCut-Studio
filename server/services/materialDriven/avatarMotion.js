@@ -7,6 +7,10 @@ const AVATAR_MOTION_PLAN_FILE = 'avatar_motion_plan.json';
 const AVATAR_MOTION_MANIFEST_FILE = 'avatar_motion_manifest.json';
 const AVATAR_MOTION_SOURCE_FILE = 'avatar_motion_source.mp4';
 const AVATAR_MOTION_SEGMENTS_DIR = 'motion_segments';
+const SCRIPT_UNITS_FILE = 'script_units.json';
+const EDIT_PLAN_FILE = 'edit_plan.json';
+const CLIP_MATCHES_FILE = 'clip_matches.json';
+const SPEECH_ALIGNMENT_FILE = 'speech_alignment.json';
 const MOTION_PLAN_SCRIPT = path.join(__dirname, '../../../python/pipeline/avatar_motion_plan.py');
 const MOTION_SOURCE_BUILDER_SCRIPT = path.join(__dirname, '../../../python/pipeline/avatar_motion_source_builder.py');
 const DEFAULT_ACTION_PRESET_DIR = path.join(__dirname, '../../../config/avatar_actions');
@@ -70,6 +74,7 @@ async function generateAvatarMotion({
   avatarMotionPlanner,
   avatarMotionLlmProvider,
   avatarMotionLlmModel,
+  speechAlignmentPath,
   fps,
   runPython = runPythonScript
 } = {}) {
@@ -116,6 +121,22 @@ async function generateAvatarMotion({
   }
   if (llmModel) {
     planArgs.push('--llm-model', llmModel);
+  }
+  const resolvedSpeechAlignmentPath = speechAlignmentPath || path.join(outputDir, SPEECH_ALIGNMENT_FILE);
+  if (fs.existsSync(resolvedSpeechAlignmentPath)) {
+    planArgs.push('--speech-alignment', resolvedSpeechAlignmentPath);
+  }
+  const scriptUnitsPath = path.join(outputDir, SCRIPT_UNITS_FILE);
+  const editPlanPath = path.join(outputDir, EDIT_PLAN_FILE);
+  const clipMatchesPath = path.join(outputDir, CLIP_MATCHES_FILE);
+  if (fs.existsSync(scriptUnitsPath)) {
+    planArgs.push('--script-units', scriptUnitsPath);
+  }
+  if (fs.existsSync(editPlanPath)) {
+    planArgs.push('--edit-plan', editPlanPath);
+  }
+  if (fs.existsSync(clipMatchesPath)) {
+    planArgs.push('--clip-matches', clipMatchesPath);
   }
 
   const planPayload = await runPython(MOTION_PLAN_SCRIPT, planArgs, {
@@ -169,6 +190,10 @@ module.exports = {
   AVATAR_MOTION_SEGMENTS_DIR,
   DEFAULT_ACTION_PRESET_DIR,
   DEFAULT_MOTION_IDLE_IMAGE_PATH,
+  SCRIPT_UNITS_FILE,
+  EDIT_PLAN_FILE,
+  CLIP_MATCHES_FILE,
+  SPEECH_ALIGNMENT_FILE,
   generateAvatarMotion,
   isAvatarMotionEnabled,
   isAvatarMotionRequired,

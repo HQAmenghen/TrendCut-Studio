@@ -25,6 +25,14 @@
       @resume-material-task="materialDriven.resumeMaterialTask"
       @check-login="handleCheckLogin"
     />
+
+    <XaiRunErrorModal
+      v-if="xaiTop10.errorAlert.value"
+      :alert="xaiTop10.errorAlert.value"
+      :partition-label="xaiTop10.activePartitionLabel.value"
+      @close="xaiTop10.dismissErrorAlert"
+      @retry="handleRetryXaiRun"
+    />
   </main>
 </template>
 
@@ -32,6 +40,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppHeader from './components/AppHeader.vue';
 import AutomationDashboard from './components/AutomationDashboard.vue';
+import XaiRunErrorModal from './components/XaiRunErrorModal.vue';
 import { usePublishCenter } from './composables/usePublishCenter';
 import { useXaiTop10 } from './composables/useXaiTop10';
 import { useStandalone } from './composables/useStandalone';
@@ -320,6 +329,11 @@ const handleCheckLogin = ({ platformKey, accountId }) => {
     return;
   }
   publishCenter.checkPlatformAccountLogin(platformKey, accountId);
+};
+
+const handleRetryXaiRun = async () => {
+  xaiTop10.dismissErrorAlert();
+  await xaiTop10.run();
 };
 
 onMounted(() => {

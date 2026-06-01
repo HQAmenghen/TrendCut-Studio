@@ -105,7 +105,7 @@
             <RefreshCw class="icon-sm" aria-hidden="true" />
             {{ hotListBusy ? '刷新中' : '刷新榜单' }}
           </button>
-          <button type="button" class="tool-button" :disabled="!jobId" @click="resetWorkflow">
+          <button type="button" class="tool-button" :disabled="!hasResettableWorkflow" @click="resetWorkflow">
             <RotateCcw class="icon-sm" aria-hidden="true" />
             新任务
           </button>
@@ -687,6 +687,17 @@
 
           <div class="publish-composer-form">
             <label class="field-control">
+              <span>发布标题</span>
+              <input
+                :value="publishEditor.title || publishComposerTitle"
+                type="text"
+                placeholder="默认从成品元数据读取，可手动修改。"
+                :disabled="publishComposerBusy"
+                @input="publishEditor.title = $event.target.value"
+              />
+            </label>
+
+            <label class="field-control">
               <span class="field-control-row">
                 <span>发布文案</span>
                 <button
@@ -743,6 +754,15 @@
                 </div>
               </div>
               <div v-if="!publishComposerAccountOptions.length" class="empty-row">还没有配置可用发布账号。</div>
+            </div>
+
+            <div v-if="publishCreatingStatusMessage" class="publish-composer-feedback pending">
+              {{ publishCreatingStatusMessage }}
+            </div>
+            <div v-if="publishErrorState.message" class="publish-composer-feedback error">
+              <strong>{{ publishErrorState.message }}</strong>
+              <span v-if="publishErrorState.code">错误码：{{ publishErrorState.code }}</span>
+              <span v-if="publishErrorState.hint">{{ publishErrorState.hint }}</span>
             </div>
           </div>
         </div>
@@ -1266,7 +1286,7 @@
               <h3>账号管理</h3>
             </div>
             <div class="panel-actions account-config-actions">
-              <button type="button" class="mini-button" @click="addAccountConfig('wechatChannels')">
+              <button type="button" class="mini-button" @click="openAddAccountConfig('wechatChannels')">
                 <Plus class="icon-sm" aria-hidden="true" />
                 添加配置
               </button>
@@ -1284,23 +1304,80 @@
                 <button type="button" class="mini-button" :disabled="!canCheckAccount(account)" @click="$emit('check-login', account)">
                   {{ getAccountActionLabel(account) }}
                 </button>
-                <button v-if="canManageAccount(account)" type="button" class="mini-button subtle" @click="openAccountManager(account)">
-                  管理
+                <button type="button" class="mini-button subtle" @click="openEditAccountConfig(account)">
+                  配置
+                </button>
+                <button v-if="canOpenAccountManager(account)" type="button" class="mini-button subtle" @click="openAccountManager(account)">
+                  内容
+                </button>
+                <button type="button" class="mini-button subtle danger" @click="deleteAccountConfig(account)">
+                  删除
                 </button>
               </div>
             </div>
             <div v-if="!accountCards.length" class="empty-row">暂无账号配置</div>
           </div>
           <div class="account-config-picks">
-            <button type="button" class="mini-button subtle" @click="addAccountConfig('wechatChannels')">添加视频号</button>
-            <button type="button" class="mini-button subtle" @click="addAccountConfig('douyin')">添加抖音</button>
-            <button type="button" class="mini-button subtle" @click="addAccountConfig('xiaohongshu')">添加小红书</button>
-            <button type="button" class="mini-button subtle" @click="addAccountConfig('x')">添加 X</button>
+            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('wechatChannels')">添加视频号</button>
+            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('douyin')">添加抖音</button>
+            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('xiaohongshu')">添加小红书</button>
+            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('x')">添加 X</button>
           </div>
         </GlassPanel>
 
       </div>
     </div>
+
+    <ModalBackdrop v-if="accountConfigModal.open" @close="closeAccountConfigModal">
+      <section class="source-modal account-config-modal" role="dialog" aria-modal="true" aria-label="账号配置">
+        <div class="modal-heading">
+          <div>
+            <span class="panel-kicker">Account Config</span>
+            <h3>{{ accountConfigModal.mode === 'edit' ? '配置账号' : '添加账号' }}</h3>
+          </div>
+          <button type="button" class="mini-button" @click="closeAccountConfigModal">关闭</button>
+        </div>
+
+        <div class="account-config-form">
+          <label class="field-control account-config-field">
+            <span>平台</span>
+            <select
+              v-model="accountConfigModal.platformKey"
+              class="account-config-input"
+              :disabled="accountConfigModal.mode === 'edit'"
+              @change="resetAccountConfigForm(accountConfigModal.platformKey)"
+            >
+              <option v-for="platform in accountPlatformOptions" :key="platform.key" :value="platform.key">
+                {{ platform.label }}
+              </option>
+            </select>
+          </label>
+
+          <label v-for="field in accountConfigFields" :key="field.key" class="field-control account-config-field">
+            <span>
+              {{ field.label }}
+              <em v-if="field.required">必填</em>
+            </span>
+            <input
+              v-model="accountConfigModal.form[field.key]"
+              :type="field.secret ? 'password' : 'text'"
+              :class="['account-config-input', field.required && !String(accountConfigModal.form[field.key] || '').trim() ? 'missing-field' : '']"
+              :placeholder="field.placeholder || ''"
+            />
+          </label>
+
+          <div v-if="accountConfigModal.error" class="issue-box">{{ accountConfigModal.error }}</div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="tool-button" :disabled="accountConfigModal.saving" @click="submitAccountConfig">
+            <Save class="icon-sm" aria-hidden="true" />
+            {{ accountConfigModal.saving ? '保存中' : '保存账号' }}
+          </button>
+          <button type="button" class="tool-button" @click="closeAccountConfigModal">取消</button>
+        </div>
+      </section>
+    </ModalBackdrop>
 
     <ModalBackdrop v-if="outputPreviewOpen" @close="closeOutputPreview">
       <section class="source-modal output-preview-modal" role="dialog" aria-modal="true" aria-label="全屏预览">
@@ -1455,6 +1532,15 @@ const autoPilotModalOpen = ref(false);
 const autoPilotDropdownOpen = ref('');
 const hotListRefreshing = ref(false);
 const hotListProgressKey = ref(0);
+const accountConfigModal = ref({
+  open: false,
+  mode: 'add',
+  platformKey: 'wechatChannels',
+  accountId: '',
+  saving: false,
+  error: '',
+  form: {}
+});
 
 const steps = [
   { id: 1, title: '接入素材', desc: '本地文件或热点素材' },
@@ -1477,6 +1563,42 @@ const readValue = (source, key, fallback = '') => {
 const readFunction = (source, key) => {
   const fn = source?.[key];
   return typeof fn === 'function' ? fn : null;
+};
+
+const accountRequiredFields = {
+  wechatChannels: ['finderUserName', 'helperAccount'],
+  douyin: ['sauAccountName'],
+  xiaohongshu: ['sauAccountName'],
+  x: ['accessToken']
+};
+
+const accountFormFields = {
+  wechatChannels: [
+    { key: 'displayName', label: '账号备注' },
+    { key: 'finderUserName', label: '视频号名称', required: true },
+    { key: 'helperAccount', label: '视频号助手账号', required: true }
+  ],
+  douyin: [
+    { key: 'displayName', label: '账号备注' },
+    { key: 'sauAccountName', label: '登录账号别名', required: true, placeholder: 'douyin_main' }
+  ],
+  xiaohongshu: [
+    { key: 'displayName', label: '账号备注' },
+    { key: 'sauAccountName', label: '登录账号别名', required: true, placeholder: 'xhs_main' }
+  ],
+  x: [
+    { key: 'displayName', label: '账号备注' },
+    { key: 'username', label: 'X 用户名', placeholder: '不带 @' },
+    { key: 'accessToken', label: '访问令牌', required: true, secret: true }
+  ]
+};
+
+const buildAccountForm = (platformKey, account = {}) => {
+  const form = {};
+  for (const field of accountFormFields[platformKey] || []) {
+    form[field.key] = String(account?.[field.key] ?? '');
+  }
+  return form;
 };
 
 const jobId = computed(() => readValue(props.materialDriven, 'jobId', ''));
@@ -1506,10 +1628,12 @@ const publishStats = computed(() => readValue(props.publishCenter, 'stats', {
 const publishConfig = computed(() => readValue(props.publishCenter, 'config', {}));
 const publishAssets = computed(() => readValue(props.publishCenter, 'assets', []));
 const publishCreating = computed(() => Boolean(readValue(props.publishCenter, 'creating', false)));
+const publishCreatingStatusMessage = computed(() => readValue(props.publishCenter, 'creatingStatusMessage', ''));
 const publishLoading = computed(() => Boolean(readValue(props.publishCenter, 'loading', false)));
 const publishGeneratingDescription = computed(() => Boolean(readValue(props.publishCenter, 'generatingDescription', false)));
 const publishJobs = computed(() => readValue(props.publishCenter, 'jobs', []).filter((job) => !job.archived).slice(0, 4));
 const publishLogs = computed(() => readValue(props.publishCenter, 'recentLogs', []));
+const publishErrorState = computed(() => readValue(props.publishCenter, 'errorState', { message: '', code: '', stage: '', hint: '', details: '' }));
 const publishEditor = computed(() => readValue(props.publishCenter, 'editor', {
   title: '',
   description: '',
@@ -1537,6 +1661,8 @@ const selfCheckSummary = computed(() => readValue(props.publishCenter, 'selfChec
 }));
 const selfCheckHighlights = computed(() => readValue(props.publishCenter, 'selfCheckHighlights', []).slice(0, 3));
 const platformDefs = computed(() => readValue(props.publishCenter, 'platformDefs', []));
+const accountPlatformOptions = computed(() => platformDefs.value.filter((platform) => ['wechatChannels', 'douyin', 'xiaohongshu', 'x'].includes(platform.key)));
+const accountConfigFields = computed(() => accountFormFields[accountConfigModal.value.platformKey] || []);
 const accountLoginStatus = computed(() => readValue(props.publishCenter, 'accountLoginStatus', {}));
 const qrCodeData = computed(() => readValue(props.publishCenter, 'qrCodeData', {
   show: false,
@@ -1578,6 +1704,17 @@ const unifiedDbTasks = computed(() => readValue(props.standalone, 'unifiedTasks'
 const isBusy = computed(() => uploading.value || rebuildingPlan.value || rerenderingVideo.value);
 const sourceLocked = computed(() => Boolean(isBusy.value || jobId.value));
 const hasSource = computed(() => Boolean(selectedFile.value || materialUrl.value));
+const hasResettableWorkflow = computed(() => Boolean(
+  jobId.value
+  || finalVideoUrl.value
+  || progress.value > 0
+  || currentStep.value > 0
+  || statusText.value
+  || errorText.value
+  || outputPath.value
+  || materialUrl.value
+  || selectedFile.value
+));
 const scriptUnitCount = computed(() => Array.isArray(scriptUnits.value) ? scriptUnits.value.length : 0);
 const autoPilotEnabled = computed(() => Boolean(publishConfig.value?.global?.autoPilotEnabled));
 const autoPilotUseCurrentRanking = computed(() => Boolean(publishConfig.value?.global?.autoPilotUseCurrentRanking));
@@ -1622,6 +1759,22 @@ const deliveryAsset = computed(() => {
   return assets[0] || null;
 });
 const deliveryPreviewUrl = computed(() => deliveryAsset.value?.url || (verticalReady.value ? verticalFinalVideoUrl.value : finalVideoUrl.value));
+const selectedPublishAsset = computed(() =>
+  publishComposerAsset.value
+  || readValue(props.publishCenter, 'selectedAsset', null)
+  || deliveryAsset.value
+);
+const publishComposerTitle = computed(() => {
+  const asset = selectedPublishAsset.value || {};
+  return String(
+    publishEditor.value?.title
+    || asset?.metadata?.suggestedTitle
+    || asset?.metadata?.title
+    || asset?.compactLabel
+    || asset?.label
+    || '视频发布'
+  ).trim();
+});
 const publishComposerAccountOptions = computed(() => {
   const defs = Array.isArray(platformDefs.value) ? platformDefs.value : [];
   return defs.flatMap((platform) => getAutoPilotAccountOptions(platform.key).map((account) => ({
@@ -2180,6 +2333,7 @@ const accountCards = computed(() => {
       key: statusKey,
       platformKey,
       accountId,
+      source: account,
       platformLabel: platformLabel(platformKey),
       label: account.displayName || account.sauAccountName || account.helperAccount || account.finderUserName || accountId || '未命名账号',
       status: status.status || '',
@@ -2201,7 +2355,7 @@ const republishJob = async (job) => {
 };
 
 const canCheckAccount = (account) => ['wechatChannels', 'douyin', 'xiaohongshu'].includes(account?.platformKey);
-const canManageAccount = (account) => ['wechatChannels', 'douyin', 'xiaohongshu'].includes(account?.platformKey);
+const canOpenAccountManager = (account) => ['wechatChannels', 'douyin', 'xiaohongshu'].includes(account?.platformKey);
 const getAccountActionLabel = (account) => {
   if (!canCheckAccount(account)) return '无需扫码';
   if (account?.status === 'checking' || account?.status === 'checking_login') return '检测中';
@@ -2209,7 +2363,7 @@ const getAccountActionLabel = (account) => {
   return '检测';
 };
 const openAccountManager = async (account) => {
-  if (!canManageAccount(account)) return;
+  if (!canOpenAccountManager(account)) return;
   if (account.platformKey === 'wechatChannels') {
     const fn = readFunction(props.publishCenter, 'openWechatContentManager');
     if (fn) await fn(account.accountId);
@@ -2218,20 +2372,134 @@ const openAccountManager = async (account) => {
   const fn = readFunction(props.publishCenter, 'openPlatformContentManager');
   if (fn) await fn(account.platformKey, account.accountId);
 };
-const addAccountConfig = (platformKey = 'wechatChannels') => {
+
+const resetAccountConfigForm = (platformKey = 'wechatChannels', account = {}) => {
+  const normalized = accountFormFields[platformKey] ? platformKey : 'wechatChannels';
+  accountConfigModal.value.platformKey = normalized;
+  accountConfigModal.value.form = buildAccountForm(normalized, account);
+  accountConfigModal.value.error = '';
+};
+
+const openAddAccountConfig = (platformKey = 'wechatChannels') => {
+  accountConfigModal.value.mode = 'add';
+  accountConfigModal.value.accountId = '';
+  accountConfigModal.value.saving = false;
+  resetAccountConfigForm(platformKey);
+  accountConfigModal.value.open = true;
+};
+
+const openEditAccountConfig = (account) => {
+  if (!account?.platformKey || !account?.accountId) return;
+  accountConfigModal.value.mode = 'edit';
+  accountConfigModal.value.accountId = account.accountId;
+  accountConfigModal.value.saving = false;
+  resetAccountConfigForm(account.platformKey, account.source || {});
+  accountConfigModal.value.open = true;
+};
+
+const closeAccountConfigModal = () => {
+  if (accountConfigModal.value.saving) return;
+  accountConfigModal.value.open = false;
+  accountConfigModal.value.error = '';
+};
+
+const getAccountConfigError = () => {
+  const platformKey = accountConfigModal.value.platformKey;
+  const required = accountRequiredFields[platformKey] || [];
+  const missing = required.filter((field) => !String(accountConfigModal.value.form[field] || '').trim());
+  if (!missing.length) return '';
+  const labels = missing.map((field) => (accountFormFields[platformKey] || []).find((item) => item.key === field)?.label || field);
+  return `请填写必填信息：${labels.join('、')}`;
+};
+
+const saveAccountConfig = async () => {
+  const fn = readFunction(props.publishCenter, 'saveConfig');
+  if (!fn) return true;
+  return await fn('账号配置');
+};
+
+const addAccountConfig = async (platformKey = 'wechatChannels', values = {}) => {
   const normalized = String(platformKey || 'wechatChannels');
+  const updateConfig = readFunction(props.publishCenter, 'updateConfigField');
+  if (updateConfig) updateConfig(normalized, 'enabled', true);
   if (normalized === 'wechatChannels') {
     const fn = readFunction(props.publishCenter, 'addWechatAccount');
-    if (fn) fn();
+    if (fn) fn(values);
     return;
   }
   if (normalized === 'x') {
     const fn = readFunction(props.publishCenter, 'addXAccount');
-    if (fn) fn();
+    if (fn) fn(values);
     return;
   }
   const fn = readFunction(props.publishCenter, 'addSauAccount');
-  if (fn) fn(normalized);
+  if (fn) fn(normalized, values);
+};
+
+const updateAccountConfig = (platformKey, accountId, values = {}) => {
+  if (platformKey === 'wechatChannels') {
+    const fn = readFunction(props.publishCenter, 'updateWechatAccountField');
+    if (fn) Object.entries(values).forEach(([field, value]) => fn(accountId, field, value));
+    return;
+  }
+  if (platformKey === 'x') {
+    const fn = readFunction(props.publishCenter, 'updateXAccountField');
+    if (fn) Object.entries(values).forEach(([field, value]) => fn(accountId, field, value));
+    return;
+  }
+  const fn = readFunction(props.publishCenter, 'updateSauAccountField');
+  if (fn) Object.entries(values).forEach(([field, value]) => fn(platformKey, accountId, field, value));
+};
+
+const removeAccountConfig = (account) => {
+  if (account.platformKey === 'wechatChannels') {
+    const fn = readFunction(props.publishCenter, 'removeWechatAccount');
+    if (fn) fn(account.accountId);
+    return;
+  }
+  if (account.platformKey === 'x') {
+    const fn = readFunction(props.publishCenter, 'removeXAccount');
+    if (fn) fn(account.accountId);
+    return;
+  }
+  const fn = readFunction(props.publishCenter, 'removeSauAccount');
+  if (fn) fn(account.platformKey, account.accountId);
+};
+
+const submitAccountConfig = async () => {
+  const error = getAccountConfigError();
+  if (error) {
+    accountConfigModal.value.error = error;
+    return;
+  }
+  const platformKey = accountConfigModal.value.platformKey;
+  const values = { ...accountConfigModal.value.form };
+  accountConfigModal.value.saving = true;
+  accountConfigModal.value.error = '';
+  try {
+    if (accountConfigModal.value.mode === 'edit') {
+      updateAccountConfig(platformKey, accountConfigModal.value.accountId, values);
+    } else {
+      await addAccountConfig(platformKey, values);
+    }
+    const saved = await saveAccountConfig();
+    if (saved === false) {
+      accountConfigModal.value.error = '保存账号配置失败，请查看右侧日志或稍后重试。';
+      return;
+    }
+    accountConfigModal.value.open = false;
+  } catch (err) {
+    accountConfigModal.value.error = err?.message || '保存账号失败';
+  } finally {
+    accountConfigModal.value.saving = false;
+  }
+};
+
+const deleteAccountConfig = async (account) => {
+  if (!account?.accountId) return;
+  if (!window.confirm(`确定删除「${account.label || account.accountId}」吗？`)) return;
+  removeAccountConfig(account);
+  await saveAccountConfig();
 };
 const closeQrCodeModal = () => {
   const fn = readFunction(props.publishCenter, 'closeQrCodeModal');
@@ -2551,6 +2819,7 @@ const useAssetForPublish = async (asset) => {
   publishComposerAsset.value = asset;
   const fn = readFunction(props.publishCenter, 'selectAsset');
   if (fn) await fn(asset.id);
+  publishEditor.value.title = publishComposerTitle.value;
   publishEditor.value.tagStrategy = 'model';
   publishEditor.value.tags = '';
   ensurePublishComposerAccountSelection();
@@ -2602,17 +2871,21 @@ const createPublishFromComposer = async (mode = 'draft') => {
   if (!createJob) return;
   publishActionMode.value = mode;
   try {
+    publishEditor.value.title = publishComposerTitle.value;
     publishEditor.value.tagStrategy = 'model';
     publishEditor.value.tags = '';
     ensurePublishComposerAccountSelection();
     const job = await createJob();
     if (job && runPlatform && ['draft', 'publish'].includes(mode)) {
       const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];
+      let startedAll = true;
       for (const task of tasks) {
         if (task?.platform) {
-          await runPlatform(job, task.platform, mode);
+          const started = await runPlatform(job, task.platform, mode);
+          if (!started) startedAll = false;
         }
       }
+      if (!startedAll) return;
     }
     if (job) {
       publishComposerOpen.value = false;
@@ -2628,6 +2901,7 @@ const createPublishFromOutput = async (mode = 'publish') => {
   publishComposerAsset.value = deliveryAsset.value;
   const selectAsset = readFunction(props.publishCenter, 'selectAsset');
   if (selectAsset) await selectAsset(deliveryAsset.value.id);
+  publishEditor.value.title = publishComposerTitle.value;
   await createPublishFromComposer(mode);
   publishComposerAsset.value = null;
 };
@@ -3672,6 +3946,32 @@ h3 {
 .account-select-option strong {
   color: var(--strong-text);
   font-size: 13px;
+}
+
+.publish-composer-feedback {
+  display: grid;
+  gap: 4px;
+  border-radius: 7px;
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.publish-composer-feedback.pending {
+  border: 1px solid color-mix(in srgb, var(--brand-a) 26%, var(--line-soft));
+  background: color-mix(in srgb, var(--brand-a) 8%, var(--glass-panel));
+  color: var(--strong-text);
+}
+
+.publish-composer-feedback.error {
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line-soft));
+  background: color-mix(in srgb, var(--danger) 8%, var(--glass-panel));
+  color: var(--danger);
+}
+
+.publish-composer-feedback span {
+  color: inherit;
+  opacity: 0.88;
 }
 
 .asset-detail-side {
@@ -4974,6 +5274,85 @@ h3 {
   margin-top: 10px;
 }
 
+.account-config-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  overflow: auto;
+}
+
+.account-config-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-config-field {
+  min-height: auto;
+}
+
+.account-config-field span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.account-config-field em {
+  color: var(--brand-a);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.account-config-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--input-bg);
+  color: var(--strong-text);
+  padding: 7px 9px;
+  font-size: 13px;
+  font-weight: 850;
+  color-scheme: inherit;
+}
+
+select.account-config-input {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 15px,
+    calc(100% - 11px) 15px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 30px;
+}
+
+.account-config-input:focus {
+  border-color: color-mix(in srgb, var(--brand-a) 58%, var(--input-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-a) 14%, transparent);
+}
+
+.account-config-input.missing-field {
+  border-color: color-mix(in srgb, var(--danger) 76%, var(--input-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.account-config-form .issue-box {
+  grid-column: 1 / -1;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line-soft));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--glass-panel));
+  color: var(--danger);
+  padding: 9px 10px;
+  font-size: 12px;
+  font-weight: 850;
+}
+
 .plan-row > span {
   color: var(--brand-a);
   font-weight: 850;
@@ -4986,7 +5365,16 @@ h3 {
 }
 
 .account-row-actions {
-  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(42px, auto));
+  min-width: 96px;
+  justify-content: end;
+}
+
+.account-row-actions .mini-button {
+  min-height: 28px;
+  padding: 5px 8px;
+  font-size: 12px;
 }
 
 .health-score {
@@ -5031,6 +5419,10 @@ h3 {
 
 .mini-button.subtle {
   color: var(--muted);
+}
+
+.mini-button.subtle.danger {
+  color: var(--danger);
 }
 
 .issue-row,
@@ -5203,6 +5595,10 @@ h3 {
   }
 
   .publish-composer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-config-form {
     grid-template-columns: 1fr;
   }
 

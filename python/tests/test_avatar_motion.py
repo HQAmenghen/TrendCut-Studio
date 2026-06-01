@@ -18,6 +18,8 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT):
 from pipeline.avatar_motion_plan import (  # noqa: E402
     build_motion_plan,
     build_motion_plan_auto,
+    build_llm_prompt,
+    compile_motion_segments,
     parse_llm_assignments,
     resolve_audio_duration,
 )
@@ -87,6 +89,78 @@ class AvatarMotionPlanTest(unittest.TestCase):
         self.assertIn("both_hand_open", actions)
         self.assertEqual(plan["planner"]["method"], "local_sparse_semantic")
 
+    def test_motion_plan_places_active_gesture_after_material_cutaway(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            action_dir = Path(temp_dir) / "avatar_actions"
+            write_action_meta(action_dir, "right_hand_emphasis", ["emphasis", "number"])
+            script_units = [
+                {"id": "script_001", "role": "hook", "text": "这里有一个非常关键的信号，必须重点看。"}
+            ]
+            edit_plan = {
+                "blocks": [
+                    {
+                        "id": "block_001",
+                        "type": "evidence_clip",
+                        "script_ref": "script_001",
+                        "duration": 4.0,
+                        "visual_layout": "cutaway_silent",
+                        "use_cutaway": True,
+                    }
+                ]
+            }
+            plan = build_motion_plan(
+                "这里有一个非常关键的信号，必须重点看。",
+                8.0,
+                fps=25,
+                action_dir=action_dir,
+                script_units=script_units,
+                edit_plan=edit_plan,
+            )
+
+        action_segments = [segment for segment in plan["segments"] if segment["action"] != "idle_talking"]
+
+        self.assertEqual(len(action_segments), 1)
+        self.assertEqual(action_segments[0]["sourceSegmentId"], "script_001")
+        self.assertGreaterEqual(action_segments[0]["timing"]["activeTimelineStart"], 4.0)
+        self.assertLessEqual(action_segments[0]["timing"]["activeTimelineEnd"], 8.25)
+        self.assertTrue(plan["planner"]["cutawayAware"])
+        self.assertTrue(plan["planner"]["usesScriptUnits"])
+
+    def test_motion_plan_uses_speech_alignment_anchor_for_active_gesture(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            action_dir = Path(temp_dir) / "avatar_actions"
+            write_action_meta(action_dir, "right_hand_emphasis", ["emphasis", "number"])
+            speech_alignment = {
+                "segments": [
+                    {
+                        "id": "speech_001",
+                        "start": 0.0,
+                        "end": 6.0,
+                        "text": "普通说明，这里有一个关键点，然后继续。"
+                    }
+                ],
+                "words": [
+                    {"start": 0.0, "end": 1.0, "text": "普通说明"},
+                    {"start": 3.9, "end": 4.2, "text": "关键"},
+                    {"start": 4.2, "end": 5.5, "text": "然后继续"},
+                ],
+            }
+            plan = build_motion_plan(
+                "普通说明，这里有一个关键点，然后继续。",
+                6.0,
+                fps=25,
+                action_dir=action_dir,
+                speech_alignment=speech_alignment,
+            )
+
+        action_segments = [segment for segment in plan["segments"] if segment["action"] != "idle_talking"]
+
+        self.assertEqual(len(action_segments), 1)
+        self.assertEqual(action_segments[0]["timing"]["targetSource"], "speech_alignment_anchor")
+        self.assertLessEqual(action_segments[0]["timing"]["activeTimelineStart"], 4.05)
+        self.assertGreaterEqual(action_segments[0]["timing"]["activeTimelineEnd"], 4.05)
+        self.assertTrue(plan["planner"]["usesSpeechAlignment"])
+
     def test_llm_assignment_parser_preserves_timeline_and_applies_pacing(self):
         timeline = [
             {"id": "motion_001", "start": 0.0, "end": 2.0, "duration": 2.0, "text": "这是关键。"},
@@ -112,6 +186,114 @@ class AvatarMotionPlanTest(unittest.TestCase):
         self.assertEqual(segments[1]["semantic"], "llm_cooldown_suppressed")
         self.assertEqual(segments[2]["action"], "both_hand_open")
         self.assertEqual(segments[2]["start"], 5.2)
+
+    def test_llm_assignment_uses_model_selected_word_anchor(self):
+        timeline = [
+            {
+                "id": "motion_001",
+                "start": 0.0,
+                "end": 6.0,
+                "duration": 6.0,
+                "text": "普通说明，这里有一个关键点，然后继续。",
+                "visibility": {
+                    "avatarVisibleStart": 0.0,
+                    "avatarVisibleEnd": 6.0,
+                    "avatarVisibleDuration": 6.0,
+                },
+                "alignmentWords": [
+                    {"index": 0, "start": 0.0, "end": 1.0, "text": "普通说明"},
+                    {"index": 1, "start": 3.9, "end": 4.2, "text": "关键"},
+                    {"index": 2, "start": 4.2, "end": 5.5, "text": "然后继续"},
+                ],
+            }
+        ]
+        profiles = {
+            "right_hand_emphasis": {
+                "intensity": 0.68,
+                "sourceDuration": 1.0,
+                "activeStart": 0.1,
+                "activeEnd": 0.5,
+            },
+        }
+        response = json.dumps({
+            "segments": [
+                {
+                    "id": "motion_001",
+                    "action": "right_hand_emphasis",
+                    "reason": "强调模型选择的关键锚词",
+                    "intensity": 0.7,
+                    "anchorWordIndex": 1,
+                    "anchorTime": None,
+                },
+            ]
+        }, ensure_ascii=False)
+
+        decisions = parse_llm_assignments(response, timeline, profiles)
+        segments = [
+            segment for segment in compile_motion_segments(decisions, profiles, 6.0)
+            if segment["action"] != "idle_talking"
+        ]
+
+        self.assertEqual(decisions[0]["anchor"]["source"], "llm_speech_alignment_anchor")
+        self.assertEqual(decisions[0]["anchor"]["word"], "关键")
+        self.assertEqual(segments[0]["timing"]["targetSource"], "llm_speech_alignment_anchor")
+        self.assertLessEqual(segments[0]["timing"]["activeTimelineStart"], 4.05)
+        self.assertGreaterEqual(segments[0]["timing"]["activeTimelineEnd"], 4.05)
+
+    def test_llm_prompt_includes_timed_subtitles_and_edit_context(self):
+        timeline = [
+            {
+                "id": "script_001",
+                "start": 0.0,
+                "end": 8.0,
+                "duration": 8.0,
+                "text": "素材先展示，然后数字人强调关键点。",
+                "visibility": {
+                    "avatarVisibleStart": 4.0,
+                    "avatarVisibleEnd": 8.0,
+                    "avatarVisibleDuration": 4.0,
+                    "materialCutawayStart": 0.0,
+                    "materialCutawayEnd": 4.0,
+                },
+                "alignmentWords": [
+                    {"index": 2, "start": 4.9, "end": 5.2, "text": "关键"},
+                ],
+            }
+        ]
+        profiles = {
+            "right_hand_emphasis": {
+                "label": "右手强调",
+                "tags": ["emphasis"],
+                "sourceDuration": 1.0,
+                "activeStart": 0.1,
+                "activeEnd": 0.5,
+            },
+        }
+        edit_plan = {
+            "blocks": [
+                {
+                    "id": "block_001",
+                    "type": "evidence_clip",
+                    "script_ref": "script_001",
+                    "duration": 4.0,
+                    "visual_layout": "cutaway_silent",
+                    "use_cutaway": True,
+                }
+            ]
+        }
+        speech_alignment = {
+            "segments": [{"id": "script_001", "start": 0.0, "end": 8.0, "text": "素材先展示，然后数字人强调关键点。"}],
+            "words": [{"index": 2, "start": 4.9, "end": 5.2, "text": "关键"}],
+        }
+
+        prompt = build_llm_prompt(timeline, profiles, edit_plan=edit_plan, speech_alignment=speech_alignment)
+
+        self.assertIn('"timed_subtitles"', prompt)
+        self.assertIn('"edit_context"', prompt)
+        self.assertIn('"avatar_visibility_windows"', prompt)
+        self.assertIn('"alignmentWords"', prompt)
+        self.assertIn('"anchorWordIndex"', prompt)
+        self.assertIn("素材插片覆盖", prompt)
 
     def test_auto_falls_back_to_local_when_llm_fails(self):
         plan = build_motion_plan_auto(

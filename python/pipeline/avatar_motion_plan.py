@@ -25,8 +25,14 @@ DEFAULT_CHARS_PER_SECOND = 4.5
 MIN_GESTURE_INTERVAL_SECONDS = 3.0
 TARGET_GESTURE_INTERVAL_SECONDS = 6.0
 MIN_GESTURE_SEGMENT_SECONDS = 0.8
+MIN_VISIBLE_GESTURE_SECONDS = 0.8
 SENTENCE_PATTERN = re.compile(r"[^。！？!?…\n]+[。！？!?…]?", re.UNICODE)
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]", re.UNICODE)
+ANCHOR_TRIGGER_KEYWORDS = [
+    "关键", "重点", "核心", "注意", "必须", "信号", "结论", "风险", "不要", "别",
+    "不过", "但是", "然而", "为什么", "原因", "前两次", "这次", "第三次", "涨", "跌",
+    "百分之", "唯一依据", "下单", "谨慎",
+]
 
 
 ACTION_SEMANTIC_PROFILES = {
@@ -202,6 +208,11 @@ def load_action_profiles(action_dir: Path | None = None) -> dict:
                 "keywords": list(base.get("keywords") or []),
                 "intensity": float(base.get("intensity") or 0.5),
                 "tags": tags,
+                "sourceDuration": float(meta.get("sourceDuration") or meta.get("duration") or 1.0),
+                "activeStart": float(meta.get("activeStart") or 0.0),
+                "activeEnd": float(meta.get("activeEnd") or meta.get("duration") or meta.get("sourceDuration") or 1.0),
+                "neutralHoldStart": float(meta.get("neutralHoldStart") or meta.get("activeEnd") or 0.0),
+                "cooldown": float(meta.get("cooldown") or TARGET_GESTURE_INTERVAL_SECONDS),
             }
 
     if not profiles:
@@ -214,6 +225,11 @@ def load_action_profiles(action_dir: Path | None = None) -> dict:
                 "keywords": list(base["keywords"]),
                 "intensity": float(base["intensity"]),
                 "tags": [],
+                "sourceDuration": 1.6,
+                "activeStart": 0.4,
+                "activeEnd": 1.2,
+                "neutralHoldStart": 1.2,
+                "cooldown": TARGET_GESTURE_INTERVAL_SECONDS,
             }
     return profiles
 
@@ -246,29 +262,274 @@ def choose_action(text: str, profiles: dict, recent_actions: list[str]) -> tuple
     return best["action"], "semantic_match", float(best["intensity"]), {"candidates": candidates[:4]}
 
 
-def build_timeline_segments(narration_text: str, duration: float) -> list[dict]:
-    sentences = split_sentences(narration_text)
-    if not sentences:
+def normalize_script_units(script_units: list | None) -> list[dict]:
+    units = []
+    for index, item in enumerate(script_units or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        units.append({
+            "id": str(item.get("id") or f"script_{index:03d}"),
+            "role": item.get("role"),
+            "text": text,
+        })
+    return units
+
+
+def load_script_units(path: Path | None) -> list[dict]:
+    if not path or not path.exists():
+        return []
+    payload = read_json_file(path)
+    if isinstance(payload, dict):
+        return normalize_script_units(payload.get("script_units") or [])
+    if isinstance(payload, list):
+        return normalize_script_units(payload)
+    return []
+
+
+def load_speech_alignment(path: Path | None) -> dict:
+    if not path or not path.exists():
+        return {}
+    payload = read_json_file(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def normalize_alignment_words(speech_alignment: dict | None = None) -> list[dict]:
+    words = []
+    if not isinstance(speech_alignment, dict):
+        return words
+    for index, item in enumerate(speech_alignment.get("words") or []):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or item.get("word") or "").strip()
+        try:
+            start = float(item.get("start"))
+            end = float(item.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if not text or end <= start:
+            continue
+        words.append({
+            "index": int(item.get("index") if item.get("index") is not None else index),
+            "start": start,
+            "end": end,
+            "text": text,
+        })
+    return words
+
+
+def normalize_alignment_segments(speech_alignment: dict | None = None) -> list[dict]:
+    segments = []
+    if not isinstance(speech_alignment, dict):
+        return segments
+    for index, item in enumerate(speech_alignment.get("segments") or []):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        try:
+            start = float(item.get("start"))
+            end = float(item.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if not text or end <= start:
+            continue
+        segments.append({
+            "id": str(item.get("id") or f"speech_{index + 1:03d}"),
+            "role": "speech_alignment",
+            "text": text,
+            "start": start,
+            "end": end,
+        })
+    return segments
+
+
+def is_numberish_text(text: str) -> bool:
+    return bool(re.search(r"(第[一二三四五六七八九十]+次|二零|百分之|\d+|涨|跌)", str(text or "")))
+
+
+def find_alignment_anchor_time(text: str, start: float, end: float, alignment_words: list[dict]) -> dict | None:
+    if not alignment_words:
+        return None
+    sample = str(text or "").strip()
+    if not sample:
+        return None
+
+    candidates = []
+    for word in alignment_words:
+        center = (float(word["start"]) + float(word["end"])) / 2.0
+        if center < start - 0.08 or center > end + 0.08:
+            continue
+        token = str(word.get("text") or "").strip()
+        compact_token = re.sub(r"\s+", "", token)
+        score = 0.0
+        if compact_token and compact_token in sample:
+            score += 1.0
+        if any(keyword in sample and keyword in compact_token for keyword in ANCHOR_TRIGGER_KEYWORDS):
+            score += 2.0
+        if any(keyword in compact_token for keyword in ANCHOR_TRIGGER_KEYWORDS):
+            score += 1.0
+        if is_numberish_text(compact_token):
+            score += 0.8
+        if score <= 0:
+            continue
+        candidates.append({
+            "triggerTime": round(center, 3),
+            "word": token,
+            "score": round(score, 3),
+            "wordStart": round(float(word["start"]), 3),
+            "wordEnd": round(float(word["end"]), 3),
+        })
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return candidates[0]
+
+
+def collect_alignment_words_for_segment(start: float, end: float, alignment_words: list[dict], limit: int = 24) -> list[dict]:
+    words = []
+    for word in alignment_words:
+        center = (float(word["start"]) + float(word["end"])) / 2.0
+        if center < start - 0.08 or center > end + 0.08:
+            continue
+        words.append({
+            "index": int(word["index"]),
+            "start": round(float(word["start"]), 3),
+            "end": round(float(word["end"]), 3),
+            "text": str(word.get("text") or ""),
+        })
+    return words[:limit]
+
+
+def extract_cutaway_windows(edit_plan: dict | None = None, clip_matches: dict | None = None) -> dict:
+    windows = {}
+    if isinstance(clip_matches, dict):
+        for item in clip_matches.get("clip_matches") or []:
+            if not isinstance(item, dict) or not item.get("use_cutaway"):
+                continue
+            script_ref = str(item.get("script_ref") or "").strip()
+            if not script_ref:
+                continue
+            duration = float(item.get("recommended_duration") or 0.0)
+            if duration <= 0:
+                start = item.get("material_cut_start")
+                end = item.get("material_cut_end")
+                try:
+                    duration = max(0.0, float(end) - float(start))
+                except (TypeError, ValueError):
+                    duration = 0.0
+            if duration > 0:
+                windows[script_ref] = {
+                    "material_cutaway_start_offset": 0.0,
+                    "material_cutaway_duration": round(duration, 3),
+                    "source": "clip_matches",
+                }
+
+    if isinstance(edit_plan, dict):
+        for block in edit_plan.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            layout = str(block.get("visual_layout") or "").strip().lower()
+            use_cutaway = bool(block.get("use_cutaway")) or block_type == "evidence_clip" or layout in {"cutaway_silent", "evidence_first", "cutaway"}
+            script_ref = str(block.get("script_ref") or "").strip()
+            if not use_cutaway or not script_ref:
+                continue
+            duration = float(block.get("duration") or 0.0)
+            if duration > 0:
+                windows[script_ref] = {
+                    "material_cutaway_start_offset": 0.0,
+                    "material_cutaway_duration": round(duration, 3),
+                    "source": "edit_plan",
+                    "block_id": block.get("id"),
+                }
+    return windows
+
+
+def annotate_visible_window(item: dict, cutaway: dict | None = None) -> dict:
+    start = float(item.get("start") or 0.0)
+    end = float(item.get("end") or start)
+    duration = max(0.0, end - start)
+    cutaway_duration = 0.0
+    if cutaway:
+        cutaway_duration = max(0.0, min(duration, float(cutaway.get("material_cutaway_duration") or 0.0)))
+    visible_start = round(start + cutaway_duration, 3)
+    visible_end = round(end, 3)
+    visible_duration = round(max(0.0, visible_end - visible_start), 3)
+    return {
+        **item,
+        "visibility": {
+            "avatarVisibleStart": visible_start,
+            "avatarVisibleEnd": visible_end,
+            "avatarVisibleDuration": visible_duration,
+            "materialCutawayStart": round(start, 3) if cutaway_duration > 0 else None,
+            "materialCutawayEnd": round(start + cutaway_duration, 3) if cutaway_duration > 0 else None,
+            "source": (cutaway or {}).get("source"),
+        },
+    }
+
+
+def build_timeline_segments(
+    narration_text: str,
+    duration: float,
+    script_units: list[dict] | None = None,
+    cutaway_windows: dict | None = None,
+    speech_alignment: dict | None = None,
+    include_alignment_words: bool = False,
+    attach_rule_anchors: bool = True,
+) -> list[dict]:
+    units = normalize_script_units(script_units)
+    alignment_segments = normalize_alignment_segments(speech_alignment)
+    alignment_words = normalize_alignment_words(speech_alignment)
+    if units:
+        source_items = units
+    elif alignment_segments:
+        source_items = alignment_segments
+    else:
+        sentences = split_sentences(narration_text)
+        source_items = [
+            {"id": f"motion_{index + 1:03d}", "role": None, "text": sentence}
+            for index, sentence in enumerate(sentences)
+        ]
+
+    if not source_items:
         raise ValueError("缺少可用口播文本")
 
-    weights = [max(1, len(re.sub(r"\s+", "", sentence))) for sentence in sentences]
+    cutaway_windows = cutaway_windows or {}
+    weights = [max(1, len(re.sub(r"\s+", "", item.get("text") or ""))) for item in source_items]
     total_weight = sum(weights)
     cursor = 0.0
     timeline = []
-    for index, sentence in enumerate(sentences):
-        if index == len(sentences) - 1:
+    for index, item in enumerate(source_items):
+        explicit_start = item.get("start")
+        explicit_end = item.get("end")
+        if explicit_start is not None and explicit_end is not None:
+            start = max(0.0, min(duration, float(explicit_start)))
+            end = max(start, min(duration, float(explicit_end)))
+        elif index == len(source_items) - 1:
             end = duration
+            start = cursor
         else:
             end = min(duration, cursor + duration * (weights[index] / total_weight))
-        start = cursor
+            start = cursor
         segment_duration = max(0.0, end - start)
-        timeline.append({
-            "id": f"motion_{index + 1:03d}",
+        segment = {
+            "id": str(item.get("id") or f"motion_{index + 1:03d}"),
             "start": round(start, 3),
             "end": round(end, 3),
             "duration": round(segment_duration, 3),
-            "text": sentence,
-        })
+            "text": item.get("text") or "",
+        }
+        if item.get("role") is not None:
+            segment["role"] = item.get("role")
+        if include_alignment_words:
+            segment["alignmentWords"] = collect_alignment_words_for_segment(segment["start"], segment["end"], alignment_words)
+        if attach_rule_anchors:
+            anchor = find_alignment_anchor_time(segment["text"], segment["start"], segment["end"], alignment_words)
+            if anchor:
+                segment["anchor"] = anchor
+        timeline.append(annotate_visible_window(segment, cutaway_windows.get(segment["id"])))
         cursor = end
     return timeline
 
@@ -293,27 +554,160 @@ def classify_sentence(
     return action, reason, intensity, meta
 
 
-def build_motion_plan(narration_text: str, duration: float, fps: int = DEFAULT_FPS, action_dir: Path | None = None) -> dict:
+def visible_duration_for_segment(item: dict) -> float:
+    visibility = item.get("visibility") if isinstance(item.get("visibility"), dict) else {}
+    return float(visibility.get("avatarVisibleDuration") if visibility.get("avatarVisibleDuration") is not None else item.get("duration") or 0.0)
+
+
+def active_midpoint(profile: dict) -> float:
+    active_start = float(profile.get("activeStart") or 0.0)
+    active_end = float(profile.get("activeEnd") or active_start)
+    if active_end < active_start:
+        active_end = active_start
+    return (active_start + active_end) / 2.0
+
+
+def compile_motion_segments(decision_segments: list[dict], profiles: dict, duration: float) -> list[dict]:
+    compiled = []
+    cursor = 0.0
+    last_gesture_active_time = -999.0
+
+    def append_idle(start: float, end: float, reason: str = "idle_fill") -> None:
+        idle_duration = round(max(0.0, end - start), 3)
+        if idle_duration < 0.02:
+            return
+        compiled.append({
+            "id": f"motion_{len(compiled) + 1:03d}",
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": idle_duration,
+            "text": "",
+            "semantic": reason,
+            "action": "idle_talking",
+            "intensity": 0.25,
+            "decision": {"planner": "timeline_compiler", "reason": reason},
+        })
+
+    for item in decision_segments:
+        action = str(item.get("action") or "idle_talking")
+        if action == "idle_talking" or action not in profiles:
+            continue
+
+        profile = profiles[action]
+        source_duration = max(0.2, float(profile.get("sourceDuration") or item.get("duration") or 1.0))
+        visibility = item.get("visibility") if isinstance(item.get("visibility"), dict) else {}
+        visible_start = float(visibility.get("avatarVisibleStart") if visibility.get("avatarVisibleStart") is not None else item.get("start") or 0.0)
+        visible_end = float(visibility.get("avatarVisibleEnd") if visibility.get("avatarVisibleEnd") is not None else item.get("end") or 0.0)
+        visible_duration = max(0.0, visible_end - visible_start)
+        if visible_duration < MIN_VISIBLE_GESTURE_SECONDS:
+            continue
+
+        anchor = item.get("anchor") if isinstance(item.get("anchor"), dict) else {}
+        anchor_time = anchor.get("triggerTime")
+        try:
+            anchor_time = float(anchor_time)
+        except (TypeError, ValueError):
+            anchor_time = None
+        if anchor_time is not None and visible_start - 0.05 <= anchor_time <= visible_end + 0.05:
+            target_active_time = min(max(anchor_time, visible_start + 0.05), visible_end - 0.05)
+            target_source = str(anchor.get("source") or "speech_alignment_anchor")
+        else:
+            target_active_time = visible_start + min(max(visible_duration * 0.45, 0.45), max(0.45, visible_duration - 0.15))
+            target_source = "visible_window_ratio"
+        action_start = max(float(item.get("start") or 0.0), target_active_time - active_midpoint(profile))
+        action_start = min(action_start, max(0.0, duration - source_duration))
+        if action_start < cursor:
+            action_start = cursor
+        action_end = action_start + source_duration
+        active_start = action_start + float(profile.get("activeStart") or 0.0)
+        active_end = action_start + float(profile.get("activeEnd") or profile.get("activeStart") or 0.0)
+
+        if active_start < visible_start - 0.05 or active_end > visible_end + 0.25:
+            shifted_start = visible_start - float(profile.get("activeStart") or 0.0)
+            shifted_start = max(cursor, float(item.get("start") or 0.0), min(shifted_start, max(0.0, duration - source_duration)))
+            shifted_active_start = shifted_start + float(profile.get("activeStart") or 0.0)
+            shifted_active_end = shifted_start + float(profile.get("activeEnd") or profile.get("activeStart") or 0.0)
+            if shifted_active_start >= visible_start - 0.05 and shifted_active_end <= visible_end + 0.25:
+                action_start = shifted_start
+                action_end = action_start + source_duration
+                active_start = shifted_active_start
+                active_end = shifted_active_end
+            else:
+                continue
+
+        if active_start - last_gesture_active_time < MIN_GESTURE_INTERVAL_SECONDS:
+            continue
+
+        append_idle(cursor, action_start)
+        compiled.append({
+            "id": f"motion_{len(compiled) + 1:03d}",
+            "sourceSegmentId": item.get("id"),
+            "start": round(action_start, 3),
+            "end": round(action_end, 3),
+            "duration": round(source_duration, 3),
+            "text": item.get("text") or "",
+            "semantic": item.get("semantic"),
+            "action": action,
+            "intensity": item.get("intensity"),
+            "visibility": visibility,
+            "timing": {
+                "sourceDuration": round(source_duration, 3),
+                "activeStart": round(float(profile.get("activeStart") or 0.0), 3),
+                "activeEnd": round(float(profile.get("activeEnd") or 0.0), 3),
+                "activeTimelineStart": round(active_start, 3),
+                "activeTimelineEnd": round(active_end, 3),
+                "targetActiveTime": round(target_active_time, 3),
+                "targetSource": target_source,
+            },
+            "decision": item.get("decision") or {},
+        })
+        cursor = action_end
+        last_gesture_active_time = active_start
+
+    append_idle(cursor, duration, reason="idle_tail")
+    return compiled
+
+
+def build_motion_plan(
+    narration_text: str,
+    duration: float,
+    fps: int = DEFAULT_FPS,
+    action_dir: Path | None = None,
+    script_units: list[dict] | None = None,
+    edit_plan: dict | None = None,
+    clip_matches: dict | None = None,
+    speech_alignment: dict | None = None,
+) -> dict:
     profiles = load_action_profiles(action_dir)
-    timeline = build_timeline_segments(narration_text, duration)
+    cutaway_windows = extract_cutaway_windows(edit_plan, clip_matches)
+    timeline = build_timeline_segments(
+        narration_text,
+        duration,
+        script_units=script_units,
+        cutaway_windows=cutaway_windows,
+        speech_alignment=speech_alignment,
+        include_alignment_words=bool(speech_alignment),
+        attach_rule_anchors=True,
+    )
     last_gesture_start = -999.0
     recent_actions = []
-    segments = []
+    decisions = []
 
     for item in timeline:
+        visible_duration = visible_duration_for_segment(item)
         action, reason, intensity, decision = classify_sentence(
             item["text"],
-            item["duration"],
+            visible_duration,
             last_gesture_start,
-            item["start"],
+            float((item.get("visibility") or {}).get("avatarVisibleStart") or item["start"]),
             profiles,
             recent_actions,
         )
         if action != "idle_talking":
-            last_gesture_start = item["start"]
+            last_gesture_start = float((item.get("visibility") or {}).get("avatarVisibleStart") or item["start"])
             recent_actions.append(action)
             recent_actions = recent_actions[-4:]
-        segments.append({
+        decisions.append({
             **item,
             "semantic": reason,
             "action": action,
@@ -321,6 +715,7 @@ def build_motion_plan(narration_text: str, duration: float, fps: int = DEFAULT_F
             "decision": decision,
         })
 
+    segments = compile_motion_segments(decisions, profiles, duration)
     payload = {
         "version": 1,
         "fps": int(fps or DEFAULT_FPS),
@@ -330,7 +725,11 @@ def build_motion_plan(narration_text: str, duration: float, fps: int = DEFAULT_F
             "availableActions": sorted(profiles.keys()),
             "minGestureIntervalSeconds": MIN_GESTURE_INTERVAL_SECONDS,
             "targetGestureIntervalSeconds": TARGET_GESTURE_INTERVAL_SECONDS,
+            "usesScriptUnits": bool(script_units),
+            "cutawayAware": bool(cutaway_windows),
+            "usesSpeechAlignment": bool(speech_alignment),
         },
+        "decisionSegments": decisions,
         "segments": segments,
     }
     payload["signature"] = hash_payload(payload)
@@ -362,7 +761,89 @@ def resolve_llm_provider(provider: str | None = None) -> str:
     return resolved
 
 
-def build_llm_prompt(timeline: list[dict], profiles: dict) -> str:
+def compact_edit_context(edit_plan: dict | None = None, clip_matches: dict | None = None, timeline: list[dict] | None = None) -> dict:
+    blocks = []
+    if isinstance(edit_plan, dict):
+        for block in edit_plan.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            blocks.append({
+                "id": block.get("id"),
+                "type": block.get("type"),
+                "script_ref": block.get("script_ref"),
+                "duration": block.get("duration"),
+                "visual_layout": block.get("visual_layout"),
+                "use_cutaway": bool(block.get("use_cutaway")),
+            })
+
+    matches = []
+    if isinstance(clip_matches, dict):
+        for item in clip_matches.get("clip_matches") or []:
+            if not isinstance(item, dict):
+                continue
+            matches.append({
+                "script_ref": item.get("script_ref"),
+                "use_cutaway": bool(item.get("use_cutaway")),
+                "recommended_duration": item.get("recommended_duration"),
+                "material_cut_start": item.get("material_cut_start"),
+                "material_cut_end": item.get("material_cut_end"),
+                "reason": item.get("reason") or item.get("decision"),
+            })
+
+    visible_windows = []
+    for item in timeline or []:
+        visibility = item.get("visibility") if isinstance(item.get("visibility"), dict) else {}
+        visible_windows.append({
+            "id": item.get("id"),
+            "text": item.get("text"),
+            "start": item.get("start"),
+            "end": item.get("end"),
+            "avatarVisibleStart": visibility.get("avatarVisibleStart"),
+            "avatarVisibleEnd": visibility.get("avatarVisibleEnd"),
+            "avatarVisibleDuration": visibility.get("avatarVisibleDuration"),
+            "materialCutawayStart": visibility.get("materialCutawayStart"),
+            "materialCutawayEnd": visibility.get("materialCutawayEnd"),
+        })
+
+    return {
+        "edit_plan_blocks": blocks,
+        "clip_matches": matches,
+        "avatar_visibility_windows": visible_windows,
+    }
+
+
+def compact_timed_subtitles(speech_alignment: dict | None = None, max_words: int = 160) -> dict:
+    segments = [
+        {
+            "id": item["id"],
+            "start": round(float(item["start"]), 3),
+            "end": round(float(item["end"]), 3),
+            "text": item["text"],
+        }
+        for item in normalize_alignment_segments(speech_alignment)
+    ]
+    words = [
+        {
+            "index": int(item["index"]),
+            "start": round(float(item["start"]), 3),
+            "end": round(float(item["end"]), 3),
+            "text": item["text"],
+        }
+        for item in normalize_alignment_words(speech_alignment)[:max_words]
+    ]
+    return {
+        "segments": segments,
+        "words": words,
+    }
+
+
+def build_llm_prompt(
+    timeline: list[dict],
+    profiles: dict,
+    edit_plan: dict | None = None,
+    clip_matches: dict | None = None,
+    speech_alignment: dict | None = None,
+) -> str:
     actions = []
     for action_id, profile in sorted(profiles.items()):
         actions.append({
@@ -371,28 +852,40 @@ def build_llm_prompt(timeline: list[dict], profiles: dict) -> str:
             "tags": profile.get("tags") or [],
             "semantic": profile.get("text") or "",
             "intensity": profile.get("intensity", 0.5),
+            "sourceDuration": profile.get("sourceDuration"),
+            "activeStart": profile.get("activeStart"),
+            "activeEnd": profile.get("activeEnd"),
         })
 
     payload = {
         "available_actions": actions,
         "timeline": timeline,
+        "timed_subtitles": compact_timed_subtitles(speech_alignment),
+        "edit_context": compact_edit_context(edit_plan, clip_matches, timeline),
         "constraints": {
             "allowed_actions": ["idle_talking", *sorted(profiles.keys())],
             "min_gesture_interval_seconds": MIN_GESTURE_INTERVAL_SECONDS,
             "target_gesture_interval_seconds": TARGET_GESTURE_INTERVAL_SECONDS,
+            "min_avatar_visible_seconds_for_gesture": MIN_VISIBLE_GESTURE_SECONDS,
             "style": "动作要丰富但不要频繁重复；动作组件本身已包含默认态到动作再回默认态，不能要求裁掉组件开头或中段。",
         },
     }
     return (
         "你是数字人口播手势导演。请根据每句口播的语义选择动作组件。\n"
         "只输出 JSON，不要 Markdown，不要解释。\n"
-        "JSON 格式必须是：{\"segments\":[{\"id\":\"motion_001\",\"action\":\"动作id或idle_talking\",\"reason\":\"简短中文原因\",\"intensity\":0.25到0.85}]}\n"
+        "JSON 格式必须是：{\"segments\":[{\"id\":\"motion_001\",\"action\":\"动作id或idle_talking\",\"reason\":\"简短中文原因\",\"intensity\":0.25到0.85,\"anchorWordIndex\":数字或null,\"anchorTime\":秒数或null}]}\n"
         "规则：\n"
         "1. 只能使用 allowed_actions 中的动作。\n"
         "2. 不要每句话都做动作，普通过渡句使用 idle_talking。\n"
         "3. 同一动作不要连续机械重复；需要强调数字、风险、结论时才增加动作。\n"
         "4. 不要修改 start/end/duration，时间轴由系统固定。\n"
         "5. 如果一句话很短或不值得动作，选 idle_talking。\n\n"
+        "6. timeline.visibility 表示数字人真实可见窗口；如果素材插片覆盖了该句开头，手势只能在 avatarVisibleStart 到 avatarVisibleEnd 之间生效。\n"
+        "7. 如果 avatarVisibleDuration 太短、或动作主动段无法落在数字人可见窗口内，必须选 idle_talking；不要把手势安排给素材画面覆盖的口播。\n\n"
+        "8. timed_subtitles 是最终 TTS 后 ASR 的字幕/词级时间；edit_context 是已有剪辑方案和素材插片覆盖关系。\n"
+        "9. 你要结合 timed_subtitles 和 edit_context 判断：哪些重点发生在数字人可见段，哪些重点被素材插片覆盖；只有数字人可见段才安排动作。\n"
+        "10. timeline.alignmentWords 是该时间段附近可选锚词。选择动作时由你判断语义重点，并从 alignmentWords 中选一个最该对齐动作主动段的 anchorWordIndex；没有合适词就填 null。\n"
+        "11. 不要根据固定关键词机械选择锚点；必须结合整句语义、剪辑上下文、可见窗口和动作含义。\n\n"
         f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -446,6 +939,41 @@ def apply_pacing_to_llm_segments(segments: list[dict], profiles: dict) -> list[d
     return normalized
 
 
+def resolve_llm_anchor(assignment: dict, item: dict) -> dict | None:
+    words = item.get("alignmentWords") if isinstance(item.get("alignmentWords"), list) else []
+    word_by_index = {int(word.get("index")): word for word in words if word.get("index") is not None}
+    anchor_word_index = assignment.get("anchorWordIndex")
+    try:
+        anchor_word_index = int(anchor_word_index)
+    except (TypeError, ValueError):
+        anchor_word_index = None
+
+    if anchor_word_index is not None and anchor_word_index in word_by_index:
+        word = word_by_index[anchor_word_index]
+        trigger_time = (float(word["start"]) + float(word["end"])) / 2.0
+        return {
+            "triggerTime": round(trigger_time, 3),
+            "word": str(word.get("text") or ""),
+            "wordStart": round(float(word["start"]), 3),
+            "wordEnd": round(float(word["end"]), 3),
+            "source": "llm_speech_alignment_anchor",
+        }
+
+    try:
+        anchor_time = float(assignment.get("anchorTime"))
+    except (TypeError, ValueError):
+        return None
+    start = float(item.get("start") or 0.0)
+    end = float(item.get("end") or start)
+    if not (start - 0.08 <= anchor_time <= end + 0.08):
+        return None
+    return {
+        "triggerTime": round(anchor_time, 3),
+        "word": "",
+        "source": "llm_speech_alignment_anchor",
+    }
+
+
 def parse_llm_assignments(response_text: str, timeline: list[dict], profiles: dict) -> list[dict]:
     payload = extract_json_object(response_text)
     raw_segments = payload.get("segments")
@@ -463,12 +991,16 @@ def parse_llm_assignments(response_text: str, timeline: list[dict], profiles: di
     merged = []
     for item in timeline:
         assignment = assignments.get(item["id"], {})
-        merged.append({
+        segment = {
             **item,
             "action": assignment.get("action", "idle_talking"),
             "reason": assignment.get("reason", "llm_selected"),
             "intensity": assignment.get("intensity"),
-        })
+        }
+        anchor = resolve_llm_anchor(assignment, item)
+        if anchor:
+            segment["anchor"] = anchor
+        merged.append(segment)
 
     return apply_pacing_to_llm_segments(merged, profiles)
 
@@ -480,10 +1012,23 @@ def build_motion_plan_with_llm(
     action_dir: Path | None = None,
     provider: str | None = None,
     model: str | None = None,
+    script_units: list[dict] | None = None,
+    edit_plan: dict | None = None,
+    clip_matches: dict | None = None,
+    speech_alignment: dict | None = None,
 ) -> dict:
     load_project_env(__file__)
     profiles = load_action_profiles(action_dir)
-    timeline = build_timeline_segments(narration_text, duration)
+    cutaway_windows = extract_cutaway_windows(edit_plan, clip_matches)
+    timeline = build_timeline_segments(
+        narration_text,
+        duration,
+        script_units=script_units,
+        cutaway_windows=cutaway_windows,
+        speech_alignment=speech_alignment,
+        include_alignment_words=bool(speech_alignment),
+        attach_rule_anchors=False,
+    )
     resolved_provider = resolve_llm_provider(provider)
     resolved_model = str(model or get_text_model(resolved_provider)).strip()
     if not resolved_model:
@@ -492,7 +1037,13 @@ def build_motion_plan_with_llm(
     from llm_client import create_llm_client, generate_content
 
     client = create_llm_client(resolved_provider)
-    prompt = build_llm_prompt(timeline, profiles)
+    prompt = build_llm_prompt(
+        timeline,
+        profiles,
+        edit_plan=edit_plan,
+        clip_matches=clip_matches,
+        speech_alignment=speech_alignment,
+    )
     response = generate_content(
         client,
         model=resolved_model,
@@ -502,7 +1053,8 @@ def build_motion_plan_with_llm(
         request_timeout=int(os.getenv("AVATAR_MOTION_LLM_TIMEOUT_SECONDS", "90") or 90),
         provider=resolved_provider,
     )
-    segments = parse_llm_assignments(getattr(response, "text", ""), timeline, profiles)
+    decisions = parse_llm_assignments(getattr(response, "text", ""), timeline, profiles)
+    segments = compile_motion_segments(decisions, profiles, duration)
     payload = {
         "version": 1,
         "fps": int(fps or DEFAULT_FPS),
@@ -514,7 +1066,11 @@ def build_motion_plan_with_llm(
             "availableActions": sorted(profiles.keys()),
             "minGestureIntervalSeconds": MIN_GESTURE_INTERVAL_SECONDS,
             "targetGestureIntervalSeconds": TARGET_GESTURE_INTERVAL_SECONDS,
+            "usesScriptUnits": bool(script_units),
+            "cutawayAware": bool(cutaway_windows),
+            "usesSpeechAlignment": bool(speech_alignment),
         },
+        "decisionSegments": decisions,
         "segments": segments,
     }
     payload["signature"] = hash_payload(payload)
@@ -529,12 +1085,25 @@ def build_motion_plan_auto(
     planner_mode: str = "auto",
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    script_units: list[dict] | None = None,
+    edit_plan: dict | None = None,
+    clip_matches: dict | None = None,
+    speech_alignment: dict | None = None,
 ) -> dict:
     mode = str(planner_mode or "auto").strip().lower()
     if mode not in SUPPORTED_PLANNER_MODES:
         raise ValueError(f"不支持的数字人动作 planner 模式: {planner_mode}")
     if mode == "local":
-        return build_motion_plan(narration_text, duration, fps=fps, action_dir=action_dir)
+        return build_motion_plan(
+            narration_text,
+            duration,
+            fps=fps,
+            action_dir=action_dir,
+            script_units=script_units,
+            edit_plan=edit_plan,
+            clip_matches=clip_matches,
+            speech_alignment=speech_alignment,
+        )
 
     try:
         return build_motion_plan_with_llm(
@@ -544,11 +1113,24 @@ def build_motion_plan_auto(
             action_dir=action_dir,
             provider=llm_provider,
             model=llm_model,
+            script_units=script_units,
+            edit_plan=edit_plan,
+            clip_matches=clip_matches,
+            speech_alignment=speech_alignment,
         )
     except Exception as exc:
         if mode == "llm":
             raise
-        fallback = build_motion_plan(narration_text, duration, fps=fps, action_dir=action_dir)
+        fallback = build_motion_plan(
+            narration_text,
+            duration,
+            fps=fps,
+            action_dir=action_dir,
+            script_units=script_units,
+            edit_plan=edit_plan,
+            clip_matches=clip_matches,
+            speech_alignment=speech_alignment,
+        )
         fallback["planner"]["method"] = "local_sparse_semantic_fallback"
         fallback["planner"]["llmError"] = str(exc)
         fallback["signature"] = hash_payload(fallback)
@@ -567,6 +1149,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--planner-mode", default=os.getenv("AVATAR_MOTION_PLANNER", "auto"), choices=sorted(SUPPORTED_PLANNER_MODES))
     parser.add_argument("--llm-provider", default=os.getenv("AVATAR_MOTION_LLM_PROVIDER", ""), help="Optional provider override: deepseek/qwen/gemini/vertex")
     parser.add_argument("--llm-model", default=os.getenv("AVATAR_MOTION_LLM_MODEL", ""), help="Optional model override")
+    parser.add_argument("--script-units", default="", help="Optional script_units.json used to align gestures with edit script")
+    parser.add_argument("--edit-plan", default="", help="Optional edit_plan.json used to avoid gestures under material cutaways")
+    parser.add_argument("--clip-matches", default="", help="Optional clip_matches.json used to avoid gestures under material cutaways")
+    parser.add_argument("--speech-alignment", default="", help="Optional speech_alignment.json used for word/phrase trigger timing")
     return parser.parse_args()
 
 
@@ -580,6 +1166,10 @@ def main() -> int:
     narration_text = read_text_file(narration_path)
     duration = resolve_audio_duration(audio_path, narration_text, args.duration)
     action_dir = Path(args.action_dir) if args.action_dir else None
+    script_units = load_script_units(Path(args.script_units)) if args.script_units else []
+    edit_plan = read_json_file(Path(args.edit_plan)) if args.edit_plan and Path(args.edit_plan).exists() else {}
+    clip_matches = read_json_file(Path(args.clip_matches)) if args.clip_matches and Path(args.clip_matches).exists() else {}
+    speech_alignment = load_speech_alignment(Path(args.speech_alignment)) if args.speech_alignment else {}
     plan = build_motion_plan_auto(
         narration_text,
         duration,
@@ -588,6 +1178,10 @@ def main() -> int:
         planner_mode=args.planner_mode,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
+        script_units=script_units,
+        edit_plan=edit_plan,
+        clip_matches=clip_matches,
+        speech_alignment=speech_alignment,
     )
     write_json_file(output_path, plan)
 

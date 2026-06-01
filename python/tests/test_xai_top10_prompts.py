@@ -64,5 +64,28 @@ class XaiTop10PromptTest(unittest.TestCase):
         self.assertIn("Exclude posts that do not clearly match the 医疗AI partition", prompt)
 
 
+class XaiTop10FailureHandlingTest(unittest.TestCase):
+    def test_candidate_scan_aborts_when_every_account_failed_without_candidates(self):
+        failures = [
+            {"account": "BitcoinMagazine", "message": "Permission denied from xAI API: monthly spending limit reached"},
+            {"account": "CoinDesk", "message": "Permission denied from xAI API: monthly spending limit reached"},
+        ]
+
+        self.assertTrue(runner.should_abort_candidate_scan(2, [], failures))
+        message = runner.format_candidate_scan_failure(failures)
+
+        self.assertIn("All candidate scans failed", message)
+        self.assertIn("@BitcoinMagazine", message)
+        self.assertIn("monthly spending limit", message)
+
+    def test_candidate_scan_does_not_abort_empty_result_without_failures(self):
+        self.assertFalse(runner.should_abort_candidate_scan(2, [], []))
+
+    def test_candidate_scan_does_not_abort_when_any_candidate_was_collected(self):
+        failures = [{"account": "CoinDesk", "message": "temporary failure"}]
+
+        self.assertFalse(runner.should_abort_candidate_scan(2, [{"post_id": "1"}], failures))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,66 @@ const DEFAULT_PARTITIONS = [
   { id: 'ai', label: 'AI', description: 'AI 模型、应用和研究账号池', accounts: [] }
 ];
 
+const ERROR_PATTERNS = [
+  {
+    type: 'quota',
+    pattern: /(credit|credits|spending limit|monthly spending|quota|billing|余额|额度|消费上限|月度|permission denied|403)/i,
+    title: 'xAI 额度不足',
+    message: 'xAI 账号额度已用完或达到月度消费上限，榜单抓取已停止。',
+    action: '请在 xAI 控制台补充额度或提高月度消费上限后再重试。'
+  },
+  {
+    type: 'timeout',
+    pattern: /(timeout|timed out|etimedout|econnreset|econnrefused|socket hang up|network|connection failed|proxy|网络|超时|连接失败|代理)/i,
+    title: '网络连接超时',
+    message: '抓取过程中无法稳定连接 xAI、X API 或代理服务。',
+    action: '请检查代理、网络连通性和外部接口状态，然后重试当前分区。'
+  },
+  {
+    type: 'config',
+    pattern: /(xai_api_key|api key|missing|credential|unauthorized|未配置|密钥|凭证)/i,
+    title: 'xAI 配置不完整',
+    message: '榜单抓取缺少必要密钥或账号配置。',
+    action: '请检查 XAI_API_KEY 和 X API 相关环境变量，再重新运行。'
+  }
+];
+
+function compactWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeRunError(err) {
+  const data = err?.response?.data || {};
+  const status = err?.response?.status;
+  const raw = [
+    data.error,
+    data.details,
+    data.hint,
+    data.code,
+    err?.code,
+    err?.message
+  ].map(compactWhitespace).filter(Boolean).join(' ');
+  const matched = ERROR_PATTERNS.find((item) => item.pattern.test(raw)) || {
+    type: 'service',
+    title: '榜单抓取失败',
+    message: 'xAI Top10 任务没有完成，已保留错误日志。',
+    action: '请查看运行摘要中的错误日志，处理外部服务或脚本异常后再重试。'
+  };
+  return {
+    id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+    type: matched.type,
+    title: matched.title,
+    message: matched.message,
+    action: matched.action,
+    details: compactWhitespace(data.details || data.error || err?.message || raw),
+    hint: compactWhitespace(data.hint),
+    code: compactWhitespace(data.code || err?.code),
+    stage: compactWhitespace(data.stage),
+    status: status || null,
+    occurredAt: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+  };
+}
+
 function downloadTextFile(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -82,6 +142,7 @@ export function useXaiTop10() {
     subtitleFontSize: 50,
     subtitleOffsetY: 20
   });
+  const errorAlert = ref(null);
   const localLogs = ref([]);
   const localErrors = ref([]);
   let autoRefreshTimer = null;
@@ -336,6 +397,10 @@ export function useXaiTop10() {
     }
   };
 
+  const dismissErrorAlert = () => {
+    errorAlert.value = null;
+  };
+
   const run = async () => {
     if (loading.value) return;
     const clientId = `xai_${Math.random().toString(36).slice(2)}`;
@@ -361,9 +426,11 @@ export function useXaiTop10() {
       appendLog(progressMessage.value);
       await refresh(true);
     } catch (err) {
-      error.value = err.response?.data?.error || err.message;
-      progressMessage.value = '榜单任务执行失败';
-      appendError(error.value);
+      const alert = normalizeRunError(err);
+      errorAlert.value = alert;
+      error.value = alert.message;
+      progressMessage.value = alert.title;
+      appendError(`${alert.title}: ${alert.details || alert.message}`);
       await refresh(true);
     } finally {
       stream.close();
@@ -464,6 +531,7 @@ export function useXaiTop10() {
     concurrency,
     selectedKeys,
     renderOptions,
+    errorAlert,
     items,
     summary,
     selectedItems,
@@ -474,6 +542,7 @@ export function useXaiTop10() {
     stopAutoRefresh,
     loadConfig,
     saveConfig,
+    dismissErrorAlert,
     selectPartition,
     createPartition,
     removePartition,
