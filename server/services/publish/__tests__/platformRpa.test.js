@@ -393,7 +393,9 @@ describe('platform RPA service', () => {
     const previousSauPython = process.env.SOCIAL_AUTO_UPLOAD_PYTHON;
     const fakeUserProfile = path.join(tempRoot, 'user');
     const sauDir = path.join(fakeUserProfile, 'social-auto-upload');
-    const sauPython = path.join(sauDir, '.venv', 'Scripts', 'python.exe');
+    const sauPython = process.platform === 'win32'
+      ? path.join(sauDir, '.venv', 'Scripts', 'python.exe')
+      : path.join(sauDir, '.venv', 'bin', 'python');
     const videoPath = path.join(tempRoot, 'video.mp4');
     const adapterScript = path.join(tempRoot, 'social_auto_upload_adapter.py');
     const payloadDir = path.join(tempRoot, 'payloads');
