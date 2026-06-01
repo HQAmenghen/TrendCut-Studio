@@ -35,6 +35,10 @@ describe('avatar motion service', () => {
     fs.writeFileSync(narrationTextPath, '这是关键。', 'utf8');
     fs.writeFileSync(speechAudioPath, 'audio', 'utf8');
     fs.writeFileSync(imagePath, 'image', 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'script_units.json'), JSON.stringify({ script_units: [] }), 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'edit_plan.json'), JSON.stringify({ blocks: [] }), 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'clip_matches.json'), JSON.stringify({ clip_matches: [] }), 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'speech_alignment.json'), JSON.stringify({ segments: [] }), 'utf8');
     const calls = [];
     const runPython = jest.fn(async (script, args) => {
       calls.push({ script: path.basename(script), args });
@@ -72,6 +76,14 @@ describe('avatar motion service', () => {
     expect(calls[0].args).toContain('qwen');
     expect(calls[0].args).toContain('--llm-model');
     expect(calls[0].args).toContain('qwen3.6-plus');
+    expect(calls[0].args).toContain('--script-units');
+    expect(calls[0].args).toContain(path.join(outputDir, 'script_units.json'));
+    expect(calls[0].args).toContain('--edit-plan');
+    expect(calls[0].args).toContain(path.join(outputDir, 'edit_plan.json'));
+    expect(calls[0].args).toContain('--clip-matches');
+    expect(calls[0].args).toContain(path.join(outputDir, 'clip_matches.json'));
+    expect(calls[0].args).toContain('--speech-alignment');
+    expect(calls[0].args).toContain(path.join(outputDir, 'speech_alignment.json'));
     expect(calls[1].args).toContain('C:/actions');
     expect(calls[1].args).toContain('--video-output');
     expect(calls[1].args).toContain(path.join(outputDir, 'avatar_motion_source.mp4'));

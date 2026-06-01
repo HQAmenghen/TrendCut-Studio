@@ -12,6 +12,7 @@ const {
   isAvatarMotionRequired,
   resolveActionPresetDir
 } = require('./avatarMotion');
+const { ensureSpeechAlignment } = require('./speechAlignment');
 const { prepareNarrationTextForAvatarWorkflow } = require('./avatarWorkflow');
 const { resolvePresetFile } = require('./presetResolver');
 const { DEFAULT_OUTPUT_FILENAME, synthesizeQwenTtsSpeech } = require('./qwenTts');
@@ -69,6 +70,10 @@ function readAvatarConfigFromBody(body = {}) {
       ? body.avatarMotionRequired === true || body.avatarMotionRequired === 'true'
       : undefined,
     avatarActionPresetDir: String(body.avatarActionPresetDir || '').trim(),
+    avatarMotionPlanner: String(body.avatarMotionPlanner || '').trim(),
+    avatarMotionLlmProvider: String(body.avatarMotionLlmProvider || '').trim(),
+    avatarMotionLlmModel: String(body.avatarMotionLlmModel || '').trim(),
+    speechAlignmentEnabled: body.speechAlignmentEnabled,
     audioPreset: String(body.audioPreset || '').trim(),
     imagePreset: String(body.imagePreset || '').trim()
   };
@@ -406,6 +411,7 @@ function createAvatarGenerationService({
   synthesizeSpeech = synthesizeQwenTtsSpeech,
   prepareReferenceAudioFn = prepareReferenceAudio,
   generateSpeechNarration = generateDeepSeekSpeechNarration,
+  ensureSpeechAlignmentFn = ensureSpeechAlignment,
   readWorkflowFile = readWorkflow,
   downloadFile = downloadToFile,
   taskStore = null
@@ -573,6 +579,29 @@ function createAvatarGenerationService({
       );
     }
     const audioPathForUpload = ttsResult.outputPath;
+    let speechAlignment = null;
+    try {
+      task.statusText = '正在生成口播 ASR 对齐缓存...';
+      task.updatedAt = nowIso();
+      addTaskLog(task, '开始生成可复用口播 ASR 对齐缓存', 'info');
+      emitTaskEvent(jobId, 'status', { message: task.statusText });
+      speechAlignment = await ensureSpeechAlignmentFn({
+        outputDir: task.outputPath,
+        speechAudioPath: audioPathForUpload,
+        narrationTextPath: speechArtifacts.speechTextPath,
+        config: cfg
+      });
+      if (speechAlignment?.enabled) {
+        addTaskLog(
+          task,
+          `${speechAlignment.reused ? '复用' : '生成'}口播 ASR 对齐缓存: segments=${speechAlignment.segmentCount || 0}, words=${speechAlignment.wordCount || 0}`,
+          'success'
+        );
+      }
+    } catch (error) {
+      speechAlignment = null;
+      addTaskLog(task, `口播 ASR 对齐缓存生成失败，后续将使用原有时间估算: ${error?.message || error}`, 'warning');
+    }
     let avatarMotion = null;
     if (isAvatarMotionEnabled(cfg)) {
       try {
@@ -586,7 +615,11 @@ function createAvatarGenerationService({
           narrationTextPath: speechArtifacts.speechTextPath,
           speechAudioPath: audioPathForUpload,
           imagePath,
-          actionPresetDir: resolveActionPresetDir(cfg)
+          actionPresetDir: resolveActionPresetDir(cfg),
+          avatarMotionPlanner: cfg.avatarMotionPlanner,
+          avatarMotionLlmProvider: cfg.avatarMotionLlmProvider,
+          avatarMotionLlmModel: cfg.avatarMotionLlmModel,
+          speechAlignmentPath: speechAlignment?.alignmentPath || ''
         });
         addTaskLog(
           task,

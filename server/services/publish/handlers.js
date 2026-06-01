@@ -48,6 +48,19 @@ function createPublishHandlers(deps) {
     throw new Error(`平台暂未接入自动化: ${platformKey}`);
   }
 
+  function resolvePublishTitle(inputTitle, asset) {
+    return String(
+      inputTitle
+      || asset?.metadata?.suggestedTitle
+      || asset?.metadata?.title
+      || asset?.metadata?.suggestedShortTitle
+      || asset?.compactLabel
+      || asset?.displayLabel
+      || asset?.label
+      || ''
+    ).trim();
+  }
+
   function retrySelectedPlatformRpa(jobId, platformKey, mode) {
     if (typeof retryPlatformRpa === 'function') {
       return retryPlatformRpa(jobId, platformKey, mode);
@@ -267,7 +280,7 @@ function createPublishHandlers(deps) {
         const assetId = String(req.body?.assetId || '').trim();
         const selectedPlatforms = Array.isArray(req.body?.platforms) ? req.body.platforms.map((value) => String(value).trim()).filter(Boolean) : [];
         const incomingSelections = req.body?.platformSelections && typeof req.body.platformSelections === 'object' ? req.body.platformSelections : {};
-        const title = String(req.body?.title || '').trim();
+        const incomingTitle = String(req.body?.title || '').trim();
         const description = String(req.body?.description || '').trim();
         const incomingTags = Array.isArray(req.body?.tags) ? req.body.tags : String(req.body?.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
         const coverUrl = String(req.body?.coverUrl || '').trim();
@@ -276,11 +289,20 @@ function createPublishHandlers(deps) {
         const tags = tagStrategy === 'model' ? [] : incomingTags;
 
         if (!assetId) return sendError(res, { status: 400, code: 'PUBLISH_ASSET_MISSING', stage: 'publish.create_job', error: '请选择要发布的视频素材' });
-        if (!title) return sendError(res, { status: 400, code: 'PUBLISH_TITLE_MISSING', stage: 'publish.create_job', error: '请填写发布标题' });
         if (selectedPlatforms.length === 0) return sendError(res, { status: 400, code: 'PUBLISH_PLATFORM_MISSING', stage: 'publish.create_job', error: '请至少选择一个平台' });
 
         const asset = assets.find((item) => item.id === assetId);
         if (!asset) return sendError(res, { status: 404, code: 'PUBLISH_ASSET_NOT_FOUND', stage: 'publish.create_job', error: '所选视频素材不存在' });
+        const title = resolvePublishTitle(incomingTitle, asset);
+        if (!title) {
+          return sendError(res, {
+            status: 400,
+            code: 'PUBLISH_TITLE_MISSING',
+            stage: 'publish.create_job',
+            error: '请填写发布标题',
+            hint: '发布标题可从前序产物元数据自动带入；如果为空，请在发布弹窗手动填写后重试'
+          });
+        }
 
         const shortTitle = buildShortTitle(title, '热点速递');
         let finalDescription = description;

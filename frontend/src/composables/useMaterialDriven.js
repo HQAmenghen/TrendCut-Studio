@@ -1077,6 +1077,7 @@ export function useMaterialDriven() {
       eventSource.close();
       eventSource = null;
     }
+    stopTimer();
 
     jobId.value = null;
     currentStep.value = 0;
@@ -1092,15 +1093,22 @@ export function useMaterialDriven() {
     finalVideoUrl.value = '';
     error.value = '';
     recentLogs.value = [];
+    uploading.value = false;
+    rebuildingPlan.value = false;
+    rerenderingVideo.value = false;
+    resumingTaskIds.value = [];
     outputPath.value = '';
     stepTimings.value = createEmptyStepTimings();
     stepTimingTick.value = Date.now();
+    activeDurationLabel.value = '00:00';
+    lastDurationLabel.value = '暂无';
     materialUrl.value = '';
     materialSourceLabel.value = '';
     materialSourceTitle.value = '';
     materialSourceBody.value = '';
     materialSourcePostUrl.value = '';
     materialSourceMeta.value = createEmptyMaterialSourceMeta();
+    comfyTestLoading.value = false;
     if (options.clearDraftText) {
       gen.value = {
         ...gen.value,

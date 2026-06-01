@@ -6,6 +6,7 @@ const {
   resolveMaterialTaskImportUnchecked,
   normalizeAvatarSegmentSubtitles,
   normalizeExecutionPlanSubtitles,
+  normalizeExistingSubtitles,
   normalizeNarrationReferenceSubtitles
 } = require('./taskImport');
 const { buildMaterialDrivenPipelineArgs } = require('../materialDriven/retryPlan');
@@ -412,10 +413,23 @@ async function refreshImportedAvatarSubtitles(options = {}) {
   const avatarSegmentsPath = path.join(taskImport.taskPath, 'avatar_segments.json');
   const executionPlanPath = path.join(taskImport.taskPath, 'execution_plan.json');
   const narrationPath = path.join(taskImport.taskPath, 'narration.json');
+  const speechSubtitlesPath = path.join(taskImport.taskPath, 'speech_subtitles.json');
   const aimanSubtitlesPath = path.join(taskImport.taskPath, 'aiman_subtitles.json');
   const aimanAudioPath = path.join(taskImport.taskPath, 'aiman_audio.json');
   const referenceSubtitlesPath = path.join(taskImport.taskPath, 'aiman_reference_subtitles.json');
   const buildReferenceSubtitleArtifacts = () => {
+    if (fs.existsSync(speechSubtitlesPath)) {
+      try {
+        const subtitles = normalizeExistingSubtitles(JSON.parse(fs.readFileSync(speechSubtitlesPath, 'utf8')));
+        if (subtitles.length > 0) {
+          return {
+            subtitles,
+            source: 'speech_subtitles.json'
+          };
+        }
+      } catch (_err) {}
+    }
+
     if (fs.existsSync(narrationPath)) {
       try {
         const payload = JSON.parse(fs.readFileSync(narrationPath, 'utf8'));

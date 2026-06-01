@@ -63,11 +63,35 @@ describe('publish config social accounts', () => {
 
       const validation = store.validateSauTaskConfig('xiaohongshu', config.xiaohongshu, {
         accountId: 'xhs_a',
+        title: '有效发布标题',
         requiredFields: ['sauAccountName']
       });
 
       expect(validation.missingFields).toEqual([]);
       expect(validation.account).toMatchObject({ id: 'xhs_a', sauAccountName: 'xhs_a' });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('validates xiaohongshu title before publish automation', () => {
+    const { tempRoot, store } = createStore();
+    try {
+      const config = store.normalizePublishConfig({
+        xiaohongshu: {
+          enabled: true,
+          accounts: [{ id: 'xhs_a', displayName: '小红书 A', sauAccountName: 'xhs_a' }]
+        }
+      });
+
+      const validation = store.validateSauTaskConfig('xiaohongshu', config.xiaohongshu, {
+        accountId: 'xhs_a',
+        title: '',
+        requiredFields: ['sauAccountName']
+      });
+
+      expect(validation.missingFields).toEqual(['title']);
+      expect(validation.missingFieldLabels).toEqual(['发布标题 / Publish Title']);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -106,6 +130,32 @@ describe('publish config social accounts', () => {
 
       expect(validation.missingFields).toEqual([]);
       expect(validation.account).toMatchObject({ id: 'x_main', username: 'comfy_ops' });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('drops blank social account rows during config normalization', () => {
+    const { tempRoot, store } = createStore();
+    try {
+      const config = store.normalizePublishConfig({
+        wechatChannels: {
+          enabled: true,
+          accounts: [{ id: 'blank_wechat', notes: 'only notes' }]
+        },
+        douyin: {
+          enabled: true,
+          accounts: [{ id: 'blank_douyin', displayName: '', sauAccountName: '', openId: '', notes: 'only notes' }]
+        },
+        x: {
+          enabled: true,
+          accounts: [{ id: 'blank_x', scopes: 'tweet.read users.read tweet.write media.write offline.access', notes: 'only notes' }]
+        }
+      });
+
+      expect(config.wechatChannels.accounts).toEqual([]);
+      expect(config.douyin.accounts).toEqual([]);
+      expect(config.x.accounts).toEqual([]);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

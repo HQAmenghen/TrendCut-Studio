@@ -235,6 +235,10 @@ function createVerticalQueueService(deps) {
 
     const candidates = [
       {
+        fileName: 'speech_subtitles.json',
+        normalize: normalizeExistingSubtitles
+      },
+      {
         fileName: 'narration.json',
         normalize: normalizeNarrationReferenceSubtitles
       },
@@ -668,56 +672,74 @@ function createVerticalQueueService(deps) {
       // 任务协议写入失败不影响主流程
     }
 
-    const asrArgs = ['--input', sourceVideoPath, '--allow-no-audio'];
-    if (referenceSubtitlesPath) {
-      asrArgs.push('--reference-subtitles-json', referenceSubtitlesPath, '--reference-text-authority');
-    }
-    if (isPublicHttpUrl(job.videoUrl)) {
-      asrArgs.push('--file-url', String(job.videoUrl).trim());
-    }
-    if (Number.isFinite(Number(asrOptions.maxChunkDuration))) {
-      asrArgs.push('--max-chunk-duration', String(Number(asrOptions.maxChunkDuration)));
-    }
-    if (Number.isFinite(Number(asrOptions.softChunkDuration))) {
-      asrArgs.push('--soft-chunk-duration', String(Number(asrOptions.softChunkDuration)));
-    }
-    if (Number.isFinite(Number(asrOptions.maxVisibleChars))) {
-      asrArgs.push('--max-visible-chars', String(Number(asrOptions.maxVisibleChars)));
-    }
-    if (Number.isFinite(Number(asrOptions.maxWordsPerChunk))) {
-      asrArgs.push('--max-words-per-chunk', String(Number(asrOptions.maxWordsPerChunk)));
-    }
-    if (Number.isFinite(Number(asrOptions.pauseThreshold))) {
-      asrArgs.push('--pause-threshold', String(Number(asrOptions.pauseThreshold)));
-    }
-    if (asrOptions.forceEnglishRescue) {
-      asrArgs.push('--force-english-rescue');
-    }
-    if (asrOptions.translateSubtitles !== false) {
-      asrArgs.push('--translate-subtitles');
-    }
-    if (asrOptions.refineSubtitles !== false) {
-      asrArgs.push('--refine-subtitles');
-    }
-
-    const asrHandle = spawnScriptCancellable(runAsrPath, asrArgs, {
-      cwd: jobDir,
-      onSpawn: (proc) => { job.currentProc = proc; },
-      onStdout: pipeProcessLogs('ASR'),
-      onStderr: pipeProcessLogs('ASR', true),
-      onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
-    });
-    job.currentCancelHandle = asrHandle.cancel;
-    try {
-      await asrHandle.promise;
-    } catch (error) {
-      if (isReferenceAuthorityAlignmentFailure(error) && !job.cancelRequested) {
-        appendLog(job, `大模型未输出可用参考字幕 JSON，已停止生成：${error.details || error.message}`);
+    const buildAsrArgs = (useReferenceAuthority) => {
+      const args = ['--input', sourceVideoPath, '--allow-no-audio'];
+      if (useReferenceAuthority && referenceSubtitlesPath) {
+        args.push('--reference-subtitles-json', referenceSubtitlesPath, '--reference-text-authority');
       }
-      throw error;
-    } finally {
-      job.currentProc = null;
-      job.currentCancelHandle = null;
+      if (isPublicHttpUrl(job.videoUrl)) {
+        args.push('--file-url', String(job.videoUrl).trim());
+      }
+      if (Number.isFinite(Number(asrOptions.maxChunkDuration))) {
+        args.push('--max-chunk-duration', String(Number(asrOptions.maxChunkDuration)));
+      }
+      if (Number.isFinite(Number(asrOptions.softChunkDuration))) {
+        args.push('--soft-chunk-duration', String(Number(asrOptions.softChunkDuration)));
+      }
+      if (Number.isFinite(Number(asrOptions.maxVisibleChars))) {
+        args.push('--max-visible-chars', String(Number(asrOptions.maxVisibleChars)));
+      }
+      if (Number.isFinite(Number(asrOptions.maxWordsPerChunk))) {
+        args.push('--max-words-per-chunk', String(Number(asrOptions.maxWordsPerChunk)));
+      }
+      if (Number.isFinite(Number(asrOptions.pauseThreshold))) {
+        args.push('--pause-threshold', String(Number(asrOptions.pauseThreshold)));
+      }
+      if (asrOptions.forceEnglishRescue) {
+        args.push('--force-english-rescue');
+      }
+      if (asrOptions.translateSubtitles !== false) {
+        args.push('--translate-subtitles');
+      }
+      if (asrOptions.refineSubtitles !== false) {
+        args.push('--refine-subtitles');
+      }
+      return args;
+    };
+
+    let referenceFailureCount = 0;
+    while (true) {
+      const useReferenceAuthority = Boolean(referenceSubtitlesPath && referenceFailureCount < 2);
+      const asrHandle = spawnScriptCancellable(runAsrPath, buildAsrArgs(useReferenceAuthority), {
+        cwd: jobDir,
+        onSpawn: (proc) => { job.currentProc = proc; },
+        onStdout: pipeProcessLogs('ASR'),
+        onStderr: pipeProcessLogs('ASR', true),
+        onHeartbeat: stageHeartbeat('ASR 阶段', 35, '正在执行 ASR 自动打轴...')
+      });
+      job.currentCancelHandle = asrHandle.cancel;
+      try {
+        await asrHandle.promise;
+        if (referenceSubtitlesPath && !useReferenceAuthority && referenceFailureCount > 0) {
+          job.referenceSubtitleFallbackUsed = true;
+          appendLog(job, '参考字幕严格校验持续失败，已降级为普通 ASR 并继续成片');
+        }
+        break;
+      } catch (error) {
+        if (isReferenceAuthorityAlignmentFailure(error) && useReferenceAuthority && !job.cancelRequested) {
+          referenceFailureCount += 1;
+          if (referenceFailureCount < 2) {
+            appendLog(job, `参考字幕严格校验失败，正在重试参考字幕 ASR：${error.details || error.message}`);
+          } else {
+            appendLog(job, `参考字幕严格校验连续失败，改用普通 ASR：${error.details || error.message}`);
+          }
+          continue;
+        }
+        throw error;
+      } finally {
+        job.currentProc = null;
+        job.currentCancelHandle = null;
+      }
     }
 
     // 尝试读取任务协议输出（可选，回退到文件假设）

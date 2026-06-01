@@ -159,6 +159,33 @@ describe('vertical material task import', () => {
     ]);
   });
 
+  test('prefers cached speech subtitles over other subtitle sources', () => {
+    const taskDir = path.join(projectsDir, 'material_speech_cache_priority');
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, 'output_final.mp4'), 'video');
+    writeJson(path.join(taskDir, 'speech_subtitles.json'), [
+      { time: [0, 1.1], zh: '口播 ASR 句一' },
+      { time: [1.1, 2.2], zh: '口播 ASR 句二' }
+    ]);
+    writeJson(path.join(taskDir, 'aiman_subtitles.json'), [
+      { time: [0, 2.6], zh: '旧数字人字幕' }
+    ]);
+    writeJson(path.join(taskDir, 'execution_plan.json'), [
+      { start_time: 0, end_time: 3, subtitle_text: '执行计划字幕' }
+    ]);
+
+    const resolved = resolveMaterialTaskImport({
+      projectsDir,
+      taskDir: 'material_speech_cache_priority'
+    });
+
+    expect(resolved.subtitleSource).toBe('speech_subtitles.json');
+    expect(resolved.subtitles).toEqual([
+      { time: [0, 1.1], zh: '口播 ASR 句一' },
+      { time: [1.1, 2.2], zh: '口播 ASR 句二' }
+    ]);
+  });
+
   test('prefers execution plan subtitles over avatar segment subtitles when both exist', () => {
     const taskDir = path.join(projectsDir, 'material_avatar_segments_priority');
     fs.mkdirSync(taskDir, { recursive: true });

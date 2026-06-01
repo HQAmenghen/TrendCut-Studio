@@ -119,6 +119,7 @@ None yet.
 | 2026-05-25 | 修正驾驶舱素材选择入口为热门榜单优先 | `.planning/quick/260525-jny-hot-source-picker/260525-jny-SUMMARY.md` |
 | 2026-05-25 | 素材接入区直接展示可操作热门榜单 | `.planning/quick/260525-jzk-source-hot-list/260525-jzk-SUMMARY.md` |
 | 2026-05-26 | 提高 AutoPilot 定时发布链路成功率 | `.planning/quick/260526-gam-autopilot/SUMMARY.md` |
+| 2026-05-29 | 生成可复用口播 ASR 对齐缓存并复用于动作触发和竖屏字幕 | `.planning/quick/20260529-speech-alignment-cache/SUMMARY.md` |
 
 ## Session Continuity
 

@@ -177,18 +177,40 @@ function normalizeApiError(err, fallbackMessage = '请求失败') {
   };
 }
 
-function createSauAccount(platformKey) {
+function pickPublishTitleFromAsset(asset = {}) {
+  return String(
+    asset?.metadata?.suggestedTitle
+    || asset?.metadata?.title
+    || asset?.metadata?.suggestedShortTitle
+    || asset?.compactLabel
+    || asset?.displayLabel
+    || asset?.label
+    || ''
+  ).trim();
+}
+
+function pickAccountFields(source = {}, fields = []) {
+  return fields.reduce((acc, field) => {
+    if (source[field] !== undefined) {
+      acc[field] = String(source[field] ?? '');
+    }
+    return acc;
+  }, {});
+}
+
+function createSauAccount(platformKey, initial = {}) {
   return {
     id: `${platformKey}_${Math.random().toString(36).slice(2, 10)}`,
     displayName: '',
-    sauAccountName: platformKey === 'douyin' ? 'douyin_main' : 'xhs_main',
+    sauAccountName: '',
     openId: '',
     accountId: '',
-    notes: ''
+    notes: '',
+    ...pickAccountFields(initial, ['displayName', 'sauAccountName', 'openId', 'accountId', 'notes'])
   };
 }
 
-function createXAccount() {
+function createXAccount(initial = {}) {
   return {
     id: `x_${Math.random().toString(36).slice(2, 10)}`,
     displayName: '',
@@ -200,7 +222,9 @@ function createXAccount() {
     refreshToken: '',
     scopes: 'tweet.read users.read tweet.write media.write offline.access',
     markMadeWithAi: true,
-    notes: ''
+    notes: '',
+    ...pickAccountFields(initial, ['displayName', 'username', 'userId', 'clientId', 'clientSecret', 'accessToken', 'refreshToken', 'scopes', 'notes']),
+    markMadeWithAi: initial.markMadeWithAi !== undefined ? Boolean(initial.markMadeWithAi) : true
   };
 }
 
@@ -936,7 +960,7 @@ export function usePublishCenter() {
 
   const fillEditorFromAsset = (asset) => {
     if (!asset) return;
-    editor.value.title = asset.metadata?.suggestedTitle || asset.compactLabel || asset.label || '';
+    editor.value.title = pickPublishTitleFromAsset(asset);
     editor.value.description = '';
     editor.value.tagStrategy = 'model';
     editor.value.tags = '';
@@ -1087,7 +1111,7 @@ export function usePublishCenter() {
       setErrorState({ message: '请先选择素材', code: 'PUBLISH_ASSET_MISSING', stage: 'publish.editor', hint: '', details: '' });
       return;
     }
-    editor.value.title = asset.metadata?.suggestedTitle || asset.compactLabel || asset.label || '';
+    editor.value.title = pickPublishTitleFromAsset(asset);
     appendLog('已恢复推荐标题');
   };
 
@@ -1273,7 +1297,7 @@ export function usePublishCenter() {
     return 10;
   };
 
-  const createWechatAccount = () => ({
+  const createWechatAccount = (initial = {}) => ({
     id: `wechat_${Math.random().toString(36).slice(2, 10)}`,
     displayName: '',
     finderUserName: '',
@@ -1283,15 +1307,17 @@ export function usePublishCenter() {
     appSecret: '',
     refreshToken: '',
     accountId: '',
-    notes: ''
+    notes: '',
+    ...pickAccountFields(initial, ['displayName', 'finderUserName', 'helperAccount', 'openPlatformAppId', 'appId', 'appSecret', 'refreshToken', 'accountId', 'notes'])
   });
 
-  const addWechatAccount = () => {
-    const nextAccount = createWechatAccount();
+  const addWechatAccount = (initial = {}) => {
+    const nextAccount = createWechatAccount(initial);
     updateConfigField('wechatChannels', 'accounts', [...wechatAccounts.value, nextAccount]);
     if (!editor.value.platformSelections.wechatChannels.accountId) {
       editor.value.platformSelections.wechatChannels.accountId = nextAccount.id;
     }
+    return nextAccount;
   };
 
   const updateWechatAccountField = (accountId, field, value) => {
@@ -1310,12 +1336,13 @@ export function usePublishCenter() {
     }
   };
 
-  const addSauAccount = (platformKey) => {
-    if (!SAU_PLATFORM_KEYS.includes(platformKey)) return;
-    const nextAccount = createSauAccount(platformKey);
+  const addSauAccount = (platformKey, initial = {}) => {
+    if (!SAU_PLATFORM_KEYS.includes(platformKey)) return null;
+    const nextAccount = createSauAccount(platformKey, initial);
     const accounts = getSauAccounts(platformKey);
     updateConfigField(platformKey, 'accounts', [...accounts, nextAccount]);
     ensureEditorPlatformSelection(platformKey);
+    return nextAccount;
   };
 
   const updateSauAccountField = (platformKey, accountId, field, value) => {
@@ -1336,10 +1363,11 @@ export function usePublishCenter() {
     }
   };
 
-  const addXAccount = () => {
-    const nextAccount = createXAccount();
+  const addXAccount = (initial = {}) => {
+    const nextAccount = createXAccount(initial);
     updateConfigField('x', 'accounts', [...xAccounts.value, nextAccount]);
     ensureEditorPlatformSelection('x');
+    return nextAccount;
   };
 
   const updateXAccountField = (accountId, field, value) => {
@@ -1385,9 +1413,11 @@ export function usePublishCenter() {
           appendError(`托管任务即时准备失败: ${trigger.error || '未知错误'}`);
         }
       }
+      return true;
     } catch (err) {
       setErrorState(normalizeApiError(err, `保存${tag}失败`));
       appendLog(`❌ ${tag}保存失败`);
+      return false;
     } finally {
       savingConfig.value = false;
     }
@@ -1410,7 +1440,7 @@ export function usePublishCenter() {
     if (!selectedAssetId.value) {
       error.value = '请先选择素材';
       appendError(error.value);
-      return;
+      return null;
     }
     creating.value = true;
     creatingStatusMessage.value = '';
@@ -1436,6 +1466,7 @@ export function usePublishCenter() {
       });
       jobs.value = res.data?.jobs || jobs.value;
       creatingStatusMessage.value = '';
+      appendLog('发布任务创建成功');
       return res.data?.job || null;
     } catch (err) {
       setErrorState(normalizeApiError(err, '创建发布任务失败'));
@@ -1492,8 +1523,11 @@ export function usePublishCenter() {
     try {
       const res = await axios.post(`/api/publish/jobs/${job.id}/platforms/${platformKey}/start`, { mode });
       jobs.value = res.data?.jobs || jobs.value;
+      appendLog(`${getPlatformLabel(platformKey)}任务已启动`);
+      return true;
     } catch (err) {
       setErrorState(normalizeApiError(err, `启动${getPlatformLabel(platformKey)}任务失败`));
+      return false;
     }
   };
 
@@ -1785,11 +1819,12 @@ export function usePublishCenter() {
       throw new Error(res.data?.error || '检测平台账号登录状态失败');
     } catch (err) {
       const normalized = normalizeApiError(err, '检测平台账号登录状态失败');
+      const errorMessage = normalized.details ? `${normalized.message}：${normalized.details}` : normalized.message;
       accountLoginStatus.value = {
         ...accountLoginStatus.value,
         [statusKey]: {
           status: 'error',
-          message: normalized.message,
+          message: errorMessage,
           lastCheckedAt: new Date().toISOString()
         }
       };
@@ -1798,11 +1833,11 @@ export function usePublishCenter() {
           ...qrCodeData.value,
           show: true,
           status: 'error',
-          error: normalized.message,
+          error: errorMessage,
           message: ''
         };
       }
-      appendError(`检测${getPlatformLabel(platformKey)}登录状态失败: ${normalized.message}`);
+      appendError(`检测${getPlatformLabel(platformKey)}登录状态失败: ${errorMessage}`);
     } finally {
       checkingLoginAccounts.value.delete(statusKey);
     }

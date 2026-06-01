@@ -116,6 +116,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -190,6 +191,7 @@ describe('createAvatarGenerationService', () => {
       },
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -244,6 +246,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -306,6 +309,7 @@ describe('createAvatarGenerationService', () => {
         ]
       })),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -385,6 +389,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration,
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -444,6 +449,7 @@ describe('createAvatarGenerationService', () => {
         throw new Error('deepseek unavailable');
       }),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -519,6 +525,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -620,6 +627,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -692,6 +700,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -754,6 +763,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });
@@ -809,6 +819,7 @@ describe('createAvatarGenerationService', () => {
       }),
       generateSpeechNarration: mockSpeechNarration(),
       readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
       rendererFactory: () => ({ render }),
       downloadFile
     });

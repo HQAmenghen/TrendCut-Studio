@@ -44,7 +44,8 @@ function createPublishConfigService(deps) {
       appId: '应用 ID / App ID',
       appSecret: '应用密钥 / App Secret',
       accessToken: '访问令牌 / Access Token',
-      accountId: '账号 ID / Account ID'
+      accountId: '账号 ID / Account ID',
+      title: '发布标题 / Publish Title'
     },
     x: {
       clientId: 'OAuth2 Client ID / OAuth2 Client ID',
@@ -91,6 +92,7 @@ function createPublishConfigService(deps) {
     const sanitized = [];
     for (const item of source) {
       if (!item || typeof item !== 'object') continue;
+      if (!wechatAccountFields.some((field) => field !== 'notes' && String(item[field] ?? '').trim())) continue;
       const next = createEmptyWechatAccount();
       const candidateId = String(item.id || '').trim() || makeJobId();
       const id = seen.has(candidateId) ? makeJobId() : candidateId;
@@ -128,6 +130,10 @@ function createPublishConfigService(deps) {
       : ['displayName', 'sauAccountName', 'accountId', 'notes'];
   }
 
+  function hasSauAccountValue(platformKey, account = {}) {
+    return getSauAccountFields(platformKey).some((field) => field !== 'notes' && String(account?.[field] ?? '').trim());
+  }
+
   function hasSauLegacyValue(platformKey, source = {}) {
     const fields = getSauAccountFields(platformKey);
     return fields.some((field) => String(source?.[field] ?? '').trim());
@@ -150,6 +156,7 @@ function createPublishConfigService(deps) {
     const sanitized = [];
     for (const item of source) {
       if (!item || typeof item !== 'object') continue;
+      if (!hasSauAccountValue(platformKey, item)) continue;
       const next = createEmptySauAccount(platformKey);
       const candidateId = String(item.id || '').trim() || next.id;
       const id = seen.has(candidateId) ? createEmptySauAccount(platformKey).id : candidateId;
@@ -199,6 +206,11 @@ function createPublishConfigService(deps) {
     return ['displayName', 'username', 'userId', 'clientId', 'clientSecret', 'accessToken', 'refreshToken', 'scopes', 'notes'];
   }
 
+  function hasXAccountValue(account = {}) {
+    return ['displayName', 'username', 'userId', 'clientId', 'clientSecret', 'accessToken', 'refreshToken']
+      .some((field) => String(account?.[field] ?? '').trim());
+  }
+
   function hasXLegacyValue(source = {}) {
     return [
       'displayName',
@@ -240,6 +252,7 @@ function createPublishConfigService(deps) {
     const sanitized = [];
     for (const item of source) {
       if (!item || typeof item !== 'object') continue;
+      if (!hasXAccountValue(item)) continue;
       const next = createEmptyXAccount();
       const candidateId = String(item.id || '').trim() || next.id;
       const id = seen.has(candidateId) ? createEmptyXAccount().id : candidateId;
@@ -736,6 +749,10 @@ function createPublishConfigService(deps) {
       };
     }
     const baseValidation = collectPlatformValidation(platformKey, account, task.requiredFields || []);
+    if (platformKey === 'xiaohongshu' && !String(task?.title || '').trim() && !baseValidation.missingFields.includes('title')) {
+      baseValidation.missingFields = [...baseValidation.missingFields, 'title'];
+      baseValidation.missingFieldLabels = baseValidation.missingFields.map((field) => formatPlatformFieldLabel(platformKey, field));
+    }
     return {
       ...baseValidation,
       account
