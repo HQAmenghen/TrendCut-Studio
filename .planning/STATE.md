@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
-last_updated: "2026-06-01T14:35:00+08:00"
-last_activity: 2026-06-01 — Completed quick task: 修复 dashboard 拆分后的液态玻璃样式回归
+last_updated: "2026-06-01T14:58:00+08:00"
+last_activity: 2026-06-01 — Completed quick task: 修复发布信息弹窗账号下拉菜单滚动显示
 progress:
   percent: 0
 ---
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-06-01 — Completed quick task: 修复 dashboard 拆分后的液态玻璃样式回归
+Last activity: 2026-06-01 — Completed quick task: 修复发布信息弹窗账号下拉菜单滚动显示
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -130,6 +130,7 @@ None yet.
 | 2026-06-01 | 进一步拆分前端 dashboard 面板与任务队列编排 | `.planning/quick/20260601-frontend-dashboard-deeper-decoupling/SUMMARY.md` |
 | 2026-06-01 | 适度拆分 dashboard 样式、素材入口与成片交付面板 | `.planning/quick/20260601-dashboard-target-size-refactor/SUMMARY.md` |
 | 2026-06-01 | 修复 dashboard 拆分后的液态玻璃样式回归 | `.planning/quick/20260601-fix-dashboard-glass-style-regression/SUMMARY.md` |
+| 2026-06-01 | 修复发布信息弹窗账号下拉菜单滚动显示 | `.planning/quick/20260601-fix-publish-dropdown-scroll/SUMMARY.md` |
 
 ## Session Continuity
 
