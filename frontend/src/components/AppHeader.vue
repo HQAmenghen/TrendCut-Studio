@@ -1,8 +1,8 @@
 <template>
   <header class="page-header">
     <div class="header-copy">
-      <div class="header-kicker">Unified Video Console</div>
-      <h1>自动生产驾驶舱</h1>
+      <div class="header-kicker">TrendCut Studio</div>
+      <h1>热点剪辑工作室</h1>
     </div>
     <div class="status-card">
       <div class="theme-toggle">

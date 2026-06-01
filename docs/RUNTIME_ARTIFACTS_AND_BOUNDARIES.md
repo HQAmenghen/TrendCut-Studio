@@ -1,6 +1,6 @@
 # 运行产物边界
 
-这个仓库当前同时包含源码、构建产物和运行期产物。阅读或维护时，建议先区分它们的边界。
+TrendCut Studio 仓库当前同时包含源码、构建产物和运行期产物。阅读或维护时，建议先区分它们的边界。
 
 ## 1. 源码
 
@@ -14,6 +14,8 @@
 - `config/`
 - `docs/`
 - `scripts/`
+- `mcp-server/`
+- `vendor/social-auto-upload/`
 - `.env.example`
 - `package.json`
 
@@ -37,6 +39,8 @@
 - 数字人视频
 - 最终成片
 
+其中 `aiman.mp4` 是内部数字人视频文件名，属于运行协议，不代表产品名称。
+
 ### `data/`
 
 Node 侧运行时数据和任务数据库。
@@ -58,6 +62,7 @@ Node 侧运行时数据和任务数据库。
 - `python/publish/*.db`
 - `python/publish/*.png`
 - `python/publish/browser_profiles/`
+- `python/publish/publish_jobs.db`
 - `python/publish/wechat_channels_user_data/`
 - `python/xai/result*.json`
 - `python/xai/run_log.txt`

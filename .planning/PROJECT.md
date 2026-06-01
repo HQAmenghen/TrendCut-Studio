@@ -1,14 +1,14 @@
-# Comfy Panel Demo
+# TrendCut Studio（热点剪辑工作室）
 
 ## What This Is
 
-Comfy Panel Demo is a local AI video operations console for turning source material into reviewable and publishable short-form videos. It combines material-driven generation, AI review, publishing automation, account monitoring, and system operations in one Node.js + Vue + Python workspace used by operators on a trusted machine.
+TrendCut Studio is a local automated hotspot video clipping and publishing workflow for turning source material into reviewable and publishable short-form videos. It combines hotspot discovery, material-driven editing, digital avatar narration, AI review, publishing automation, account monitoring, and system operations in one Node.js + Vue + Python workspace used by operators on a trusted machine.
 
 This initialization is for brownfield stabilization work. The product already exists; the current goal is to harden the existing workflows so operators can run them safely, recover from failures predictably, and maintain the codebase without introducing brittle regressions.
 
 ## Core Value
 
-Operators can reliably take source material through generation, review, and publishing from one console without unsafe failure modes or fragile manual recovery.
+Operators can reliably turn hotspots and source material into edited, reviewed, and publishable short-form videos from one console without unsafe failure modes or fragile manual recovery.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ Operators can reliably take source material through generation, review, and publ
 
 ## Context
 
-The codebase is already a brownfield system with a mapped architecture in `.planning/codebase/`. The main business chain is `热门发现 -> 素材驱动生产 -> AI 审核 -> 发布任务 -> 账号监控/系统运维`, with `server/routes/materialDriven.js` and `python/pipeline/run_material_driven.py` acting as the primary workflow spine.
+The codebase is already a brownfield system with a mapped architecture in `.planning/codebase/`. The main business chain is `热点发现 -> 素材驱动视频制作剪辑 -> AI 审核 -> 发布任务 -> 账号监控/系统运维`, with `frontend/src/components/AutomationDashboard.vue`, `server/routes/materialDriven.js`, and `python/pipeline/run_material_driven.py` acting as the primary workflow spine.
 
 Current concerns are concentrated in five areas: unauthenticated administrative APIs, plaintext secret handling, client-controlled filesystem paths, unbounded task/runtime state, and low automated coverage for the highest-risk orchestration code. The repo also mixes source code with runtime databases, generated outputs, and project artifacts, which increases review noise and operational risk.
 

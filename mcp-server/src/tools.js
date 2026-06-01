@@ -19,7 +19,11 @@ function readProjectEnvValue(key) {
 }
 
 function getBaseUrl() {
-  return String(process.env.COMFY_PANEL_AGENT_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '');
+  return String(
+    process.env.TRENDCUT_STUDIO_AGENT_BASE_URL ||
+    process.env.COMFY_PANEL_AGENT_BASE_URL ||
+    DEFAULT_BASE_URL
+  ).replace(/\/+$/, '');
 }
 
 function getAgentToken() {
@@ -41,7 +45,7 @@ function createToolErrorPayload(error) {
 async function requestAgent(path, options = {}) {
   const token = getAgentToken();
   if (!token) {
-    throw new Error('AGENT_API_TOKEN is required for video-assistant-agent-mcp');
+    throw new Error('AGENT_API_TOKEN is required for trendcut-studio-agent-mcp');
   }
 
   const headers = {
@@ -339,7 +343,7 @@ const tools = [
   },
   {
     name: 'list_hotspot_leaderboard',
-    description: 'List the current local hotspot leaderboard for a partition. This is the preferred tool when the user asks to view “加密分区榜单”, “金融分区榜单”, “科技分区榜单”, “AI 分区榜单”, or the current local ranking contents. It reads local Comfy Panel/video assistant results and should be used instead of Google/Bing/browser search.',
+    description: 'List the current local hotspot leaderboard for a partition. This is the preferred tool when the user asks to view “加密分区榜单”, “金融分区榜单”, “科技分区榜单”, “AI 分区榜单”, or the current local ranking contents. It reads local TrendCut Studio/video assistant results and should be used instead of Google/Bing/browser search.',
     inputSchema: {
       type: 'object',
       properties: {

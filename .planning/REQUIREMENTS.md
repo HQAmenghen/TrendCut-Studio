@@ -1,7 +1,7 @@
-# Requirements: Comfy Panel Demo
+# Requirements: TrendCut Studio
 
 **Defined:** 2026-04-17
-**Core Value:** Operators can reliably take source material through generation, review, and publishing from one console without unsafe failure modes or fragile manual recovery.
+**Core Value:** Operators can reliably turn hotspots and source material into edited, reviewed, and publishable short-form videos from one console without unsafe failure modes or fragile manual recovery.
 
 ## v1 Requirements
 

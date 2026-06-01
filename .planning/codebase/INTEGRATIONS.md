@@ -94,7 +94,7 @@
 **Hosting:**
 - Direct Node hosting or Docker.
   - Process entry: `npm start` -> `server.js`.
-  - Container entry: `Dockerfile` and `docker-compose.yml` service `comfy-panel`.
+  - Container entry: `Dockerfile` and `docker-compose.yml` service `trendcut-studio`.
   - ComfyUI remains a separately hosted dependency configured by `COMFYUI_BASE_URL`.
 
 **CI Pipeline:**

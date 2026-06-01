@@ -1,13 +1,13 @@
 @echo off
 chcp 65001 > nul
-title AI_Video_Pipeline
+title TrendCut Studio
 
 echo ==========================================
-echo         AI Video Pipeline
+echo         TrendCut Studio
 echo ==========================================
 echo.
 echo 1. Entering project directory...
-cd /d "%~dp0comfy_panel_demo"
+cd /d "%~dp0"
 
 echo 2. Building Vue frontend...
 call npm run build:front

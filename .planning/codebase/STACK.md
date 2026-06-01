@@ -87,7 +87,7 @@
 
 **Production:**
 - The deployable app is a single Node service from `server.js` that serves `frontend-dist/` and spawns local Python workers from the same filesystem.
-- The included container target is the `comfy-panel` service in `docker-compose.yml`, exposing port `3001` and mounting `public/presets`, `data/uploads`, `python/publish/browser_profiles`, and `python/publish/publish_jobs.db`.
+- The included container target is the `trendcut-studio` service in `docker-compose.yml`, exposing port `3001` and mounting `public/presets`, `data/uploads`, `python/publish/browser_profiles`, and `python/publish/publish_jobs.db`.
 - ComfyUI, model APIs, Feishu, X, and any publishing credentials remain external services; they are not bundled into the repo.
 
 ---

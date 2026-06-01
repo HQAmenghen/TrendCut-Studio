@@ -73,7 +73,7 @@
 
 **Material-Driven Production Flow:**
 
-1. `frontend/src/components/MaterialDrivenWorkspace.vue` invokes actions from `frontend/src/composables/useMaterialDriven.js`.
+1. `frontend/src/components/AutomationDashboard.vue` invokes actions from `frontend/src/composables/useMaterialDriven.js`.
 2. `useMaterialDriven.js` uploads a multipart request to `/api/material-driven/start` and then opens an `EventSource` on `/api/material-driven/progress/:jobId`.
 3. `server/routes/materialDriven.js` creates a durable project directory under `projects/`, saves `source_post.json`, stages `material.mp4`, and spawns `python/pipeline/run_material_driven.py` with `--end-at 5`.
 4. `python/pipeline/run_material_driven.py` runs the seven-step workflow, emitting structured stage/result events through `python/script_protocol.py`.
@@ -106,7 +106,7 @@
 
 **Workspace + Composable Pair:**
 - Purpose: Keep rendering in `.vue` files and feature state/effects in a single matching composable.
-- Examples: `frontend/src/components/MaterialDrivenWorkspace.vue` + `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/PublishCenterWorkspace.vue` + `frontend/src/composables/usePublishCenter.js`, `frontend/src/components/StandaloneWorkspace.vue` + `frontend/src/composables/useStandalone.js`.
+- Examples: `frontend/src/components/AutomationDashboard.vue` composed with `frontend/src/composables/useMaterialDriven.js`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useStandalone.js`, and `frontend/src/composables/useXaiTop10.js`.
 - Pattern: Presentation/state split by feature, not by generic shared store.
 
 **Route Registrar:**

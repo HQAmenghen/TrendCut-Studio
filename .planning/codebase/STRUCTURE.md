@@ -5,15 +5,15 @@
 ## Directory Layout
 
 ```text
-comfy_panel_demo/
+trendcut-studio/
 ├── server.js                 # Node composition root and production HTTP entry
 ├── package.json              # Root scripts and dependency manifest
 ├── vite.config.mjs           # Vite config; uses `frontend/` as root and `frontend-dist/` as output
 ├── frontend/                 # Vue SPA source
 │   ├── index.html            # Vite HTML entry
 │   └── src/
-│       ├── App.vue           # Console shell and module switching
-│       ├── components/       # Workspace UIs and presentational panels
+│       ├── App.vue           # Console shell and dashboard composition
+│       ├── components/       # Dashboard UI and presentational panels
 │       └── composables/      # Feature state, API calls, SSE wiring, localStorage recovery
 ├── frontend-dist/            # Built frontend assets served by `server.js`
 ├── server/                   # Express-side code
@@ -39,8 +39,8 @@ comfy_panel_demo/
 
 **`frontend/`:**
 - Purpose: Hold all source code for the Vue console.
-- Contains: `frontend/src/App.vue`, workspace components in `frontend/src/components/`, and composables in `frontend/src/composables/`.
-- Key files: `frontend/src/App.vue`, `frontend/src/components/MaterialDrivenWorkspace.vue`, `frontend/src/components/PublishCenterWorkspace.vue`, `frontend/src/components/StandaloneWorkspace.vue`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/composables/usePublishCenter.js`
+- Contains: `frontend/src/App.vue`, dashboard components in `frontend/src/components/`, and composables in `frontend/src/composables/`.
+- Key files: `frontend/src/App.vue`, `frontend/src/components/AutomationDashboard.vue`, `frontend/src/components/AppHeader.vue`, `frontend/src/components/ProductionProgressPanel.vue`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/composables/usePublishCenter.js`
 
 **`server/`:**
 - Purpose: Hold the Express application’s route, service, config, and infrastructure code.
@@ -99,7 +99,8 @@ comfy_panel_demo/
 - `.env.example`: Environment template; `.env` is present in the repo root but should be treated as runtime configuration, not source
 
 **Core Logic:**
-- `frontend/src/App.vue`: Active module shell
+- `frontend/src/App.vue`: Active console shell
+- `frontend/src/components/AutomationDashboard.vue`: Unified operator cockpit
 - `server/routes/materialDriven.js`: Material-driven orchestration and SSE
 - `server/services/vertical/queue.js`: Batch vertical pipeline service
 - `server/services/publish/handlers.js`: Publish API handlers
@@ -115,7 +116,7 @@ comfy_panel_demo/
 ## Naming Conventions
 
 **Files:**
-- Vue workspace and UI components use `PascalCase.vue`, for example `frontend/src/components/MaterialDrivenWorkspace.vue` and `frontend/src/components/TopNavigation.vue`.
+- Vue dashboard and UI components use `PascalCase.vue`, for example `frontend/src/components/AutomationDashboard.vue` and `frontend/src/components/AppHeader.vue`.
 - Vue composables use `use<Feature>.js`, for example `frontend/src/composables/useMaterialDriven.js` and `frontend/src/composables/usePublishCenter.js`.
 - Route registrars and service modules use lowercase or lower-camel `.js` names, for example `server/routes/materialDriven.js`, `server/services/vertical/queue.js`, `server/services/system/selfCheck.js`.
 - Python scripts and helpers use `snake_case.py`, for example `python/pipeline/run_material_driven.py`, `python/publish/generate_publish_description.py`, and `python/xai/translate_result_summaries.py`.
@@ -129,9 +130,9 @@ comfy_panel_demo/
 ## Where To Add New Code
 
 **New Frontend Feature Module:**
-- Primary code: Add a workspace component in `frontend/src/components/<Feature>Workspace.vue`
-- State and API logic: Add `frontend/src/composables/use<Feature>.js`
-- Shell wiring: Register the module in `frontend/src/App.vue` and, if needed, `frontend/src/components/TopNavigation.vue`
+- Primary code: Extend `frontend/src/components/AutomationDashboard.vue` or add a focused supporting component in `frontend/src/components/`.
+- State and API logic: Add or extend `frontend/src/composables/use<Feature>.js`.
+- Shell wiring: Compose the feature through `frontend/src/App.vue` and the dashboard instead of reviving the old workspace-page pattern.
 
 **New Backend API:**
 - Route surface: Add or extend `server/routes/<feature>.js`
@@ -183,11 +184,10 @@ comfy_panel_demo/
 ## Active Vs Inactive Frontend Files
 
 **Active App Shell:**
-- The current shell is `frontend/src/App.vue`, which mounts `MaterialDrivenWorkspace`, `StandaloneWorkspace`, `XaiDiscoveryWorkspace`, `ReviewCenterWorkspace`, `PublishCenterWorkspace`, `AccountDashboardWorkspace`, and `SystemSettingsWorkspace`.
+- The current shell is `frontend/src/App.vue`, which mounts `AppHeader`, `AutomationDashboard`, and supporting modal/progress components.
 
 **Currently Unmounted Files:**
-- `frontend/src/components/PipelineWorkspace.vue` exists on disk but is not mounted by `frontend/src/App.vue`.
-- When adding a new workspace, follow the active `App.vue` registration path instead of reviving unmounted files implicitly.
+- The old workspace component set has been removed. When adding a new feature, follow the active `AutomationDashboard.vue` composition path.
 
 ---
 

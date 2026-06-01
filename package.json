@@ -1,7 +1,7 @@
 {
-  "name": "comfy-panel-demo",
+  "name": "trendcut-studio",
   "version": "1.0.0",
-  "description": "ComfyUI Node.js + Vue Control Panel",
+  "description": "Automated hotspot video clipping and publishing workflow",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

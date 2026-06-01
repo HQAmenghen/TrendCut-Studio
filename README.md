@@ -1,96 +1,85 @@
-# Comfy Panel Demo
+# TrendCut Studio（热点剪辑工作室）
 
-一个面向本地生产环境的 AI 视频工作台，当前已经形成以“素材驱动热点转视频”为核心的生产链路，并把审核、发布、账号看板和系统运维整合到同一套控制台里。
+TrendCut Studio 是一套本地运行的全自动热点视频剪辑与发布工作流。它面向短视频运营场景，把热点获取、素材分析、脚本生成、数字人口播、智能混剪、AI 审核、多平台发布和账号监控放在同一个控制台中，帮助操作员把热点内容稳定产出为可审核、可发布的短视频。
 
-## 当前定位
+## 产品定位
 
-当前项目的主入口不是旧版 `pipeline` 路由，而是新的 `materialDriven` 工作流：
+当前版本的主线不是通用视频工具，而是“热点发现 -> 视频制作剪辑 -> 审核 -> 发布”的完整运营流程：
 
-- 热点视频发现与转入
-- 素材驱动脚本编排
-- 数字人口播生成
-- 智能混剪与成片导出
-- AI 审核与修复建议
-- 发布任务管理与微信视频号 RPA
-- 账号看板、登录检测、飞书通知、LLM 配置
+- 获取和翻译热点榜单，维护可转化的热点素材入口。
+- 从本地素材或榜单条目启动素材驱动生产。
+- 自动完成 ASR、VLM 分析、片段筛选、脚本生成和剪辑计划。
+- 生成数字人口播素材或接入已有数字人视频。
+- 合成横版成片，并可继续转入竖屏后期合成。
+- 执行 AI 视频审核，按建议重新入队修复。
+- 汇总可发布素材，生成发布文案，创建抖音、小红书、微信视频号等平台任务。
+- 监控账号状态、登录状态、调度任务、自检和通知配置。
 
-## 当前前端模块
+## 当前可执行入口
 
-- `热点转视频生产线`
-  - 从本地上传或从热门榜单转入素材
-  - 启动 7 步素材驱动工作流
-  - 查看脚本、Edit Plan、Execution Plan、时间线和日志
-  - 支持重建计划、重渲染、断点继续
-- `竖屏后期合成`
-  - 单条竖屏后期合成
-  - 竖屏队列管理
-- `热门视频榜单`
-  - 拉取 xAI Top10 榜单
-  - 一键转入素材驱动工作流
-- `AI 审核中心`
-  - 执行审核、查看历史、跳过审核
-  - 根据修复建议重新入队生成
-- `一键发布`
-  - 汇总可发布素材
-  - 自动生成发布文案
-  - 创建多平台发布任务
-  - 执行微信视频号 RPA
-- `账号看板`
-  - 查看账号状态、任务与失败记录
-- `系统设置`
-  - 自检、预设素材、工作流配置
-  - 飞书通知、登录检测、LLM 配置
+前端已经收敛到统一的运营驾驶舱：
 
-## 核心实现
+- `frontend/src/App.vue`
+- `frontend/src/components/AppHeader.vue`
+- `frontend/src/components/AutomationDashboard.vue`
+- `frontend/src/composables/useMaterialDriven.js`
+- `frontend/src/composables/useStandalone.js`
+- `frontend/src/composables/useXaiTop10.js`
+- `frontend/src/composables/usePublishCenter.js`
 
-### 1. Node.js 后端装配层
+旧版按模块拆分的 Workspace 组件已经清理，当前第一版可执行体验以 `AutomationDashboard.vue` 为主入口。
 
-- 入口：`server.js`
-- 职责：
-  - 注册所有 HTTP 路由
-  - 管理任务存储、恢复、自检、调度器
-  - 把前端请求分发到 Python 执行层或本地服务
+## 核心工作流
 
-### 2. 素材驱动生产主链
+### 1. 热点发现
 
-- 路由：`server/routes/materialDriven.js`
+- 前端：`frontend/src/composables/useXaiTop10.js`
+- 后端：`server/routes/xai.js`
+- Python：`python/xai/run_xai_top10.py`
+
+用于拉取热点榜单、翻译摘要、维护账号池，并把适合制作的条目送入素材驱动流程。
+
+### 2. 素材驱动视频制作剪辑
+
+- 后端：`server/routes/materialDriven.js`
 - Python 主控：`python/pipeline/run_material_driven.py`
-- 当前 7 步流程：
-  1. 准备素材
-  2. ASR + VLM 分析
-  3. 素材切片、评分、选段
-  4. 编排规划
-  5. 生成脚本、口播稿、Edit Plan、Execution Plan
-  6. 生成数字人或接入已有 `aiman.mp4`
-  7. 使用 `smart_video_composer.py` 渲染 `output_final.mp4`
 
-这个链路已经不再依赖旧的 `server/routes/pipeline.js`，而是通过素材驱动路由、SSE 状态推送和项目目录恢复机制来运行。
+当前 7 步流程：
 
-### 3. Python 执行层
+1. 准备素材。
+2. 执行 ASR 和 VLM 分析。
+3. 切片、评分和选择素材片段。
+4. 生成编排规划。
+5. 生成脚本、口播稿、Edit Plan 和 Execution Plan。
+6. 生成数字人视频或接入已有 `aiman.mp4`。
+7. 使用 `smart_video_composer.py` 渲染 `output_final.mp4`。
 
-- `python/pipeline/`
-  - 素材分析、切片、评分、脚本生成、数字人映射、视频合成
-- `python/review/`
-  - AI 视频审核
-- `python/publish/`
-  - 发布文案生成、微信视频号 RPA、登录检测
-  - 抖音/小红书通过项目内 `vendor/social-auto-upload` 源码执行上传；草稿模式停在发布前，自动发表模式继续提交
-- `python/xai/`
-  - 热点榜单抓取与翻译
-- `vendor/social-auto-upload/`
-  - 随当前项目打包的 `social-auto-upload` 精简源码副本
-  - 仅包含抖音/小红书上传链路需要的源码；不包含 `.venv`、cookies、logs、db、示例视频等运行态内容
+`aiman.mp4` 是历史保留下来的内部数字人视频文件名，用于兼容现有任务恢复、测试和运行协议，不代表产品名称。
 
-### 4. 运行时目录
+### 3. AI 审核与修复
 
-- `projects/`
-  - 素材驱动工作流的项目目录，保存中间文件和成片
-- `data/`
-  - 数据库、上传缓存、运行时任务
-- `public/`
-  - 对外暴露的静态资源和预设素材
-- `frontend-dist/`
-  - 前端构建产物
+- 后端：`server/routes/review.js`
+- 服务：`server/services/review/`
+- Python：`python/review/ai_video_review.py`
+
+用于审核成片质量、保存审核历史，并把需要修复的任务重新送入生产链路。
+
+### 4. 发布自动化
+
+- 后端：`server/routes/publish.js`
+- 服务：`server/services/publish/`
+- Python：`python/publish/`
+- Vendor：`vendor/social-auto-upload/`
+
+用于汇总可发布素材、生成发布文案、创建平台任务，并执行微信视频号、抖音和小红书等发布流程。抖音/小红书发布代码随项目打包在 `vendor/social-auto-upload/` 中，运行态 cookie、二维码和日志写入 `data/social-auto-upload-runtime/`。
+
+## 技术架构
+
+- Node.js + Express：服务装配、路由、任务恢复、调度、自检和本地数据库。
+- Vue 3 + Vite：本地运营控制台。
+- Python：素材分析、脚本生成、剪辑合成、审核、发布 RPA 和热点抓取。
+- SQLite + 文件系统：任务、审核、发布记录和项目运行产物。
+- 外部依赖：ComfyUI、LLM Provider、FFmpeg、Playwright 浏览器、平台账号登录态。
 
 ## 本地启动
 
@@ -121,10 +110,7 @@ Copy-Item .env.example .env
 - `LLM_PROVIDER`
 - `AI_REVIEW_ENABLED`
 
-抖音/小红书发布代码已经内置在 `vendor/social-auto-upload/`，打包时会随当前项目一起走。
-登录 cookie、二维码和日志会写入 `data/social-auto-upload-runtime/`，不会写入 vendor 源码目录。
-只有需要临时切换到另一个 `social-auto-upload` checkout 时，才设置 `SOCIAL_AUTO_UPLOAD_DIR` 作为高级覆盖项；
-通常不需要设置 `SOCIAL_AUTO_UPLOAD_PYTHON`，直接使用当前项目的 Python 环境即可。
+通常不需要设置 `SOCIAL_AUTO_UPLOAD_PYTHON`。只有需要临时切换到另一个 `social-auto-upload` checkout 时，才设置 `SOCIAL_AUTO_UPLOAD_DIR` 作为高级覆盖项。
 
 ### 3. 启动服务
 

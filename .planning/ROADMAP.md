@@ -1,8 +1,8 @@
-# Roadmap: Comfy Panel Demo
+# Roadmap: TrendCut Studio
 
 ## Overview
 
-This roadmap hardens the existing operator console without changing its product identity. The sequence moves from immediate safety fixes, to workflow reliability, to runtime boundary cleanup, to regression coverage, and finally to modularizing the most fragile orchestration code once guardrails are in place.
+This roadmap hardens the existing hotspot video clipping operator console without changing its product identity. The sequence moves from immediate safety fixes, to workflow reliability, to runtime boundary cleanup, to regression coverage, and finally to modularizing the most fragile orchestration code once guardrails are in place.
 
 ## Phases
 

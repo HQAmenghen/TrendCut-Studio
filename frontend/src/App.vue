@@ -48,7 +48,8 @@ import { useMaterialDriven } from './composables/useMaterialDriven';
 
 function getInitialThemeMode() {
   try {
-    const savedTheme = window.localStorage.getItem('comfy-panel-theme');
+    const savedTheme = window.localStorage.getItem('trendcut-studio-theme')
+      || window.localStorage.getItem('comfy-panel-theme');
     if (savedTheme === 'light' || savedTheme === 'dark') {
       return savedTheme;
     }
@@ -359,7 +360,7 @@ watch(themeMode, (value) => {
   document.body.classList.toggle('theme-light', value === 'light');
   document.documentElement.dataset.theme = value;
   try {
-    window.localStorage.setItem('comfy-panel-theme', value);
+    window.localStorage.setItem('trendcut-studio-theme', value);
   } catch (_err) {
     // ignore storage write errors
   }

@@ -1,17 +1,17 @@
-# 素材驱动工作流
+# TrendCut Studio 素材驱动剪辑工作流
 
 ## 主入口
 
 当前主入口：
 
-- 前端：`frontend/src/components/MaterialDrivenWorkspace.vue`
+- 前端：`frontend/src/components/AutomationDashboard.vue`
 - 前端状态：`frontend/src/composables/useMaterialDriven.js`
 - 后端：`server/routes/materialDriven.js`
 - Python 主控：`python/pipeline/run_material_driven.py`
 
 ## 工作流目标
 
-把一个热点素材视频转成一条可发布的“数字人主讲 + 热点素材插片”成片，并把中间结果完整保存在项目目录中，便于复查、继续执行、重建计划和重渲染。
+把一个热点素材视频转成一条可发布的“数字人主讲 + 热点素材插片”成片，并把中间结果完整保存在项目目录中，便于复查、继续执行、重建计划、重渲染、审核和发布。
 
 ## 输入方式
 
@@ -81,7 +81,7 @@
 
 - 自动模式
   - Node 先把流程停在步骤 5
-  - 调用 ComfyUI 生成 `aiman.mp4`
+  - 调用 ComfyUI 生成内部数字人视频文件 `aiman.mp4`
   - 再从步骤 6 继续
 - 手动模式
   - 用户自己放入 `aiman.mp4`
@@ -97,6 +97,8 @@
 由 `smart_video_composer.py` 根据 `execution_plan.json` 合成：
 
 - `output_final.mp4`
+
+`aiman.mp4` 是历史运行协议文件名，保留用于兼容已有任务恢复、竖屏合成、发布资产汇总和测试，不代表产品名称。
 
 ## Node 侧工作流控制
 
@@ -145,3 +147,4 @@
 - 后端支持根据 `outputPath` 从磁盘恢复任务快照。
 - 生产链路已经默认围绕素材驱动目录 `projects/` 工作。
 - “重建计划”和“重渲染”是当前链路的重要能力，不再需要从头跑完整旧链路。
+- 第一版可执行 UI 已经收敛到 `AutomationDashboard.vue`，不再依赖旧 Workspace 页面组件。

@@ -1386,7 +1386,7 @@ function createAgentHandlers(deps) {
         const report = getSelfCheckReport();
         res.json({
           success: true,
-          service: 'comfy-panel-agent-v1',
+          service: 'trendcut-studio-agent-v1',
           status: report?.summary?.status || 'ok',
           generatedAt: new Date().toISOString(),
           agent: {

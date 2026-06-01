@@ -1,13 +1,13 @@
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
-**Comfy Panel Demo**
+**TrendCut Studio（热点剪辑工作室）**
 
-Comfy Panel Demo is a local AI video operations console for turning source material into reviewable and publishable short-form videos. It combines material-driven generation, AI review, publishing automation, account monitoring, and system operations in one Node.js + Vue + Python workspace used by operators on a trusted machine.
+TrendCut Studio is a local automated hotspot video clipping and publishing workflow. It combines hotspot discovery, material-driven editing, digital avatar narration, AI review, publishing automation, account monitoring, and system operations in one Node.js + Vue + Python workspace used by operators on a trusted machine.
 
 This initialization is for brownfield stabilization work. The product already exists; the current goal is to harden the existing workflows so operators can run them safely, recover from failures predictably, and maintain the codebase without introducing brittle regressions.
 
-**Core Value:** Operators can reliably take source material through generation, review, and publishing from one console without unsafe failure modes or fragile manual recovery.
+**Core Value:** Operators can reliably turn hotspots and source material into edited, reviewed, and publishable short-form videos from one console without unsafe failure modes or fragile manual recovery.
 
 ### Constraints
 
@@ -76,7 +76,7 @@ This initialization is for brownfield stabilization work. The product already ex
 - Playwright browser binaries installed for `python/publish/wechat_channels_rpa.py`.
 - A reachable ComfyUI instance, configured by `server/config/runtime.js` and optionally overridden in `docker-compose.yml`.
 - The deployable app is a single Node service from `server.js` that serves `frontend-dist/` and spawns local Python workers from the same filesystem.
-- The included container target is the `comfy-panel` service in `docker-compose.yml`, exposing port `3001` and mounting `public/presets`, `data/uploads`, `python/publish/browser_profiles`, and `python/publish/publish_jobs.db`.
+- The included container target is the `trendcut-studio` service in `docker-compose.yml`, exposing port `3001` and mounting `public/presets`, `data/uploads`, `python/publish/browser_profiles`, and `python/publish/publish_jobs.db`.
 - ComfyUI, model APIs, Feishu, X, and any publishing credentials remain external services; they are not bundled into the repo.
 <!-- GSD:stack-end -->
 
@@ -84,7 +84,7 @@ This initialization is for brownfield stabilization work. The product already ex
 ## Conventions
 
 ## Naming Patterns
-- Use `PascalCase.vue` for Vue components in `frontend/src/components/`, for example `frontend/src/components/TopNavigation.vue` and `frontend/src/components/MaterialDrivenWorkspace.vue`.
+- Use `PascalCase.vue` for Vue components in `frontend/src/components/`, for example `frontend/src/components/AppHeader.vue` and `frontend/src/components/AutomationDashboard.vue`.
 - Use `camelCase` with a `use` prefix for Vue composables in `frontend/src/composables/`, for example `frontend/src/composables/usePublishCenter.js` and `frontend/src/composables/useMaterialDriven.js`.
 - Use descriptive lowercase or lower-camel filenames for Node modules in `server/`, grouped by role: routes like `server/routes/review.js`, services like `server/services/system/handlers.js`, and core utilities like `server/core/http.js`.
 - Use `snake_case.py` for Python modules and scripts, for example `python/llm_client.py`, `python/gemini_client.py`, and `python/pipeline/run_material_driven.py`.
@@ -154,19 +154,19 @@ This initialization is for brownfield stabilization work. The product already ex
 
 ## Pattern Overview
 - `server.js` is the composition root. It loads environment state, creates shared services, registers route modules, starts the scheduler, and serves static frontend assets.
-- `frontend/src/App.vue` is the UI shell. Each major console area is implemented as a workspace component plus a matching composable in `frontend/src/composables/`.
+- `frontend/src/App.vue` is the UI shell. The first executable console is centered on `frontend/src/components/AutomationDashboard.vue`, with feature state in matching composables under `frontend/src/composables/`.
 - Long-running media and AI work is delegated to Python scripts under `python/`, while Node translates subprocess output into HTTP responses, SSE progress streams, persisted task state, and runtime files.
 ## Layers
-- Purpose: Render the console shell, switch between business workspaces, and pass state/actions into each workspace.
-- Location: `frontend/src/main.js`, `frontend/src/App.vue`, `frontend/src/components/TopNavigation.vue`
-- Contains: App bootstrapping, top navigation, module selection, theme persistence, cross-module routing such as material-driven output into publish or standalone.
+- Purpose: Render the console shell, header, and unified automation dashboard.
+- Location: `frontend/src/main.js`, `frontend/src/App.vue`, `frontend/src/components/AppHeader.vue`, `frontend/src/components/AutomationDashboard.vue`
+- Contains: App bootstrapping, product header, dashboard composition, theme persistence, and cross-module routing such as material-driven output into publish or standalone.
 - Depends on: Vue runtime plus workspace composables such as `frontend/src/composables/useMaterialDriven.js`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useStandalone.js`, and `frontend/src/composables/useXaiTop10.js`.
 - Used by: The browser entry from `frontend/index.html`, built through `vite.config.mjs` and served from `frontend-dist/`.
 - Purpose: Keep client-side state, talk to backend APIs, attach SSE streams, and persist recoverable UI state in `localStorage`.
 - Location: `frontend/src/composables/`
 - Contains: Feature-scoped composables such as `useMaterialDriven.js`, `usePublishCenter.js`, `useStandalone.js`, `useVerticalQueue.js`, `useVideoReview.js`, and `useXaiTop10.js`.
 - Depends on: `fetch`, `axios`, Vue `ref`/`computed`/`watch`, and backend endpoints under `/api/...`.
-- Used by: Workspace components in `frontend/src/components/*.vue`.
+- Used by: `AutomationDashboard.vue` and supporting components in `frontend/src/components/*.vue`.
 - Purpose: Create the Express app, static file serving, shared dependencies, and feature service instances.
 - Location: `server.js`
 - Contains: `express()` setup, static mounts for `frontend-dist/`, `public/`, and `projects/`, `TaskStore` initialization, scheduler startup, recovery startup, and feature route registration.
@@ -203,8 +203,8 @@ This initialization is for brownfield stabilization work. The product already ex
 - Server durable state uses SQLite in `data/tasks.db` through `server/core/taskStore.js`, SQLite in `data/ai_review.db` through `server/services/review/store.js`, and SQLite in `python/publish/publish_jobs.db` through `server/services/publish/store.js` and `publishStore.migrations.js`.
 - Large media artifacts and workflow checkpoints live on disk in `projects/`, `data/uploads/`, `public/`, and `python/publish/`.
 ## Key Abstractions
-- Purpose: Keep rendering in `.vue` files and feature state/effects in a single matching composable.
-- Examples: `frontend/src/components/MaterialDrivenWorkspace.vue` + `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/PublishCenterWorkspace.vue` + `frontend/src/composables/usePublishCenter.js`, `frontend/src/components/StandaloneWorkspace.vue` + `frontend/src/composables/useStandalone.js`.
+- Purpose: Keep rendering in `.vue` files and feature state/effects in composables.
+- Examples: `frontend/src/components/AutomationDashboard.vue` composed with `frontend/src/composables/useMaterialDriven.js`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useStandalone.js`, and `frontend/src/composables/useXaiTop10.js`.
 - Pattern: Presentation/state split by feature, not by generic shared store.
 - Purpose: Expose HTTP endpoints without embedding composition logic.
 - Examples: `server/routes/publish.js`, `server/routes/review.js`, `server/routes/system.js`, `server/routes/xai.js`.

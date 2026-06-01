@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: planning
 stopped_at: context exhaustion at 90% (2026-04-22)
-last_updated: "2026-05-26T03:43:56Z"
-last_activity: 2026-05-26 — Completed quick task: 提高 AutoPilot 定时发布链路成功率
+last_updated: "2026-06-01T10:00:00+08:00"
+last_activity: 2026-06-01 — Completed quick task: TrendCut Studio 第一版可执行发布准备
 progress:
   percent: 0
 ---
@@ -16,7 +16,7 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-04-17)
 
-**Core value:** Operators can reliably take source material through generation, review, and publishing from one console without unsafe failure modes or fragile manual recovery.
+**Core value:** Operators can reliably turn hotspots and source material into edited, reviewed, and publishable short-form videos from one console without unsafe failure modes or fragile manual recovery.
 **Current focus:** Phase 1 - Security Boundary Hardening
 
 ## Current Position
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-04-17)
 Phase: 1 of 5 (Security Boundary Hardening)
 Plan: 0 of 3 in current phase
 Status: Ready to plan
-Last activity: 2026-05-26 — Completed quick task: 提高 AutoPilot 定时发布链路成功率
+Last activity: 2026-06-01 — Completed quick task: TrendCut Studio 第一版可执行发布准备
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -120,6 +120,7 @@ None yet.
 | 2026-05-25 | 素材接入区直接展示可操作热门榜单 | `.planning/quick/260525-jzk-source-hot-list/260525-jzk-SUMMARY.md` |
 | 2026-05-26 | 提高 AutoPilot 定时发布链路成功率 | `.planning/quick/260526-gam-autopilot/SUMMARY.md` |
 | 2026-05-29 | 生成可复用口播 ASR 对齐缓存并复用于动作触发和竖屏字幕 | `.planning/quick/20260529-speech-alignment-cache/SUMMARY.md` |
+| 2026-06-01 | TrendCut Studio 第一版可执行发布准备 | `.planning/quick/20260601-trendcut-release-prep/SUMMARY.md` |
 
 ## Session Continuity
 

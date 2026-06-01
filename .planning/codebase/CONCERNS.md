@@ -6,7 +6,7 @@
 
 **Monolithic orchestration modules:**
 - Issue: HTTP routing, subprocess orchestration, filesystem mutation, retry logic, and response shaping are combined inside very large modules instead of isolated services.
-- Files: `server/routes/materialDriven.js`, `server/services/vertical/queue.js`, `python/pipeline/run_material_driven.py`, `python/pipeline/smart_video_composer.py`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/MaterialDrivenWorkspace.vue`, `frontend/src/components/PublishCenterWorkspace.vue`, `frontend/src/components/ReviewCenterWorkspace.vue`, `frontend/src/components/SystemSettingsWorkspace.vue`
+- Files: `server/routes/materialDriven.js`, `server/services/vertical/queue.js`, `python/pipeline/run_material_driven.py`, `python/pipeline/smart_video_composer.py`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/AutomationDashboard.vue`
 - Impact: a small behavior change can break multiple steps in the same flow, duplicated process-lifecycle code diverges over time, and targeted unit tests are hard to add without refactoring first.
 - Fix approach: split route handlers from orchestration services, centralize Python process management in one adapter, and move Vue workflow state machines out of page-sized components into smaller composables/stores.
 
@@ -58,13 +58,13 @@
 
 **Secrets are stored in plaintext and returned to the browser:**
 - Risk: model API keys and platform credentials are written to local config files, then sent back to the frontend in raw form.
-- Files: `server/services/system/handlers.js`, `server/services/publish/handlers.js`, `server/services/publish/publishStore.config.js`, `scripts/utils/env.js`, `frontend/src/components/SystemSettingsWorkspace.vue`, `frontend/src/composables/usePublishCenter.js`
+- Files: `server/services/system/handlers.js`, `server/services/publish/handlers.js`, `server/services/publish/publishStore.config.js`, `scripts/utils/env.js`, `frontend/src/components/AutomationDashboard.vue`, `frontend/src/composables/usePublishCenter.js`
 - Current mitigation: `.gitignore` excludes `.env` and `python/publish/platform_config.json`, and publish routes also compute a masked copy, but the raw values are still returned.
 - Recommendations: never return stored secrets after save, separate secret storage from user-editable config, and replace read-back with masked placeholders plus explicit rotate/update actions.
 
 **Path traversal and arbitrary file access are possible through user-controlled paths:**
 - Risk: `outputDir` from material-driven requests and `videoPath` from review requests reach filesystem operations without a verified root boundary.
-- Files: `server/routes/materialDriven.js`, `server/services/review/handlers.js`, `server/config/paths.js`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/ReviewCenterWorkspace.vue`
+- Files: `server/routes/materialDriven.js`, `server/services/review/handlers.js`, `server/config/paths.js`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/AutomationDashboard.vue`
 - Current mitigation: existence checks and `path.join()` are used, but there is no `path.resolve()` plus prefix enforcement against `projects/`, `public/`, or managed runtime directories.
 - Recommendations: reject absolute paths and `..`, resolve against a fixed root, and persist asset IDs instead of trusting client-supplied file paths.
 
@@ -103,19 +103,19 @@
 ## Fragile Areas
 
 **Material-driven end-to-end workflow:**
-- Files: `server/routes/materialDriven.js`, `python/pipeline/run_material_driven.py`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/MaterialDrivenWorkspace.vue`
+- Files: `server/routes/materialDriven.js`, `python/pipeline/run_material_driven.py`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/AutomationDashboard.vue`
 - Why fragile: task recovery mixes disk inspection with in-memory maps, process attach/retry logic is duplicated, user-controlled directory names alter file layout, and active tasks are never evicted.
 - Safe modification: change the task schema and protocol events in one pass across Node, Python, and Vue; add regression coverage around start, resume, retry, and rebuild before refactoring.
 - Test coverage: no automated tests are present for the material-driven route or its frontend orchestration.
 
 **Publish center configuration and WeChat RPA flow:**
-- Files: `server/services/publish/handlers.js`, `server/services/publish/publishStore.config.js`, `server/services/publish/wechatRpa.login.js`, `server/services/publish/wechatRpa.process.js`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/components/PublishCenterWorkspace.vue`
+- Files: `server/services/publish/handlers.js`, `server/services/publish/publishStore.config.js`, `server/services/publish/wechatRpa.login.js`, `server/services/publish/wechatRpa.process.js`, `frontend/src/composables/usePublishCenter.js`, `frontend/src/components/AutomationDashboard.vue`
 - Why fragile: credentials, browser profiles, RPA runtime, account state, and publish-job persistence are tightly coupled and updated through multiple endpoints.
 - Safe modification: split secret handling from publish-job state first, preserve the existing response contract during migration, and validate changes with throwaway credentials and isolated browser profiles.
 - Test coverage: `server/services/publish/__tests__/scheduling.test.js` covers scheduling only; config, login, RPA, and secret-handling paths are untested.
 
 **AI review and regeneration flow:**
-- Files: `server/services/review/handlers.js`, `server/services/review/executor.js`, `server/services/review/regenerate.js`, `server/services/vertical/queue.js`, `frontend/src/components/ReviewCenterWorkspace.vue`
+- Files: `server/services/review/handlers.js`, `server/services/review/executor.js`, `server/services/review/regenerate.js`, `server/services/vertical/queue.js`, `frontend/src/components/AutomationDashboard.vue`
 - Why fragile: request payloads carry file paths, temporary files are written under OS temp, review results mutate media metadata, and regeneration immediately enqueues new work.
 - Safe modification: normalize everything to managed asset IDs before touching disk, keep metadata schema changes backward-compatible, and test success, failure, skip, and regenerate branches together.
 - Test coverage: no automated tests are present for review handlers, review executor, or regeneration.
@@ -166,7 +166,7 @@
 
 **Frontend orchestration and settings UIs:**
 - What's not tested: large Vue components and composables that own publish, review, material-driven, and system-settings state transitions.
-- Files: `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/PublishCenterWorkspace.vue`, `frontend/src/components/MaterialDrivenWorkspace.vue`, `frontend/src/components/ReviewCenterWorkspace.vue`, `frontend/src/components/SystemSettingsWorkspace.vue`
+- Files: `frontend/src/composables/usePublishCenter.js`, `frontend/src/composables/useMaterialDriven.js`, `frontend/src/components/AutomationDashboard.vue`
 - Risk: response contract changes or edge cases can break the operator workflow while Node tests still pass.
 - Priority: High
 

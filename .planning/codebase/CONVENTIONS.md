@@ -5,7 +5,7 @@
 ## Naming Patterns
 
 **Files:**
-- Use `PascalCase.vue` for Vue components in `frontend/src/components/`, for example `frontend/src/components/TopNavigation.vue` and `frontend/src/components/MaterialDrivenWorkspace.vue`.
+- Use `PascalCase.vue` for Vue components in `frontend/src/components/`, for example `frontend/src/components/AppHeader.vue` and `frontend/src/components/AutomationDashboard.vue`.
 - Use `camelCase` with a `use` prefix for Vue composables in `frontend/src/composables/`, for example `frontend/src/composables/usePublishCenter.js` and `frontend/src/composables/useMaterialDriven.js`.
 - Use descriptive lowercase or lower-camel filenames for Node modules in `server/`, grouped by role: routes like `server/routes/review.js`, services like `server/services/system/handlers.js`, and core utilities like `server/core/http.js`.
 - Use `snake_case.py` for Python modules and scripts, for example `python/llm_client.py`, `python/gemini_client.py`, and `python/pipeline/run_material_driven.py`.

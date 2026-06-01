@@ -1,4 +1,4 @@
-# 环境与运维
+# TrendCut Studio 环境与运维
 
 ## 基础依赖
 
@@ -8,6 +8,8 @@
 - Python 3.10+
 - FFmpeg
 - 如果要跑微信视频号自动化，还需要 Playwright Python 依赖
+
+TrendCut Studio 是本地热点视频剪辑运营系统，外部依赖不会随仓库自动启动。ComfyUI、LLM Provider、FFmpeg、Playwright 浏览器和平台账号登录态需要在运行环境中单独准备。
 
 ## 安装
 
@@ -98,7 +100,7 @@ Copy-Item .env.example .env
 1. 前端先提交素材与数字人配置。
 2. Python 主控先执行到步骤 5。
 3. Node 再把音频和图片上传到 ComfyUI。
-4. ComfyUI 生成 `aiman.mp4`。
+4. ComfyUI 生成内部数字人视频文件 `aiman.mp4`。
 5. 工作流从步骤 6 继续。
 
 连通性测试接口：
@@ -145,8 +147,10 @@ Copy-Item .env.example .env
 
 说明当前缺少：
 
-- 自动生成得到的 `aiman.mp4`
+- 自动生成得到的内部数字人视频文件 `aiman.mp4`
 - 或手动补入的 `aiman.mp4`
+
+`aiman.mp4` 是历史运行协议文件名，保留用于兼容已有任务恢复和测试，不代表产品名称。
 
 ### 发布文案生成失败
 

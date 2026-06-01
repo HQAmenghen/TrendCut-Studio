@@ -1,6 +1,6 @@
 # 文档索引
 
-当前文档已经按“长期维护”重新整理，不再保留阶段性修复记录、开发过程总结和一次性补丁说明。
+TrendCut Studio（热点剪辑工作室）的文档已经按“长期维护”重新整理，不再保留阶段性修复记录、开发过程总结和一次性补丁说明。
 
 ## 建议阅读顺序
 
@@ -20,7 +20,7 @@
 - [MATERIAL_DRIVEN_WORKFLOW.md](MATERIAL_DRIVEN_WORKFLOW.md)
   - 说明素材驱动主链的 7 步执行流程、关键中间文件和断点机制。
 - [MODULE_GUIDE.md](MODULE_GUIDE.md)
-  - 说明前端 7 个工作区与后端服务的对应关系。
+  - 说明统一运营驾驶舱、前端组合函数与后端服务的对应关系。
 - [API_OVERVIEW.md](API_OVERVIEW.md)
   - 汇总当前主要 HTTP API 分组与用途。
 - [SETUP_AND_OPERATIONS.md](SETUP_AND_OPERATIONS.md)
