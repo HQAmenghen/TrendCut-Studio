@@ -4,15 +4,39 @@ import traceback
 
 
 PROTOCOL_PREFIX = "__CODEX_PYTHON__"
+PROTOCOL_VERSION = "jsonl-v1"
 
 
 def protocol_enabled() -> bool:
-    return os.getenv("CODEX_PYTHON_PROTOCOL") == "jsonl-v1"
+    return os.getenv("CODEX_PYTHON_PROTOCOL") == PROTOCOL_VERSION
+
+
+def validate_protocol_payload(payload: dict) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("protocol payload must be a dict")
+    event_type = str(payload.get("type") or "").strip()
+    if event_type not in {"stage", "result", "error"}:
+        raise ValueError("protocol payload type must be stage, result, or error")
+    if event_type == "stage":
+        if not str(payload.get("stage") or "").strip():
+            raise ValueError("stage event requires stage")
+        if not isinstance(payload.get("message"), str):
+            raise ValueError("stage event requires string message")
+    elif event_type == "result":
+        if not isinstance(payload.get("message"), str):
+            raise ValueError("result event requires string message")
+    elif event_type == "error":
+        for field in ("code", "message", "stage", "details", "hint"):
+            if not isinstance(payload.get(field), str):
+                raise ValueError(f"error event requires string {field}")
+        if not payload["code"].strip() or not payload["message"].strip() or not payload["stage"].strip():
+            raise ValueError("error event requires non-empty code, message, and stage")
 
 
 def emit_protocol(payload: dict) -> None:
     if not protocol_enabled():
         return
+    validate_protocol_payload(payload)
     print(f"{PROTOCOL_PREFIX}{json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 

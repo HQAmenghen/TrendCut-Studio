@@ -16,6 +16,7 @@
     "lint": "eslint server/ scripts/ --ext .js",
     "lint:fix": "eslint server/ scripts/ --ext .js --fix",
     "audit:prod": "node scripts/npm-audit-prod.js",
+    "check:py-lock": "node scripts/check-python-lock.js",
     "ci": "node scripts/ci.js",
     "install-hooks": "node scripts/install-hooks.js",
     "postinstall": "node scripts/install-hooks.js"

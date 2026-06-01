@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trendcut.local/contracts/python_protocol.schema.json",
+  "title": "TrendCut Python Protocol Event",
+  "description": "JSONL event contract emitted by Python workers and consumed by the Node runtime.",
+  "oneOf": [
+    { "$ref": "#/$defs/stageEvent" },
+    { "$ref": "#/$defs/resultEvent" },
+    { "$ref": "#/$defs/errorEvent" }
+  ],
+  "$defs": {
+    "baseEvent": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["stage", "result", "error"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "stageEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/baseEvent" },
+        {
+          "type": "object",
+          "required": ["type", "stage", "message"],
+          "properties": {
+            "type": { "const": "stage" },
+            "stage": { "type": "string", "minLength": 1 },
+            "message": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "resultEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/baseEvent" },
+        {
+          "type": "object",
+          "required": ["type", "message"],
+          "properties": {
+            "type": { "const": "result" },
+            "message": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "errorEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/baseEvent" },
+        {
+          "type": "object",
+          "required": ["type", "code", "message", "stage", "details", "hint"],
+          "properties": {
+            "type": { "const": "error" },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Z][A-Z0-9_]*$"
+            },
+            "message": { "type": "string", "minLength": 1 },
+            "stage": { "type": "string", "minLength": 1 },
+            "details": { "type": "string" },
+            "hint": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}

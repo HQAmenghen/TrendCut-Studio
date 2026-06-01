@@ -5,7 +5,8 @@ function createSelfCheckService(deps) {
     envRequirements = [],
     directoryChecks = [],
     fileChecks = [],
-    commandChecks = []
+    commandChecks = [],
+    capabilityChecks = []
   } = deps;
 
   function normalizeStatus(ok, level = 'fail') {
@@ -29,6 +30,40 @@ function createSelfCheckService(deps) {
         : String(proc.stderr || proc.stdout || proc.error?.message || 'command failed').trim(),
       hint: ok ? '' : String(check.hint || '')
     };
+  }
+
+  function runCapabilityCheck(check) {
+    try {
+      if (typeof check.run !== 'function') {
+        return {
+          key: check.key,
+          label: check.label,
+          status: normalizeStatus(false, check.level),
+          required: check.level !== 'warn',
+          details: 'capability check is not configured',
+          hint: String(check.hint || '')
+        };
+      }
+      const result = check.run({ fs, spawnSync, env: process.env });
+      const ok = !!result?.ok;
+      return {
+        key: check.key,
+        label: check.label,
+        status: normalizeStatus(ok, check.level),
+        required: check.level !== 'warn',
+        details: ok ? String(result?.details || 'available') : String(result?.details || 'unavailable'),
+        hint: ok ? '' : String(result?.hint || check.hint || '')
+      };
+    } catch (err) {
+      return {
+        key: check.key,
+        label: check.label,
+        status: normalizeStatus(false, check.level),
+        required: check.level !== 'warn',
+        details: String(err?.message || err || 'capability check failed'),
+        hint: String(check.hint || '')
+      };
+    }
   }
 
   function runEnvCheck(check) {
@@ -100,6 +135,11 @@ function createSelfCheckService(deps) {
         key: 'commands',
         label: '运行依赖',
         items: commandChecks.map(runCommandCheck)
+      },
+      {
+        key: 'capabilities',
+        label: '外部能力',
+        items: capabilityChecks.map(runCapabilityCheck)
       },
       {
         key: 'directories',

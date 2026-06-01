@@ -32,9 +32,11 @@ describe('avatar motion service', () => {
     const narrationTextPath = path.join(outputDir, 'narration_speech.txt');
     const speechAudioPath = path.join(outputDir, 'avatar_qwen3tts.wav');
     const imagePath = path.join(outputDir, 'avatar.png');
+    const idleImagePath = path.join(outputDir, 'idle.png');
     fs.writeFileSync(narrationTextPath, '这是关键。', 'utf8');
     fs.writeFileSync(speechAudioPath, 'audio', 'utf8');
     fs.writeFileSync(imagePath, 'image', 'utf8');
+    fs.writeFileSync(idleImagePath, 'idle', 'utf8');
     fs.writeFileSync(path.join(outputDir, 'script_units.json'), JSON.stringify({ script_units: [] }), 'utf8');
     fs.writeFileSync(path.join(outputDir, 'edit_plan.json'), JSON.stringify({ blocks: [] }), 'utf8');
     fs.writeFileSync(path.join(outputDir, 'clip_matches.json'), JSON.stringify({ clip_matches: [] }), 'utf8');
@@ -60,6 +62,7 @@ describe('avatar motion service', () => {
       avatarMotionPlanner: 'llm',
       avatarMotionLlmProvider: 'qwen',
       avatarMotionLlmModel: 'qwen3.6-plus',
+      idleImagePath,
       runPython
     });
 
@@ -88,14 +91,34 @@ describe('avatar motion service', () => {
     expect(calls[1].args).toContain('--video-output');
     expect(calls[1].args).toContain(path.join(outputDir, 'avatar_motion_source.mp4'));
     expect(calls[1].args).toContain('--idle-image');
-    expect(calls[1].args).toContain(DEFAULT_MOTION_IDLE_IMAGE_PATH);
+    expect(calls[1].args).toContain(idleImagePath);
     expect(calls[1].args).not.toContain('--sequence');
     expect(result.motionSignature).toBe('plan-sig:motion-video-sig');
     expect(result.poseInputPath).toBe(path.join(outputDir, 'avatar_motion_source.mp4'));
   });
 
   test('prefers conservative idle image for motion source still segments', () => {
-    expect(resolveMotionIdleImagePath({ imagePath: 'C:/tmp/avatar.png' })).toBe(DEFAULT_MOTION_IDLE_IMAGE_PATH);
+    const existsSync = jest.spyOn(fs, 'existsSync').mockImplementation((filePath) => {
+      return filePath === DEFAULT_MOTION_IDLE_IMAGE_PATH || filePath === 'C:/tmp/avatar.png';
+    });
+
+    try {
+      expect(resolveMotionIdleImagePath({ imagePath: 'C:/tmp/avatar.png' })).toBe(DEFAULT_MOTION_IDLE_IMAGE_PATH);
+    } finally {
+      existsSync.mockRestore();
+    }
+  });
+
+  test('falls back to avatar image when the conservative idle image is not installed', () => {
+    const existsSync = jest.spyOn(fs, 'existsSync').mockImplementation((filePath) => {
+      return filePath === 'C:/tmp/avatar.png';
+    });
+
+    try {
+      expect(resolveMotionIdleImagePath({ imagePath: 'C:/tmp/avatar.png' })).toBe('C:/tmp/avatar.png');
+    } finally {
+      existsSync.mockRestore();
+    }
   });
 
   test('resolves custom action preset directory from config first', () => {

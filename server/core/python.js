@@ -1,5 +1,10 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
+const {
+  PYTHON_PROTOCOL_PREFIX,
+  PYTHON_PROTOCOL_VERSION,
+  validatePythonProtocolEvent
+} = require('./pythonProtocol');
 
 function stopProcessTree(proc) {
   if (!proc || proc.killed) return;
@@ -14,8 +19,6 @@ function stopProcessTree(proc) {
     }
   } catch (_err) {}
 }
-
-const PYTHON_PROTOCOL_PREFIX = '__CODEX_PYTHON__';
 
 function createProtocolState() {
   return {
@@ -33,6 +36,7 @@ function normalizeProtocolEvent(event) {
   const type = String(event.type || '').trim();
   if (!type) return null;
   const normalized = { ...event, type };
+  validatePythonProtocolEvent(normalized);
   if (type === 'result') return normalized;
   if (type === 'error') {
     normalized.code = String(normalized.code || 'PYTHON_SCRIPT_FAILED');
@@ -101,7 +105,7 @@ function flushProtocolBuffer(state, streamKey) {
 function buildPythonEnv(extraEnv = {}) {
   return {
     ...process.env,
-    CODEX_PYTHON_PROTOCOL: 'jsonl-v1',
+    CODEX_PYTHON_PROTOCOL: PYTHON_PROTOCOL_VERSION,
     PYTHONIOENCODING: 'utf-8',
     ...extraEnv
   };

@@ -1,4 +1,8 @@
 const { summarizePythonError } = require('../python');
+const {
+  loadPythonProtocolSchema,
+  validatePythonProtocolEvent
+} = require('../pythonProtocol');
 
 describe('Python 子进程管理', () => {
   describe('summarizePythonError', () => {
@@ -41,6 +45,51 @@ describe('Python 子进程管理', () => {
 
       expect(summary.stderrTail.length).toBe(20);
       expect(summary.stdoutTail.length).toBe(12);
+    });
+  });
+
+  describe('Python protocol contract', () => {
+    test('loads the checked-in protocol schema', () => {
+      const schema = loadPythonProtocolSchema();
+
+      expect(schema.title).toBe('TrendCut Python Protocol Event');
+      expect(schema.oneOf).toHaveLength(3);
+    });
+
+    test('accepts valid protocol events', () => {
+      expect(validatePythonProtocolEvent({
+        type: 'stage',
+        stage: 'subtitle_reference_authority',
+        message: 'working'
+      })).toBe(true);
+      expect(validatePythonProtocolEvent({
+        type: 'result',
+        message: 'done'
+      })).toBe(true);
+      expect(validatePythonProtocolEvent({
+        type: 'error',
+        code: 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED',
+        message: 'failed',
+        stage: 'subtitle_reference_authority',
+        details: '',
+        hint: ''
+      })).toBe(true);
+    });
+
+    test('rejects malformed protocol events before they reach runtime state', () => {
+      expect(() => validatePythonProtocolEvent({
+        type: 'error',
+        code: 'bad-code',
+        message: 'failed',
+        stage: 'subtitle_reference_authority',
+        details: '',
+        hint: ''
+      })).toThrow(/UPPER_SNAKE_CASE/);
+
+      expect(() => validatePythonProtocolEvent({
+        type: 'stage',
+        message: 'missing stage'
+      })).toThrow(/missing stage/);
     });
   });
 });

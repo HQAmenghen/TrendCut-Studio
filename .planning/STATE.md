@@ -122,6 +122,7 @@ None yet.
 | 2026-05-29 | 生成可复用口播 ASR 对齐缓存并复用于动作触发和竖屏字幕 | `.planning/quick/20260529-speech-alignment-cache/SUMMARY.md` |
 | 2026-06-01 | TrendCut Studio 第一版可执行发布准备 | `.planning/quick/20260601-trendcut-release-prep/SUMMARY.md` |
 | 2026-06-01 | 重写开源项目标准 README 文档并推送 | `.planning/quick/260601-dyi-readme/SUMMARY.md` |
+| 2026-06-01 | 加固 Node/Python 协议契约、Python 依赖锁和外部能力自检 | `.planning/quick/20260601-runtime-contracts-hardening/SUMMARY.md` |
 
 ## Session Continuity
 

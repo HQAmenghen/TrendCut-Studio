@@ -58,6 +58,7 @@ const { createXApiPublisher } = require('./server/services/publish/xApi');
 const { createAccountDashboardService } = require('./server/services/publish/accountDashboard');
 const { createSystemHandlers } = require('./server/services/system/handlers');
 const { createSelfCheckService } = require('./server/services/system/selfCheck');
+const { createRuntimeCapabilityChecks } = require('./server/services/system/runtimeCapabilities');
 const { registerPublishRoutes } = require('./server/routes/publish');
 const { registerSystemRoutes } = require('./server/routes/system');
 const { startScheduler } = require('./server/services/system/scheduler');
@@ -476,7 +477,8 @@ const selfCheckService = createSelfCheckService({
             level: 'warn',
             hint: '未安装时微信视频号自动发布不可用'
         }
-    ]
+    ],
+    capabilityChecks: createRuntimeCapabilityChecks()
 });
 
 const xApiPublisher = createXApiPublisher({

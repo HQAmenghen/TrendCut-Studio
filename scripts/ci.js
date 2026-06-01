@@ -85,6 +85,12 @@ function main() {
       command: 'npm',
       args: ['run', 'audit:prod'],
       required: true
+    },
+    {
+      name: '6. Python 依赖锁检查',
+      command: 'npm',
+      args: ['run', 'check:py-lock'],
+      required: true
     }
   ];
 
