@@ -16,7 +16,7 @@ TrendCut Studio 仓库当前同时包含源码、构建产物和运行期产物�
 - `scripts/`
 - `mcp-server/`
 - `vendor/social-auto-upload/`
-- `.env.example`
+- `config/env.example`
 - `package.json`
 
 ## 2. 前端构建产物
