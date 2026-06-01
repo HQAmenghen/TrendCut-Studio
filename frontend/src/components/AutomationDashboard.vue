@@ -916,96 +916,19 @@
           @retry-step="$emit('retry-step', currentStep || 1)"
         />
 
-        <section class="support-section cockpit-support-section">
-          <div class="support-grid">
-            <LiveTaskQueuePanel
-              :items="liveTaskItems"
-              @resume-material-task="resumeMaterialTask"
-            />
-
-            <GlassPanel class="ops-panel support-panel publish-panel">
-              <div class="support-card-heading">
-                <div>
-                  <span class="panel-kicker">Delivery</span>
-                  <h3>发布队列</h3>
-                </div>
-                <span class="support-status">{{ publishJobs.length ? `${publishJobs.length} 个任务` : '暂无任务' }}</span>
-              </div>
-
-              <div class="support-body">
-                <div class="plan-list">
-                  <div v-for="job in publishJobs" :key="job.id" class="plan-row">
-                    <div>
-                      <strong>{{ job.asset?.label || job.asset?.compactLabel || job.title || job.id }}</strong>
-                      <span>{{ formatTime(job.scheduledAt) }}</span>
-                    </div>
-                    <div class="support-row-actions">
-                      <span>{{ getPublishJobLabel(job) }}</span>
-                      <button
-                        v-if="canRepublishJob(job)"
-                        type="button"
-                        class="mini-button"
-                        @click="republishJob(job)"
-                      >
-                        重新发布
-                      </button>
-                    </div>
-                  </div>
-                  <div v-if="!publishJobs.length" class="empty-row">暂无发布任务</div>
-                </div>
-              </div>
-            </GlassPanel>
-
-            <GlassPanel class="ops-panel support-panel health-panel">
-              <div class="support-card-heading">
-                <div>
-                  <span class="panel-kicker">Health</span>
-                  <h3>系统健康</h3>
-                </div>
-                <span class="support-status">
-                  <span :class="`health-dot status-${selfCheckSummary.status}`"></span>
-                  {{ selfCheckLabel }}
-                </span>
-              </div>
-
-              <div class="support-body">
-                <div class="health-score">
-                  <span :class="`health-dot status-${selfCheckSummary.status}`"></span>
-                  <strong>{{ selfCheckLabel }}</strong>
-                  <span>通过 {{ selfCheckSummary.okCount || 0 }} / 警告 {{ selfCheckSummary.warnCount || 0 }} / 失败 {{ selfCheckSummary.failCount || 0 }}</span>
-                </div>
-
-                <div class="issue-list">
-                  <div v-for="item in selfCheckHighlights" :key="`${item.groupLabel}_${item.key}`" class="issue-row">
-                    <strong>{{ item.label }}</strong>
-                    <span>{{ item.details || item.hint || item.groupLabel }}</span>
-                  </div>
-                  <div v-if="!selfCheckHighlights.length" class="empty-row">暂无高优先级异常</div>
-                </div>
-              </div>
-            </GlassPanel>
-
-            <GlassPanel class="ops-panel support-panel activity-panel">
-              <div class="support-card-heading">
-                <div>
-                  <span class="panel-kicker">Activity</span>
-                  <h3>最近运行</h3>
-                </div>
-                <span class="support-status">{{ visibleLogs.length ? `${visibleLogs.length} 条记录` : '暂无记录' }}</span>
-              </div>
-
-              <div class="support-body">
-                <div class="log-list">
-                  <div v-for="line in visibleLogs" :key="line.id" class="log-row">
-                    <span>{{ line.time }}</span>
-                    <strong>{{ line.message }}</strong>
-                  </div>
-                  <div v-if="!visibleLogs.length" class="empty-row">暂无运行记录</div>
-                </div>
-              </div>
-            </GlassPanel>
-          </div>
-        </section>
+        <DashboardSupportPanels
+          :live-task-items="liveTaskItems"
+          :publish-jobs="publishJobs"
+          :self-check-summary="selfCheckSummary"
+          :self-check-label="selfCheckLabel"
+          :self-check-highlights="selfCheckHighlights"
+          :visible-logs="visibleLogs"
+          :format-time="formatTime"
+          :get-publish-job-label="getPublishJobLabel"
+          :can-republish-job="canRepublishJob"
+          @resume-material-task="resumeMaterialTask"
+          @republish-job="republishJob"
+        />
 
       </div>
 
@@ -1149,137 +1072,30 @@
         </div>
         </GlassPanel>
 
-        <GlassPanel class="ops-panel asset-library-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="panel-kicker">Library</span>
-            <h3>成品库</h3>
-          </div>
-          <button type="button" class="mini-button" :disabled="publishLoading" @click="refreshAssetLibrary">
-            <RefreshCw class="icon-sm" aria-hidden="true" />
-            刷新
-          </button>
-        </div>
-
-        <div class="compact-stats asset-library-stats">
-          <div>
-            <span>成品</span>
-            <strong>{{ publishAssets.length }}</strong>
-          </div>
-          <div>
-            <span>最新</span>
-            <strong>{{ latestAssetTimeLabel }}</strong>
-          </div>
-        </div>
-
-        <div class="asset-list">
-          <button
-            v-for="asset in visibleAssets"
-            :key="asset.id"
-            type="button"
-            class="asset-row"
-            @click="openAssetDetail(asset)"
-          >
-            <span class="asset-type-pill">{{ asset.typeLabel || '成品' }}</span>
-            <div>
-              <strong>{{ getAssetTitle(asset) }}</strong>
-              <span>{{ asset.sourceMetaLine || formatTime(asset.updatedAt) }}</span>
-            </div>
-            <em>{{ formatFileSize(asset.sizeBytes) }}</em>
-          </button>
-          <div v-if="!visibleAssets.length" class="empty-row">暂无可查看成品</div>
-        </div>
-        </GlassPanel>
-
-        <GlassPanel class="ops-panel autopilot-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="panel-kicker">Auto-Pilot</span>
-            <h3>无人值守发布</h3>
-          </div>
-          <div class="panel-actions">
-            <span class="state-chip" :class="{ on: autoPilotEnabled }">
-              {{ autoPilotEnabled ? '已开启' : '未开启' }}
-            </span>
-            <button type="button" class="mini-button icon-mini" aria-label="配置无人值守发布" @click="openAutoPilotModal">
-              <Settings class="icon-sm" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-
-        <div class="compact-stats">
-          <div>
-            <span>素材</span>
-            <strong>{{ publishStats.assetCount }}</strong>
-          </div>
-          <div>
-            <span>任务</span>
-            <strong>{{ publishStats.jobCount }}</strong>
-          </div>
-          <div>
-            <span>平台</span>
-            <strong>{{ publishStats.enabledPlatformCount }}</strong>
-          </div>
-        </div>
-
-        <div class="plan-list">
-          <div v-for="item in autoPilotPlans" :key="item.id" class="plan-row">
-            <div>
-              <strong>{{ item.title }}</strong>
-              <span>{{ item.scheduledLabel || formatTime(item.scheduledAt) }}</span>
-            </div>
-            <span>{{ item.statusLabel }}</span>
-          </div>
-          <div v-if="!autoPilotPlans.length" class="empty-row">暂无托管计划</div>
-        </div>
-        </GlassPanel>
-
-        <GlassPanel class="ops-panel account-panel">
-          <div class="panel-heading">
-            <div>
-              <span class="panel-kicker">Accounts</span>
-              <h3>账号管理</h3>
-            </div>
-            <div class="panel-actions account-config-actions">
-              <button type="button" class="mini-button" @click="openAddAccountConfig('wechatChannels')">
-                <Plus class="icon-sm" aria-hidden="true" />
-                添加配置
-              </button>
-              <Users class="panel-mark" aria-hidden="true" />
-            </div>
-          </div>
-
-          <div class="account-list">
-            <div v-for="account in accountCards" :key="account.key" class="account-row">
-              <div>
-                <strong>{{ account.label }}</strong>
-                <span>{{ account.platformLabel }}</span>
-              </div>
-              <div class="account-row-actions">
-                <button type="button" class="mini-button" :disabled="!canCheckAccount(account)" @click="$emit('check-login', account)">
-                  {{ getAccountActionLabel(account) }}
-                </button>
-                <button type="button" class="mini-button subtle" @click="openEditAccountConfig(account)">
-                  配置
-                </button>
-                <button v-if="canOpenAccountManager(account)" type="button" class="mini-button subtle" @click="openAccountManager(account)">
-                  内容
-                </button>
-                <button type="button" class="mini-button subtle danger" @click="deleteAccountConfig(account)">
-                  删除
-                </button>
-              </div>
-            </div>
-            <div v-if="!accountCards.length" class="empty-row">暂无账号配置</div>
-          </div>
-          <div class="account-config-picks">
-            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('wechatChannels')">添加视频号</button>
-            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('douyin')">添加抖音</button>
-            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('xiaohongshu')">添加小红书</button>
-            <button type="button" class="mini-button subtle" @click="openAddAccountConfig('x')">添加 X</button>
-          </div>
-        </GlassPanel>
-
+        <DashboardSidePanels
+          :publish-loading="publishLoading"
+          :publish-assets="publishAssets"
+          :visible-assets="visibleAssets"
+          :latest-asset-time-label="latestAssetTimeLabel"
+          :auto-pilot-enabled="autoPilotEnabled"
+          :publish-stats="publishStats"
+          :auto-pilot-plans="autoPilotPlans"
+          :account-cards="accountCards"
+          :format-time="formatTime"
+          :format-file-size="formatFileSize"
+          :get-asset-title="getAssetTitle"
+          :can-check-account="canCheckAccount"
+          :get-account-action-label="getAccountActionLabel"
+          :can-open-account-manager="canOpenAccountManager"
+          @refresh-assets="refreshAssetLibrary"
+          @open-asset-detail="openAssetDetail"
+          @open-autopilot-modal="openAutoPilotModal"
+          @add-account-config="openAddAccountConfig"
+          @check-login="$emit('check-login', $event)"
+          @edit-account-config="openEditAccountConfig"
+          @open-account-manager="openAccountManager"
+          @delete-account-config="deleteAccountConfig"
+        />
       </div>
     </div>
 
@@ -1419,7 +1235,9 @@ import { computed, nextTick, ref } from 'vue';
 import GlassPanel from './GlassPanel.vue';
 import ModalBackdrop from './ModalBackdrop.vue';
 import ProductionProgressPanel from './ProductionProgressPanel.vue';
-import LiveTaskQueuePanel from './materialDriven/LiveTaskQueuePanel.vue';
+import DashboardSidePanels from './materialDriven/DashboardSidePanels.vue';
+import DashboardSupportPanels from './materialDriven/DashboardSupportPanels.vue';
+import { useLiveTaskQueue } from './materialDriven/useLiveTaskQueue';
 import {
   Activity,
   AlertTriangle,
@@ -1442,24 +1260,11 @@ import {
   Save,
   Search,
   Send,
-  Settings,
   ShieldCheck,
   Sparkles,
   Trash2,
-  Upload,
-  Users
+  Upload
 } from 'lucide-vue-next';
-import {
-  activePublishStates,
-  getAvatarTaskStatus,
-  getGroupedMaterialTasks,
-  getMaterialQueueKey,
-  getVerticalTaskMaterialKey,
-  normalizeUnifiedTaskForQueue,
-  terminalPublishStates,
-  waitingPublishStates
-} from './materialDriven/dashboardTaskHelpers';
-
 const props = defineProps({
   materialDriven: { type: Object, required: true },
   publishCenter: { type: Object, required: true },
@@ -1764,230 +1569,6 @@ const publishComposerAccountLabel = computed(() => {
 });
 const publishComposerBusy = computed(() => Boolean(publishActionMode.value || publishGeneratingDescription.value || publishCreating.value));
 const canQuickPublish = computed(() => Boolean(deliveryReady.value && deliveryAsset.value?.id && publishComposerAccountOptions.value.length && !publishComposerBusy.value));
-
-const getDbVerticalQueueTasks = () => {
-  const inMemoryJobs = Array.isArray(verticalQueueStatus.value?.jobs) ? verticalQueueStatus.value.jobs : [];
-  const byId = new Map(inMemoryJobs.map((job) => [String(job.id || ''), job]));
-  for (const task of unifiedDbTasks.value) {
-    if (task?.type !== 'vertical_queue') continue;
-    const normalized = normalizeUnifiedTaskForQueue(task);
-    if (!normalized?.id || byId.has(String(normalized.id))) continue;
-    byId.set(String(normalized.id), normalized);
-  }
-  return Array.from(byId.values());
-};
-
-const getDbStandaloneTasks = () => {
-  const byId = new Map((Array.isArray(standaloneDbTasks.value) ? standaloneDbTasks.value : []).map((task) => [String(task.id || ''), task]));
-  for (const task of unifiedDbTasks.value) {
-    if (task?.type !== 'standalone_vertical') continue;
-    const normalized = normalizeUnifiedTaskForQueue(task);
-    if (!normalized?.id || byId.has(String(normalized.id))) continue;
-    byId.set(String(normalized.id), normalized);
-  }
-  return Array.from(byId.values());
-};
-
-const liveTaskItems = computed(() => {
-  const items = [];
-  const browserMaterialJobId = String(jobId.value || '').trim();
-  const browserMaterialOutputPath = String(outputPath.value || '').trim();
-  const browserMaterialKey = browserMaterialOutputPath ? `material:${browserMaterialOutputPath}` : '';
-  const backgroundMaterialTasks = getGroupedMaterialTasks(readValue(props.materialDriven, 'activeTasks', []));
-  const verticalTasksByMaterialKey = new Map();
-  const mergedStandaloneTasks = getDbStandaloneTasks();
-  for (const task of mergedStandaloneTasks) {
-    const status = String(task?.status || '').trim();
-    if (!['queued', 'running', 'failed', 'interrupted'].includes(status)) continue;
-    const materialKey = getVerticalTaskMaterialKey(task);
-    if (!materialKey) continue;
-    const existing = verticalTasksByMaterialKey.get(materialKey);
-    if (!existing || String(task.updatedAt || '').localeCompare(String(existing.updatedAt || '')) > 0) {
-      verticalTasksByMaterialKey.set(materialKey, task);
-    }
-  }
-  const hasCurrentTaskInBackground = backgroundMaterialTasks.some((task) => {
-    const taskId = String(task?.id || '').trim();
-    const taskKey = getMaterialQueueKey(task);
-    return (browserMaterialJobId && taskId === browserMaterialJobId) ||
-      (browserMaterialKey && (taskKey === browserMaterialKey || verticalTasksByMaterialKey.has(browserMaterialKey)));
-  }) || Boolean(browserMaterialKey && verticalTasksByMaterialKey.has(browserMaterialKey));
-  const materialWorkflowActive = Boolean(
-    uploading.value ||
-    rebuildingPlan.value ||
-    rerenderingVideo.value ||
-    (jobId.value && !finalVideoUrl.value)
-  );
-  const pushedBrowserMaterialCard = materialWorkflowActive && !hasCurrentTaskInBackground;
-
-  if (pushedBrowserMaterialCard) {
-    items.push({
-      id: `material-${jobId.value || 'draft'}`,
-      type: '主流程',
-      title: materialSourceLabel.value || selectedFile.value?.name || outputPath.value || '素材驱动生产',
-      statusLabel: combinedErrorText.value ? '需处理' : currentStepLabel.value,
-      detail: productionStatusText.value || statusText.value || '正在推进素材驱动流程',
-      progress: displayProgress.value,
-      meta: jobId.value ? `任务 ${jobId.value}` : '本地任务',
-      state: combinedErrorText.value ? 'danger' : 'running',
-      order: combinedErrorText.value ? 0 : 10
-    });
-  }
-
-  for (const task of backgroundMaterialTasks) {
-    const taskId = String(task?.id || '').trim();
-    const taskKey = getMaterialQueueKey(task);
-    if (!taskId) continue;
-    if (
-      pushedBrowserMaterialCard &&
-      ((browserMaterialJobId && taskId === browserMaterialJobId) || (browserMaterialKey && taskKey === browserMaterialKey))
-    ) {
-      continue;
-    }
-    const status = String(task?.status || '').trim();
-    const isTerminal = ['completed', 'cancelled', 'published'].includes(status);
-    if (isTerminal) continue;
-    const taskTitle = getMaterialTaskTitle(task);
-    const taskProgress = Number(task?.progress);
-    const taskStep = Number(task?.currentStep || 0);
-    const isResuming = materialResumingTaskIds.value.includes(taskId);
-    const verticalTask = verticalTasksByMaterialKey.get(taskKey);
-    const verticalStatus = String(verticalTask?.status || '').trim();
-    const hasVerticalTask = Boolean(verticalTask);
-    const mergedStatus = hasVerticalTask ? verticalStatus : status;
-    const mergedProgress = hasVerticalTask && Number.isFinite(Number(verticalTask.progress))
-      ? Math.max(Number(taskProgress || 0), Number(verticalTask.progress || 0))
-      : taskProgress;
-    items.push({
-      id: `material-active-${taskId}`,
-      taskId,
-      outputPath: task?.outputPath || task?.outputDir || '',
-      type: hasVerticalTask ? '竖屏' : getMaterialTaskTypeLabel(task),
-      title: taskTitle,
-      statusLabel: hasVerticalTask ? getStandaloneTaskStatusLabel(verticalTask) : getMaterialTaskStatusLabel(task),
-      detail: isResuming ? '正在恢复 RunningHub 结果并准备进入下一步' : (
-        hasVerticalTask ? getStandaloneTaskDetail(verticalTask) : getMaterialTaskDetail(task)
-      ),
-      progress: Number.isFinite(mergedProgress) ? Math.max(0, Math.min(100, isResuming ? Math.max(mergedProgress, 87) : mergedProgress)) : null,
-      meta: hasVerticalTask ? (verticalTask.runtimeJobId || formatRelativeTaskTime(verticalTask.updatedAt || verticalTask.startedAt)) : (taskId ? `任务 ${taskId}` : formatRelativeTaskTime(task?.updatedAt || task?.startedAt)),
-      state: mergedStatus === 'failed' || task?.error || verticalTask?.errorDetails ? 'danger' : (mergedStatus === 'queued' ? 'waiting' : 'running'),
-      action: !hasVerticalTask && task?.avatarRenderState?.taskId && !task?.videoUrl ? 'resume-material' : '',
-      actionBusy: isResuming,
-      order: mergedStatus === 'failed' || task?.error ? 0 : (hasVerticalTask ? 30 : 12 + Math.max(0, taskStep))
-    });
-  }
-
-  if (xaiLoading.value) {
-    items.push({
-      id: `xai-${activePartitionId.value || 'default'}`,
-      type: '抓榜',
-      title: `${activePartitionLabel.value} 热门榜单`,
-      statusLabel: '抓取中',
-      detail: xaiProgressMessage.value,
-      progress: xaiProgressPercent.value,
-      meta: xaiProgressLabel.value,
-      state: 'running',
-      order: 20
-    });
-  }
-
-  if (verticalLoading.value) {
-    items.push({
-      id: 'standalone-current',
-      type: '竖屏',
-      title: verticalSourceTaskDir.value || '单条竖屏合成',
-      statusLabel: verticalErrorText.value ? '需处理' : '合成中',
-      detail: verticalStatusText.value || '正在生成竖屏版本',
-      progress: verticalProgress.value,
-      meta: readValue(props.standalone, 'activeDurationLabel', '') || '运行中',
-      state: verticalErrorText.value ? 'danger' : 'running',
-      order: verticalErrorText.value ? 1 : 30
-    });
-  }
-
-  for (const task of standaloneDbTasks.value) {
-    const status = String(task?.status || '').trim();
-    if (!['queued', 'running', 'failed', 'interrupted'].includes(status)) continue;
-    const materialKey = getVerticalTaskMaterialKey(task);
-    const alreadyMergedIntoMaterial = Boolean(materialKey && (
-      backgroundMaterialTasks.some((materialTask) => getMaterialQueueKey(materialTask) === materialKey) ||
-      browserMaterialKey === materialKey
-    ));
-    if (alreadyMergedIntoMaterial) continue;
-    items.push({
-      id: `standalone-db-${task.id}`,
-      type: '竖屏',
-      title: task.sourceTaskDir || task.title || task.id,
-      statusLabel: getStandaloneTaskStatusLabel(task),
-      detail: getStandaloneTaskDetail(task),
-      progress: Number.isFinite(Number(task.progress)) ? Math.max(0, Math.min(100, Number(task.progress))) : null,
-      meta: task.runtimeJobId || formatRelativeTaskTime(task.updatedAt || task.startedAt),
-      state: status === 'queued' ? 'waiting' : (status === 'failed' ? 'danger' : 'running'),
-      order: status === 'failed' ? 1 : 32
-    });
-  }
-
-  const queueJobs = getDbVerticalQueueTasks();
-  for (const job of queueJobs) {
-    const status = String(job?.status || '').trim();
-    if (!['queued', 'running', 'transcribing', 'rendering', 'reviewing', 'reviewed', 'failed', 'cancelled', 'skipped'].includes(status)) {
-      continue;
-    }
-    items.push({
-      id: `vertical-${job.id}`,
-      type: '渲染队列',
-      title: job.title || job.author || job.id,
-      statusLabel: getVerticalQueueStatusLabel(status),
-      detail: job.message || getVerticalQueueStatusLabel(status),
-      progress: Number.isFinite(Number(job.progress)) ? Math.max(0, Math.min(100, Number(job.progress))) : null,
-      meta: formatRelativeTaskTime(job.updatedAt || job.startedAt || job.createdAt),
-      state: ['failed', 'cancelled', 'skipped'].includes(status) ? 'danger' : (status === 'queued' ? 'waiting' : 'running'),
-      order: status === 'queued' ? 45 : 35
-    });
-  }
-
-  for (const job of readValue(props.publishCenter, 'jobs', []).filter((item) => !item.archived)) {
-    const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];
-    const states = tasks.map((task) => getTaskState(task)).filter(Boolean);
-    const jobState = String(job.status || '').trim();
-    const activeState = states.find((state) => activePublishStates.has(state));
-    const waitingState = states.find((state) => waitingPublishStates.has(state)) || (waitingPublishStates.has(jobState) ? jobState : '');
-    const terminalState = states.find((state) => terminalPublishStates.has(state)) || (terminalPublishStates.has(jobState) ? jobState : '');
-    const failedState = terminalState === 'failed' ? terminalState : '';
-    const chosenState = activeState || failedState || waitingState || terminalState;
-    if (!chosenState || chosenState === 'published') {
-      continue;
-    }
-
-    const nextTask = tasks.find((task) => getTaskState(task) === chosenState) || tasks[0] || null;
-    const progressValue = Number(nextTask?.runtime?.progress ?? 0);
-    const scheduledAt = job.scheduledAt || '';
-    items.push({
-      id: `publish-${job.id}-${nextTask?.platform || 'job'}`,
-      type: '发布',
-      title: job.publishData?.title || job.asset?.compactLabel || job.asset?.label || job.id,
-      statusLabel: getPublishJobLabel(job),
-      detail: getPublishTaskDetail(job, nextTask, chosenState),
-      progress: activeState && Number.isFinite(progressValue) ? Math.max(0, Math.min(100, progressValue)) : null,
-      meta: scheduledAt ? formatTime(scheduledAt) : formatRelativeTaskTime(job.updatedAt || job.createdAt),
-      state: chosenState === 'failed' ? 'danger' : (activeState ? 'running' : 'waiting'),
-      order: chosenState === 'failed' ? 2 : (activeState ? 25 : 60)
-    });
-  }
-
-  return items
-    .sort((a, b) => a.order - b.order || String(a.meta || '').localeCompare(String(b.meta || '')))
-    .slice(0, 10);
-});
-
-const resumeMaterialTask = (item) => {
-  const taskId = String(item?.taskId || '').trim();
-  if (!taskId) return;
-  emit('resume-material-task', {
-    jobId: taskId,
-    outputPath: item?.outputPath || ''
-  });
-};
 
 const statusState = computed(() => {
   if (combinedErrorText.value) return 'danger';
@@ -2824,101 +2405,6 @@ const getPublishJobLabel = (job) => {
   return fn ? fn(job) : String(job?.status || '待处理');
 };
 
-const getMaterialTaskTitle = (task) => String(
-  task?.sourcePost?.title ||
-  task?.sourceMeta?.sourceAuthor ||
-  task?.outputPath ||
-  task?.id ||
-  '素材驱动任务'
-).trim();
-
-const getMaterialTaskTypeLabel = (task) => {
-  const status = String(task?.status || '').trim();
-  if (status === 'generating_avatar' || Number(task?.currentStep || 0) === 6) return '数字人';
-  if (Number(task?.currentStep || 0) >= 7) return '主流程';
-  return '素材任务';
-};
-
-const getMaterialTaskStatusLabel = (task) => {
-  const status = String(task?.status || '').trim();
-  const avatarStatus = getAvatarTaskStatus(task);
-  const currentStepValue = Number(task?.currentStep || 0);
-  if (task?.error || ['failed', 'failure', 'error'].includes(status) || ['failed', 'failure', 'error'].includes(avatarStatus)) return '执行失败';
-  if (['canceled', 'cancelled'].includes(status) || ['canceled', 'cancelled'].includes(avatarStatus)) return '已取消';
-  if (status === 'generating_avatar' || currentStepValue === 6) return '数字人合成中';
-  if (status === 'waiting_avatar') return '等待数字人';
-  if (status === 'waiting_render') return '等待成片';
-  if (status === 'running') return '执行中';
-  return status || '运行中';
-};
-
-const getMaterialTaskDetail = (task) => {
-  const runningHubTaskId = String(task?.avatarRenderState?.taskId || '').trim();
-  const avatarStatus = getAvatarTaskStatus(task);
-  const avatarError = String(task?.avatarRenderState?.error || task?.error || '').trim();
-  if (['failed', 'failure', 'error'].includes(avatarStatus)) {
-    return avatarError || (runningHubTaskId ? `RunningHub taskId ${runningHubTaskId} · 已失败` : '数字人合成失败');
-  }
-  if (['canceled', 'cancelled'].includes(avatarStatus)) {
-    return runningHubTaskId ? `RunningHub taskId ${runningHubTaskId} · 已取消` : '数字人合成已取消';
-  }
-  const statusTextValue = String(task?.statusText || '').trim();
-  const latestLog = Array.isArray(task?.logs) ? task.logs.slice().reverse().find((item) => item?.message || item) : null;
-  const latestLogText = typeof latestLog === 'string' ? latestLog : String(latestLog?.message || '').trim();
-  if (runningHubTaskId && (task?.status === 'generating_avatar' || Number(task?.currentStep || 0) === 6)) {
-    return `RunningHub taskId ${runningHubTaskId} · 正在查询数字人合成结果`;
-  }
-  return statusTextValue || latestLogText || `步骤 ${Number(task?.currentStep || 0) || '-'}`;
-};
-
-const getStandaloneTaskStatusLabel = (task) => {
-  const status = String(task?.status || '').trim();
-  if (status === 'queued') return '竖屏排队中';
-  if (status === 'failed' || task?.errorDetails) return '竖屏失败';
-  if (status === 'interrupted') return '竖屏中断';
-  if (status === 'running') return '竖屏合成中';
-  return status || '竖屏处理中';
-};
-
-const getStandaloneTaskDetail = (task) => {
-  const message = String(task?.message || '').trim();
-  const stage = String(task?.stage || '').trim();
-  const errorDetails = String(task?.errorDetails || '').trim();
-  if (errorDetails) return errorDetails;
-  if (message) return message;
-  if (stage) return stage;
-  return '数据库任务状态同步中';
-};
-
-const getVerticalQueueStatusLabel = (status) => ({
-  queued: '排队中',
-  running: '运行中',
-  transcribing: 'ASR 打轴',
-  rendering: '渲染中',
-  reviewing: 'AI 审核中',
-  reviewed: '审核完成',
-  completed: '已完成',
-  failed: '失败',
-  cancelled: '已取消',
-  skipped: '已跳过'
-}[String(status || '')] || String(status || '处理中'));
-
-const getPlatformDisplayLabel = (platformKey) => {
-  const platform = platformDefs.value.find((item) => item.key === platformKey);
-  return platform?.label || platformKey || '平台';
-};
-
-const getPublishTaskDetail = (job, task, state) => {
-  const platformLabel = getPlatformDisplayLabel(task?.platform);
-  const accountLabel = task?.accountLabel || task?.accountId || job?.platformSelections?.[task?.platform]?.accountLabel || '';
-  const message = String(task?.runtime?.lastMessage || task?.runtime?.message || '').trim();
-  if (message) return `${platformLabel} · ${message}`;
-  if (state === 'scheduled_wait') return `${platformLabel} · 等待定时触发`;
-  if (state === 'need_login' || state === 'login_ready') return `${platformLabel} · 等待登录确认`;
-  if (accountLabel) return `${platformLabel} · ${accountLabel}`;
-  return platformLabel;
-};
-
 const getAccountStatusLabel = (status) => {
   if (status === 'logged_in') return '已登录';
   if (status === 'checking' || status === 'checking_login') return '检测中';
@@ -2951,18 +2437,48 @@ const formatTime = (value) => {
   return date.toLocaleString('zh-CN', { hour12: false });
 };
 
-const formatRelativeTaskTime = (value) => {
-  if (!value) return '刚刚';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const diffSeconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
-  if (diffSeconds < 60) return `${diffSeconds || 1} 秒前`;
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
-  const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours} 小时前`;
-  return formatTime(value);
+const { liveTaskItems, createResumePayload } = useLiveTaskQueue({
+  jobId,
+  outputPath,
+  activeMaterialTasks: computed(() => readValue(props.materialDriven, 'activeTasks', [])),
+  selectedFile,
+  uploading,
+  rebuildingPlan,
+  rerenderingVideo,
+  finalVideoUrl,
+  materialSourceLabel,
+  combinedErrorText,
+  currentStepLabel,
+  productionStatusText,
+  statusText,
+  displayProgress,
+  materialResumingTaskIds,
+  xaiLoading,
+  activePartitionId,
+  activePartitionLabel,
+  xaiProgressMessage,
+  xaiProgressPercent,
+  xaiProgressLabel,
+  verticalLoading,
+  verticalSourceTaskDir,
+  verticalErrorText,
+  verticalStatusText,
+  verticalProgress,
+  standaloneActiveDurationLabel: computed(() => readValue(props.standalone, 'activeDurationLabel', '')),
+  standaloneDbTasks,
+  unifiedDbTasks,
+  verticalQueueStatus,
+  publishJobs: computed(() => readValue(props.publishCenter, 'jobs', [])),
+  platformDefs,
+  formatTime,
+  getPublishJobLabel
+});
+
+const resumeMaterialTask = (item) => {
+  const payload = createResumePayload(item);
+  if (payload) emit('resume-material-task', payload);
 };
+
 </script>
 
 <style scoped>
