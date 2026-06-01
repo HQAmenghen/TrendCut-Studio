@@ -151,6 +151,17 @@ Copy-Item .env.example .env
 
 ## 常见排查
 
+### 先看哪里
+
+优先检查：
+
+- 系统自检：`GET /api/system/self-check`
+- 服务日志：`data/logs/server.log`
+- 调度日志：`data/logs/scheduler.log`
+- 任务目录：`projects/material_<jobId>/`
+- 上传和运行缓存：`data/uploads/`
+- 发布任务数据库和浏览器状态：`python/publish/`
+
 ### 自动数字人失败
 
 优先检查：
@@ -158,6 +169,7 @@ Copy-Item .env.example .env
 - `COMFYUI_BASE_URL` 是否正确
 - ComfyUI 是否可访问
 - `public/presets/audio` 和 `public/presets/image` 是否有可用预设
+- 如果使用 RunningHub / ComfyUI workflow，检查工作流 ID、节点 ID、音频字段和图片字段是否与当前 workflow 对齐
 
 ### 素材驱动卡在步骤 6
 
@@ -175,6 +187,7 @@ Copy-Item .env.example .env
 - 当前 LLM 提供商配置
 - 对应 API Key
 - 网络状态
+- `server/core/pythonProtocol.js` 和 `python/script_protocol.py` 是否仍保持协议兼容
 
 ### 微信视频号任务失败
 
@@ -183,3 +196,14 @@ Copy-Item .env.example .env
 - 登录状态是否有效
 - 浏览器用户态数据是否可用
 - Playwright 依赖是否完整
+- 平台页面是否改版，导致 RPA 选择器失效
+
+### 无人值守 AutoPilot 没有创建发布任务
+
+优先检查：
+
+- `data/logs/scheduler.log`
+- `server/services/system/schedulerAutoPilot.js` 对应的 AutoPilot 日志
+- 发布中心账号映射是否为空
+- xAI 分区是否有可用榜单结果
+- 竖屏队列任务是否完成并能在发布素材库中被发现

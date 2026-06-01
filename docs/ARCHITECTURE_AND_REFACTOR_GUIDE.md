@@ -38,6 +38,8 @@ Vue Cockpit
   - `frontend/src/composables/useVerticalQueue.js`
   - `frontend/src/composables/useVideoReview.js`
   - `frontend/src/composables/usePublishCenter.js`
+  - `frontend/src/composables/publishCenter/domain.mjs`
+  - `frontend/src/composables/publishCenter/autoPilot.mjs`
   - `frontend/src/composables/useXaiTop10.js`
 
 前端负责：
@@ -88,6 +90,11 @@ Node 层负责：
   - 素材收集、任务存储、文案生成、微信视频号 RPA、账号看板。
 - `system/`
   - 自检、调度器、系统设置。
+  - `scheduler.js` 是组合根，负责注册各类后台任务。
+  - `schedulerAutoPilot.js` 承载无人值守发片、榜单触发、数字人桥接、竖屏队列恢复和发布任务桥接。
+  - `schedulerPublish.js` 承载定时发布和自动归档。
+  - `schedulerCleanup.js` 承载运行数据清理。
+  - `schedulerLoginCheck.js` 承载账号登录检测调度。
 - `notification/`
   - 飞书通知与登录状态检测。
 - `xai/`
@@ -153,6 +160,8 @@ Node 层负责：
 - Python 侧旧 `agents/` 目录已被新的 `planner/`、`skills/`、`prompt_skills/` 取代。
 - 审核、发布、账号看板、系统设置都已形成可复用服务，而不是附属脚本。
 - 项目目录 `projects/` 已成为素材驱动任务的标准运行容器。
+- 发布中心前端规则已从 `usePublishCenter.js` 抽到 `publishCenter/domain.mjs` 和 `publishCenter/autoPilot.mjs`，组合函数主要保留响应式状态、接口调用和 UI 编排。
+- 后台调度已从单一大型 `scheduler.js` 拆为组合根加多个 `scheduler*.js` 模块，避免 AutoPilot、发布、清理和登录检测继续混在同一个文件。
 
 ## 运行时闭环
 
@@ -180,3 +189,12 @@ Node 层负责：
 - `server/services/publish/handlers.js`
 - `server/services/review/handlers.js`
 - `server/services/agent/handlers.js`
+- `frontend/src/composables/publishCenter/`
+- `server/services/system/scheduler*.js`
+
+## 维护原则
+
+- 不要把发布中心的账号规则、平台选择、自动托管映射和展示摘要重新塞回 `AutomationDashboard.vue` 或 `usePublishCenter.js`。
+- 不要把具体后台任务直接写进 `server/services/system/scheduler.js`；该文件应保持为调度组合根。
+- 修改 AutoPilot 行为时，优先补充或运行 `server/services/system/__tests__/scheduler.test.js`。
+- 修改 Node/Python 进度协议时，同步检查 `contracts/python_protocol.schema.json`、`server/core/pythonProtocol.js` 和 `python/script_protocol.py`。

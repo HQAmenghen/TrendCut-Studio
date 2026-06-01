@@ -112,6 +112,8 @@ Python：
 前端：
 
 - `frontend/src/composables/usePublishCenter.js`
+- `frontend/src/composables/publishCenter/domain.mjs`
+- `frontend/src/composables/publishCenter/autoPilot.mjs`
 
 后端：
 
@@ -136,6 +138,7 @@ Vendor：
 - 生成发布文案。
 - 创建抖音、小红书、微信视频号等平台发布任务。
 - 执行微信视频号 RPA 和平台登录检测。
+- 前端领域模块负责平台定义、账号选项、发布中心卡片完整度、自动托管计划映射和展示摘要。
 
 ## 7. 账号监控与系统运维
 
@@ -151,6 +154,10 @@ Vendor：
 - `server/services/system/handlers.js`
 - `server/services/system/selfCheck.js`
 - `server/services/system/scheduler.js`
+- `server/services/system/schedulerAutoPilot.js`
+- `server/services/system/schedulerPublish.js`
+- `server/services/system/schedulerCleanup.js`
+- `server/services/system/schedulerLoginCheck.js`
 - `server/routes/loginStatus.js`
 
 作用：
@@ -158,3 +165,4 @@ Vendor：
 - 查看账号状态、任务和失败记录。
 - 管理预设素材、工作流配置、飞书通知、登录检测和 LLM Provider。
 - 执行自检和定时调度。
+- `scheduler.js` 只负责组合注册，具体后台任务分散在对应 `scheduler*.js` 模块中。
