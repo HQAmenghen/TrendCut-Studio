@@ -1,12 +1,13 @@
 # TrendCut Studio
 
 <p align="center">
-  <strong>本地化热点视频剪辑、审核与发布工作台</strong>
+  <strong>热点短视频剪辑、审核与发布的本地工作台</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/HQAmenghen/TrendCut-Studio"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-TrendCut--Studio-181717?logo=github&logoColor=white"></a>
   <a href="https://gitee.com/HQAmenghen/TrendCut-Studio"><img alt="Gitee repository" src="https://img.shields.io/badge/Gitee-TrendCut--Studio-C71D23?logo=gitee&logoColor=white"></a>
+  <a href="https://github.com/HQAmenghen/TrendCut-Studio/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/HQAmenghen/TrendCut-Studio?style=social"></a>
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white">
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42B883?logo=vue.js&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
@@ -14,113 +15,132 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
-TrendCut Studio（热点剪辑工作室）是一套面向短视频运营的本地控制台。项目把热点发现、素材分析、脚本生成、数字人口播、视频合成、AI 审核、发布任务和账号状态监控整合在同一套工作流中，适合在可信本机环境内运行自动化内容生产链路。
+TrendCut Studio 是一个面向内容运营场景的本地自动化工作台。项目把热点发现、素材分析、脚本生成、数字人口播、视频合成、AI 审核、发布任务、账号状态监控和系统自检整合到同一个 Node.js + Vue + Python 工作区中。
 
-项目采用 Node.js + Vue + Python 架构：Node.js 负责本地服务、任务调度和数据持久化，Vue 提供操作台界面，Python 负责素材分析、剪辑合成、AI 审核、热点抓取和发布自动化脚本。ComfyUI、LLM Provider、FFmpeg、Playwright 浏览器和平台账号登录态属于外部运行依赖，需要按实际环境单独配置。
+项目适合运行在可信任的本地机器上。ComfyUI、RunningHub、LLM 服务、FFmpeg、Playwright 浏览器、平台账号登录状态和发布凭证均作为外部运行依赖，由使用者自行配置和维护。
 
-## 功能概览
+## 核心能力
 
-- 热点发现：获取热点榜单、翻译摘要、维护可转化的选题入口。
-- 素材驱动生产：从本地素材或热点条目启动生产，自动完成 ASR、VLM 分析、片段筛选、脚本生成和剪辑计划。
-- 数字人口播：支持接入 ComfyUI 或已有数字人视频，生成生产链路所需的口播素材。
-- 视频合成：输出横版成片，并可衔接竖屏后期合成流程。
-- AI 审核：对成片进行质量检查，保存审核历史，并支持按建议重新修复。
-- 发布中心：生成发布文案，创建抖音、小红书、微信视频号等平台任务。
-- 账号与系统运维：提供登录检测、飞书通知、定时任务、自检和运行配置管理。
+| 模块 | 说明 |
+| --- | --- |
+| 热点发现 | 支持 xAI/X 热点榜单、分区配置、榜单刷新、关键词搜索、候选素材筛选和摘要翻译。 |
+| 素材驱动生产 | 支持本地视频或视频 URL 输入，自动完成 ASR、视觉理解、片段评分、脚本生成、剪辑计划和项目产物落盘。 |
+| 数字人口播 | 支持手动导入数字人视频，也支持通过 ComfyUI 或 RunningHub 兼容流程生成数字人素材。 |
+| 视频合成 | 支持素材驱动最终成片、无数字人竖屏转换、独立竖屏任务、素材任务导入、字幕、标题卡和片尾配置。 |
+| AI 审核 | 支持成片质量审核、审核历史、问题建议、跳过审核、按建议重新生成等流程。 |
+| 发布中心 | 支持发布素材管理、平台草稿、定时发布、微信视频号 RPA、多平台账号状态和失败任务追踪。 |
+| 系统运维 | 支持依赖自检、结构化错误、任务恢复、定时调度、清理规则、飞书通知、登录检测和运行产物边界保护。 |
+| Agent / MCP | 提供本地 Agent API 与 MCP bridge，便于 MCP 客户端在授权后调用热点、生产、审核、发布等工作流工具。 |
 
-## 工作流
+## 主流程
 
-```text
-热点榜单 / 本地素材
-        |
-        v
-素材准备 -> ASR / VLM 分析 -> 片段筛选 -> 脚本与剪辑计划
-        |                                      |
-        v                                      v
-数字人口播 / 口播视频 --------------------> 视频合成
-                                               |
-                                               v
-                                      AI 审核与修复
-                                               |
-                                               v
-                                      发布任务与账号监控
+```mermaid
+flowchart LR
+  A["热点榜单 / 本地素材"] --> B["素材导入"]
+  B --> C["ASR 与视觉分析"]
+  C --> D["片段评分与选择"]
+  D --> E["脚本与剪辑计划"]
+  E --> F{"是否需要数字人"}
+  F -->|是| G["ComfyUI / RunningHub / 手动导入"]
+  F -->|否| H["直接竖屏合成"]
+  G --> I["最终视频合成"]
+  H --> I
+  I --> J["AI 审核"]
+  J --> K["发布草稿 / 定时发布"]
+  K --> L["账号监控与登录检测"]
 ```
 
-素材驱动生产是当前主流程。每个任务会在 `projects/material_<jobId>/` 下保存中间文件、执行计划和最终视频，便于恢复、排查和二次处理。
+每个素材驱动任务都会在 `projects/material_<jobId>/` 下形成独立项目目录，保存源素材、ASR 结果、视觉分析、片段选择、口播稿、剪辑计划、数字人产物和最终视频。这种以文件系统为主的产物结构便于排查、恢复和人工接管。
+
+## 系统架构
+
+```mermaid
+flowchart TB
+  UI["Vue 运营工作台<br/>frontend/src"] --> API["Express 组合入口<br/>server.js"]
+  API --> Routes["路由层<br/>server/routes"]
+  Routes --> Services["业务服务层<br/>server/services"]
+  Services --> Core["运行时基础能力<br/>server/core"]
+  Services --> Py["Python 工作脚本<br/>python/"]
+  Services --> DB["SQLite 存储<br/>data/*.db"]
+  Services --> Files["运行产物<br/>projects / data / public"]
+  Py --> FFmpeg["FFmpeg / MoviePy"]
+  Py --> LLM["Gemini / Qwen / DeepSeek / Vertex"]
+  Services --> Comfy["ComfyUI / RunningHub"]
+  Services --> RPA["Playwright RPA<br/>微信视频号 / 抖音 / 小红书"]
+  MCP["MCP bridge<br/>mcp-server"] --> AgentAPI["Agent API<br/>/api/agent/v1"]
+  AgentAPI --> Services
+```
+
+| 层级 | 主要位置 | 职责 |
+| --- | --- | --- |
+| 前端工作台 | `frontend/src/App.vue`, `frontend/src/components/AutomationDashboard.vue`, `frontend/src/composables/` | 操作界面、任务状态、SSE 进度、审核、发布和本地恢复状态。 |
+| Express 入口 | `server.js` | 环境加载、中间件、静态资源、服务装配、路由注册、调度器和恢复服务启动。 |
+| 路由层 | `server/routes/` | 对外暴露素材生产、审核、发布、系统设置、竖屏队列、热点榜单、登录状态和 Agent API。 |
+| 服务层 | `server/services/` | 工作流编排、数据访问、外部服务集成、账号看板、调度、清理和恢复。 |
+| 基础运行层 | `server/core/` | Python 进程执行、任务存储、进度流、结构化错误、清理、恢复和任务协议。 |
+| Python 脚本 | `python/pipeline/`, `python/review/`, `python/publish/`, `python/xai/` | ASR、视觉理解、剪辑计划、媒体渲染、审核、RPA 和热点发现。 |
+| MCP 集成 | `server/services/agent/`, `server/routes/agent.js`, `mcp-server/` | 基于 Token 的本地自动化接口和 MCP 工具封装。 |
 
 ## 技术栈
 
-| 层级 | 技术 |
+| 类别 | 技术 |
 | --- | --- |
-| 前端 | Vue 3, Vite, CSS |
-| 后端 | Node.js, Express, better-sqlite3, node-cron |
-| Python 执行层 | Python 3.10+, MoviePy, faster-whisper, Playwright, LLM SDK |
-| 媒体处理 | FFmpeg, ComfyUI, 本地文件系统 |
-| 数据存储 | SQLite, JSON 文件, 项目目录 |
-| 自动化发布 | Playwright RPA, vendored social-auto-upload |
+| 前端 | Vue 3, Vite, CSS, lucide-vue-next |
+| 后端 | Node.js 18+, Express, better-sqlite3, node-cron, ws, multer |
+| Python | Python 3.10+, MoviePy, faster-whisper, Pillow, Playwright, requests/httpx |
+| AI 与模型服务 | Gemini, Qwen/DashScope, DeepSeek, Vertex AI, xAI 兼容 OpenAI transport |
+| 媒体处理 | FFmpeg, ComfyUI, RunningHub 兼容数字人流程 |
+| 数据存储 | SQLite, JSON 文件, 项目目录, 本地文件系统 |
+| 自动化 | Playwright RPA, vendored `social-auto-upload` 子集, MCP bridge |
+| 质量保障 | Jest, Python unittest, ESLint, Vite build, npm production audit, Python lock check |
 
-## 环境要求
+## 快速开始
+
+### 环境要求
 
 - Node.js 18+
 - npm
 - Python 3.10+
 - pip
-- FFmpeg，并确保可通过 `PATH` 调用
-- 可访问的 ComfyUI 服务（需要自动数字人时）
-- 至少一个可用的 LLM Provider 配置
-- Playwright Python 浏览器依赖（需要微信视频号自动化时）
+- FFmpeg，并确保可在 `PATH` 中访问
+- 如使用自动数字人生成，需要可访问的 ComfyUI 或 RunningHub 兼容服务
+- 至少配置一个可用的 LLM Provider
+- 如使用平台发布自动化，需要安装 Playwright 浏览器并完成账号登录
 
-## 快速开始
-
-### 1. 克隆项目
+### 安装依赖
 
 ```powershell
 git clone https://github.com/HQAmenghen/TrendCut-Studio.git
 cd TrendCut-Studio
-```
 
-### 2. 安装依赖
-
-```powershell
 npm install
 pip install -r requirements.lock.txt
-```
-
-`requirements.txt` 保留为直接依赖清单，`requirements.lock.txt` 锁定可复现运行环境。新增或升级 Python 依赖时，先更新直接依赖清单，再重新生成并审阅锁文件：
-
-```powershell
-python -m pip freeze --requirement python/pipeline/requirements.txt > requirements.lock.txt
-npm run check:py-lock
-```
-
-如需执行微信视频号 RPA，请安装 Playwright 浏览器：
-
-```powershell
 python -m playwright install chromium
 ```
 
-### 3. 配置环境变量
+### 配置环境变量
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-常用配置项：
+常用配置：
 
-| 变量 | 说明 |
+| 变量 | 用途 |
 | --- | --- |
-| `COMFYUI_BASE_URL` | ComfyUI 服务地址 |
-| `LLM_PROVIDER` | LLM 提供商，当前支持 `gemini`、`qwen` |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini 凭据 |
-| `QWEN_API_KEY` / `DASHSCOPE_API_KEY` | Qwen / DashScope 凭据 |
-| `XAI_API_KEY` | 热点榜单接口凭据 |
-| `AI_REVIEW_ENABLED` | 是否启用 AI 审核 |
-| `FEISHU_WEBHOOK_URL` | 飞书通知 Webhook |
-| `LOGIN_CHECK_ENABLED` | 是否启用登录状态检测 |
+| `COMFYUI_BASE_URL` | ComfyUI 服务地址。 |
+| `LLM_PROVIDER` | 主 LLM Provider 选择。当前生产链路主要使用 Gemini 和 Qwen。 |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini 凭证。 |
+| `QWEN_API_KEY` / `DASHSCOPE_API_KEY` | Qwen / DashScope 凭证。 |
+| `XAI_API_KEY` | 热点发现凭证。 |
+| `AGENT_API_TOKEN` | Agent API 与 MCP bridge 使用的本地访问 Token。 |
+| `AI_REVIEW_ENABLED` | 是否启用 AI 审核。 |
+| `FEISHU_WEBHOOK_URL` | 可选的飞书通知 Webhook。 |
+| `LOGIN_CHECK_ENABLED` | 是否启用定时登录检测。 |
 
-更多配置说明见 [docs/SETUP_AND_OPERATIONS.md](docs/SETUP_AND_OPERATIONS.md)。
+完整配置说明见 [docs/SETUP_AND_OPERATIONS.md](docs/SETUP_AND_OPERATIONS.md)。
 
-### 4. 启动服务
+### 启动服务
 
 ```powershell
 npm start
@@ -138,126 +158,103 @@ http://localhost:3001
 npm run dev:front
 ```
 
-构建前端静态资源：
+前端生产构建：
 
 ```powershell
 npm run build:front
 ```
 
-## Docker 运行
+## MCP 与 Skill 说明
 
-项目提供 `Dockerfile` 和 `docker-compose.yml`，用于打包本地控制台服务。容器仍然需要访问外部 ComfyUI、LLM Provider、平台账号状态和宿主机持久化目录。
+项目包含两类与 MCP/Skill 相关的内容：
 
-```powershell
-docker compose up --build
-```
+| 内容 | 是否为运行时代码 | 说明 |
+| --- | --- | --- |
+| `mcp-server/` | 是 | MCP bridge，将本地 Agent API 包装成 MCP tools。 |
+| `server/routes/agent.js` | 是 | Agent API HTTP 路由，路径前缀为 `/api/agent/v1`。 |
+| `server/services/agent/` | 是 | Agent API 的鉴权、能力表、审计日志和业务处理。 |
+| `.agents/skills/video-assistant-agent/` | 否 | 本地开发环境中的 Skill 使用说明，用来描述 MCP 客户端应如何选择工具。公开仓库不依赖该目录运行。 |
 
-默认服务端口为 `3001`。运行前请检查 `.env`、挂载目录和外部服务地址是否符合当前机器环境。
+当前 MCP bridge 暴露 53 个工具，覆盖以下类别：
 
-## 常用命令
-
-| 命令 | 用途 |
+| 类别 | 示例工具 |
 | --- | --- |
-| `npm start` | 启动本地 Express 服务 |
-| `npm run dev:front` | 启动 Vite 前端开发服务 |
-| `npm run build:front` | 构建前端产物到 `frontend-dist/` |
-| `npm test` | 运行 Node.js Jest 测试 |
-| `npm run test:py` | 运行 Python 单元测试 |
-| `npm run lint` | 检查 `server/` 和 `scripts/` 下的 JavaScript 代码 |
-| `npm run check:py-lock` | 检查 Python 锁文件是否覆盖直接依赖 |
-| `npm run ci` | 执行项目 CI 脚本 |
+| 健康检查与能力发现 | `health_check`, `list_capabilities` |
+| 热点榜单 | `list_hotspot_partitions`, `refresh_hotspot_leaderboard`, `list_hotspot_leaderboard`, `search_posts`, `find_post_by_rank` |
+| 素材驱动生产 | `generate_video_from_post`, `generate_video_from_rank`, `generate_narration_from_post`, `get_job_status`, `get_workflow_next_actions` |
+| 口播与数字人断点 | `get_narration_draft`, `revise_narration_draft`, `generate_avatar_video`, `generate_avatar_video_with_runninghub`, `get_avatar_status`, `preview_avatar_video` |
+| 最终渲染与竖屏转换 | `render_final_video`, `continue_workflow_one_click`, `create_direct_vertical_video`, `create_no_avatar_vertical_video`, `create_vertical_video_from_material_job` |
+| AI 审核 | `review_video`, `review_generated_video`, `list_review_history`, `get_review_record` |
+| 发布流程 | `list_publish_assets`, `create_publish_draft`, `create_wechat_publish_draft`, `create_multi_platform_publish_draft`, `list_scheduled_publish_tasks`, `confirm_publish` |
+| 账号与登录状态 | `get_publish_account_dashboard`, `list_publish_account_jobs`, `list_login_statuses`, `get_login_qrcode` |
+
+详细说明见 [docs/MCP_AGENT_INTEGRATION.md](docs/MCP_AGENT_INTEGRATION.md)。
 
 ## 项目结构
 
 ```text
 trendcut-studio/
-├─ server.js                  # Express 服务入口
-├─ frontend/                  # Vue 前端源码
-├─ frontend-dist/             # 前端构建产物
-├─ server/                    # 后端路由、服务和核心工具
+├─ server.js                  # Express 组合入口
+├─ frontend/                  # Vue 运营工作台源码
+├─ server/                    # 路由、服务和运行时基础模块
 ├─ python/                    # 素材生产、审核、发布和热点脚本
-├─ public/                    # 静态资源与预设素材
-├─ data/                      # 本地数据库、上传文件和运行缓存
-├─ projects/                  # 素材驱动任务产物
+├─ mcp-server/                # Agent API 的 MCP bridge
+├─ config/                    # 工作流和运行配置
 ├─ docs/                      # 长期维护文档
-├─ vendor/                    # 随项目打包的第三方源码
-├─ scripts/                   # 工程脚本
+├─ contracts/                 # 共享协议和 schema
+├─ scripts/                   # CI、守卫和维护脚本
+├─ vendor/                    # vendored social-auto-upload 子集
 ├─ Dockerfile
 └─ docker-compose.yml
 ```
 
-详细目录说明见 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)。
+以下内容属于本地运行产物或个人工作区内容，不应进入公开仓库：
 
-## 核心入口
+- `data/`
+- `projects/`
+- `frontend-dist/`
+- `public/presets/`
+- `.env` 与本地密钥
+- 浏览器 Profile、Cookie、数据库、日志、生成视频和账号状态文件
+- `.agents/`, `.claude/`, `.gitee/`, `.planning/` 等个人工具或过程管理目录
 
-| 模块 | 入口 |
-| --- | --- |
-| 前端控制台 | `frontend/src/App.vue`, `frontend/src/components/AutomationDashboard.vue` |
-| 素材驱动生产 | `server/routes/materialDriven.js`, `python/pipeline/run_material_driven.py` |
-| AI 审核 | `server/routes/review.js`, `server/services/review/`, `python/review/ai_video_review.py` |
-| 发布中心 | `server/routes/publish.js`, `server/services/publish/`, `python/publish/` |
-| 发布中心前端规则 | `frontend/src/composables/publishCenter/domain.mjs`, `frontend/src/composables/publishCenter/autoPilot.mjs` |
-| 热点榜单 | `server/routes/xai.js`, `python/xai/run_xai_top10.py` |
-| 系统设置与自检 | `server/routes/system.js`, `server/services/system/handlers.js` |
-| 后台调度 | `server/services/system/scheduler.js`, `server/services/system/schedulerAutoPilot.js`, `server/services/system/schedulerPublish.js`, `server/services/system/schedulerCleanup.js`, `server/services/system/schedulerLoginCheck.js` |
-
-## 运行数据与安全边界
-
-TrendCut Studio 面向本地可信环境设计。项目会在运行过程中生成视频、截图、浏览器用户态、SQLite 数据库、任务日志和平台发布缓存。请注意：
-
-- 不要提交 `.env`、账号凭据、浏览器 profile、cookie、二维码、平台日志和未脱敏素材。
-- `data/`、`projects/`、`public/` 中可能包含运行产物，提交前应确认内容是否适合进入仓库。
-- 发布自动化依赖平台 Web 流程和登录态，平台页面变化可能导致 RPA 失败。
-- 自动数字人链路依赖外部 ComfyUI 服务，服务不可用时应通过自检和错误日志定位。
-
-运行产物边界说明见 [docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md](docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)。
-
-## 文档
-
-- [文档索引](docs/README.md)
-- [架构与重构指南](docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md)
-- [素材驱动工作流](docs/MATERIAL_DRIVEN_WORKFLOW.md)
-- [模块说明](docs/MODULE_GUIDE.md)
-- [API 概览](docs/API_OVERVIEW.md)
-- [环境与运维](docs/SETUP_AND_OPERATIONS.md)
-- [项目结构](docs/PROJECT_STRUCTURE.md)
-- [运行产物与边界](docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)
-
-## 开发建议
-
-1. 修改后端路由或服务时，优先复用 `server/core/http.js` 的错误响应格式。
-2. 修改长任务链路时，同步检查任务恢复、进度事件和失败落盘行为。
-3. 修改 Python 脚本时，遵守 `contracts/python_protocol.schema.json` 中的 JSONL 协议，保留可被 Node 解析的结构化输出和明确退出码。
-4. 修改前端操作台时，保持核心生产流程在首屏可操作。
-5. 涉及运行目录、缓存目录或平台账号数据时，先确认 `.gitignore` 和文档边界。
-6. 新增发布中心规则时，优先放入 `frontend/src/composables/publishCenter/` 的领域模块，不要重新堆回大型 Vue 组件或 `usePublishCenter.js`。
-7. 新增后台定时任务时，保持 `server/services/system/scheduler.js` 作为组合根，具体调度逻辑放入对应 `scheduler*.js` 模块。
-
-## 测试与检查
+## 质量检查
 
 ```powershell
 npm run lint
 npm test
 npm run test:py
+npm run build:front
+npm run audit:prod
+npm run check:py-lock
 ```
 
-系统自检接口：
+仓库包含 pre-commit / pre-push 守卫和 CI 检查，用于阻止数据库、浏览器 Profile、生成视频、本地密钥和构建产物等运行文件进入版本库。
 
-```text
-GET /api/system/self-check
+## Docker
+
+```powershell
+docker compose up --build
 ```
 
-该接口会检查关键环境变量、目录、Python、FFmpeg、关键 Python 包、Playwright 浏览器和 ComfyUI 配置。缺失的外部能力会以 `warn` 或 `fail` 返回，便于在启动生产任务前定位环境问题。
+容器负责运行 Node 服务并提供前端静态资源。ComfyUI、模型服务、平台账号、浏览器登录状态和实际发布环境仍需要在部署目标中单独配置。
 
-## 贡献
+## 文档
 
-欢迎提交 issue、改进建议和 pull request。建议在提交前完成以下检查：
+- [功能总览](docs/FEATURES.md)
+- [架构与重构指南](docs/ARCHITECTURE_AND_REFACTOR_GUIDE.md)
+- [素材驱动工作流](docs/MATERIAL_DRIVEN_WORKFLOW.md)
+- [MCP 与 Agent 集成](docs/MCP_AGENT_INTEGRATION.md)
+- [API 概览](docs/API_OVERVIEW.md)
+- [部署与运维](docs/SETUP_AND_OPERATIONS.md)
+- [运行产物边界](docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)
 
-- 变更范围清晰，避免同时混入运行产物和源码修改。
-- README、`docs/` 与实际行为保持一致。
-- 新增外部依赖时说明安装方式、环境变量和失败处理。
-- 涉及平台发布、账号登录或 RPA 的改动需要说明验证方式。
+## Star History
 
-## 许可
+[![Star History Chart](https://api.star-history.com/svg?repos=HQAmenghen/TrendCut-Studio&type=Date)](https://www.star-history.com/#HQAmenghen/TrendCut-Studio&Date)
 
-本项目采用 MIT License。第三方 vendored 代码说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+## License
+
+TrendCut Studio 使用 MIT License 发布。
+
+第三方 vendored 代码说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
