@@ -663,123 +663,29 @@
       </section>
     </ModalBackdrop>
 
-    <ModalBackdrop v-if="publishComposerOpen" @close="closePublishComposer">
-      <section class="source-modal publish-composer-modal" role="dialog" aria-modal="true" aria-label="发布信息">
-        <div class="modal-heading">
-          <div>
-            <span class="panel-kicker">Publish</span>
-            <h3>发布信息</h3>
-          </div>
-          <button type="button" class="mini-button" :disabled="publishComposerBusy" @click="closePublishComposer">关闭</button>
-        </div>
-
-        <div class="publish-composer-grid">
-          <div class="publish-composer-preview">
-            <video
-              v-if="publishComposerAsset?.url"
-              :src="publishComposerAsset.url"
-              controls
-              preload="metadata"
-              playsinline
-            ></video>
-            <div v-else class="empty-row picker-empty">当前成品没有可预览地址</div>
-          </div>
-
-          <div class="publish-composer-form">
-            <label class="field-control">
-              <span>发布标题</span>
-              <input
-                :value="publishEditor.title || publishComposerTitle"
-                type="text"
-                placeholder="默认从成品元数据读取，可手动修改。"
-                :disabled="publishComposerBusy"
-                @input="publishEditor.title = $event.target.value"
-              />
-            </label>
-
-            <label class="field-control">
-              <span class="field-control-row">
-                <span>发布文案</span>
-                <button
-                  type="button"
-                  class="tool-button compact"
-                  :disabled="publishComposerBusy"
-                  @click="generatePublishCopy"
-                >
-                  <Sparkles class="icon-sm" aria-hidden="true" />
-                  {{ publishGeneratingDescription ? '生成中' : '生成文案和标签' }}
-                </button>
-              </span>
-              <textarea
-                rows="8"
-                :value="publishEditor.description || ''"
-                placeholder="文案由大模型生成，标签会随文案一起写入。"
-                @input="publishEditor.description = $event.target.value"
-              ></textarea>
-            </label>
-
-            <div class="publish-target-list">
-              <span class="panel-kicker">发布账号</span>
-              <div class="field-control select-control publish-account-select" @focusout="handlePublishAccountDropdownFocusout">
-                <button
-                  type="button"
-                  class="select-trigger"
-                  aria-haspopup="listbox"
-                  :aria-expanded="publishAccountDropdownOpen"
-                  :disabled="publishComposerBusy || !publishComposerAccountOptions.length"
-                  @click="togglePublishAccountDropdown"
-                  @keydown.escape.prevent="closePublishAccountDropdown"
-                >
-                  <strong>{{ publishComposerAccountLabel }}</strong>
-                  <ChevronDown class="icon-sm" aria-hidden="true" />
-                </button>
-                <div
-                  v-if="publishAccountDropdownOpen"
-                  class="select-menu"
-                  role="listbox"
-                >
-                  <button
-                    v-for="account in publishComposerAccountOptions"
-                    :key="account.key"
-                    type="button"
-                    class="select-option account-select-option"
-                    :class="{ active: selectedPublishComposerAccountKey === account.key }"
-                    role="option"
-                    :aria-selected="selectedPublishComposerAccountKey === account.key"
-                    @click="selectPublishComposerAccount(account)"
-                  >
-                    <span>{{ account.platformLabel }}</span>
-                    <strong>{{ account.accountLabel }}</strong>
-                  </button>
-                </div>
-              </div>
-              <div v-if="!publishComposerAccountOptions.length" class="empty-row">还没有配置可用发布账号。</div>
-            </div>
-
-            <div v-if="publishCreatingStatusMessage" class="publish-composer-feedback pending">
-              {{ publishCreatingStatusMessage }}
-            </div>
-            <div v-if="publishErrorState.message" class="publish-composer-feedback error">
-              <strong>{{ publishErrorState.message }}</strong>
-              <span v-if="publishErrorState.code">错误码：{{ publishErrorState.code }}</span>
-              <span v-if="publishErrorState.hint">{{ publishErrorState.hint }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-actions">
-          <button type="button" class="tool-button" :disabled="publishComposerBusy" @click="closePublishComposer">取消</button>
-          <button type="button" class="tool-button" :disabled="publishComposerBusy" @click="createPublishFromComposer('draft')">
-            <ClipboardList class="icon-sm" aria-hidden="true" />
-            {{ publishActionMode === 'draft' ? '正在创建草稿' : '创建草稿' }}
-          </button>
-          <button type="button" class="primary-action" :disabled="publishComposerBusy" @click="createPublishFromComposer('publish')">
-            <Rocket class="icon-sm" aria-hidden="true" />
-            {{ publishActionMode === 'publish' ? '正在发布' : '创建并发布' }}
-          </button>
-        </div>
-      </section>
-    </ModalBackdrop>
+    <PublishComposerModal
+      :open="publishComposerOpen"
+      :asset="publishComposerAsset"
+      :editor="publishEditor"
+      :title="publishComposerTitle"
+      :busy="publishComposerBusy"
+      :action-mode="publishActionMode"
+      :generating-description="publishGeneratingDescription"
+      :creating-status-message="publishCreatingStatusMessage"
+      :error-state="publishErrorState"
+      :account-options="publishComposerAccountOptions"
+      :account-label="publishComposerAccountLabel"
+      :selected-account-key="selectedPublishComposerAccountKey"
+      :account-dropdown-open="publishAccountDropdownOpen"
+      @close="closePublishComposer"
+      @update-title="publishEditor.title = $event"
+      @update-description="publishEditor.description = $event"
+      @generate-copy="generatePublishCopy"
+      @toggle-account-dropdown="togglePublishAccountDropdown"
+      @close-account-dropdown="closePublishAccountDropdown"
+      @select-account="selectPublishComposerAccount"
+      @create="createPublishFromComposer"
+    />
 
     <div class="cockpit-layout">
       <div class="cockpit-column cockpit-main-column">
@@ -1041,6 +947,7 @@ import ProductionProgressPanel from './ProductionProgressPanel.vue';
 import DashboardSidePanels from './materialDriven/DashboardSidePanels.vue';
 import DashboardSupportPanels from './materialDriven/DashboardSupportPanels.vue';
 import OutputDeliveryPanel from './materialDriven/OutputDeliveryPanel.vue';
+import PublishComposerModal from './materialDriven/PublishComposerModal.vue';
 import SourceIntakePanel from './materialDriven/SourceIntakePanel.vue';
 import { useLiveTaskQueue } from './materialDriven/useLiveTaskQueue';
 import {
@@ -1048,7 +955,6 @@ import {
   AlertTriangle,
   ChevronDown,
   CheckCircle2,
-  ClipboardList,
   Clock,
   ExternalLink,
   FileVideo,
@@ -1060,13 +966,11 @@ import {
   Radio,
   RefreshCw,
   Plus,
-  Rocket,
   RotateCcw,
   Save,
   Search,
   Send,
   ShieldCheck,
-  Sparkles,
   Trash2,
   Upload
 } from 'lucide-vue-next';
@@ -1840,11 +1744,6 @@ const toggleOutputPublishDropdown = () => {
   publishAccountDropdownOpen.value = false;
   ensurePublishComposerAccountSelection();
   outputPublishDropdownOpen.value = !outputPublishDropdownOpen.value;
-};
-
-const handlePublishAccountDropdownFocusout = (event) => {
-  if (event.currentTarget?.contains(event.relatedTarget)) return;
-  closePublishAccountDropdown();
 };
 
 const handleOutputPublishDropdownFocusout = (event) => {

@@ -21,7 +21,6 @@ import json
 import argparse
 import subprocess
 import re
-import math
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -45,6 +44,12 @@ from pipeline.material_state import (
     compute_script_signature,
     get_narration_text,
     normalize_source_post,
+)
+from pipeline.material_text import (
+    clean_text_for_match,
+    estimate_duration_from_text,
+    normalize_sentence_text,
+    split_text_into_semantic_groups,
 )
 from pipeline.material_runtime import MaterialRuntimeMixin
 
@@ -154,78 +159,19 @@ class MaterialDrivenPipeline(MaterialRuntimeMixin):
 
     def clean_text_for_match(self, text: str) -> str:
         """清理文本，便于句子对齐。"""
-        return re.sub(r'[，。！？；：、""'',.!?;:()\[\]{}\"\'…·\-\s]', '', str(text or ""))
+        return clean_text_for_match(text)
 
     def normalize_sentence_text(self, text: str) -> str:
         """规范化句子，减少 ASR/翻译碎裂带来的脏文本。"""
-        cleaned = " ".join(str(text or "").split()).strip()
-        cleaned = cleaned.replace("这 些", "这些")
-        cleaned = cleaned.replace("这 。", "。")
-        cleaned = cleaned.replace("这。。", "。")
-        cleaned = cleaned.replace("。。", "。")
-        cleaned = cleaned.replace("，。", "。")
-        cleaned = cleaned.replace("。.", "。")
-        cleaned = cleaned.strip("，。； ")
-        if cleaned and cleaned[-1] not in "。！？":
-            cleaned += "。"
-        return cleaned
+        return normalize_sentence_text(text)
 
     def estimate_duration_from_text(self, text: str, min_duration: float = 1.8) -> float:
         """根据文本长度估算口播时长。"""
-        cleaned = self.clean_text_for_match(text)
-        if not cleaned:
-            return min_duration
-        return max(min_duration, round(len(cleaned) / 4.2, 2))
+        return estimate_duration_from_text(text, min_duration=min_duration)
 
     def split_text_into_semantic_groups(self, text: str, target_groups: int = 4) -> list:
         """把长文本按句子和长度切成较稳定的语义组。"""
-        normalized = self.normalize_sentence_text(text)
-        if not normalized:
-            return []
-
-        raw_parts = [
-            self.normalize_sentence_text(part)
-            for part in re.split(r'(?<=[。！？!?])', normalized)
-            if self.normalize_sentence_text(part)
-        ]
-        if not raw_parts:
-            raw_parts = [normalized]
-
-        if len(raw_parts) <= target_groups:
-            return raw_parts
-
-        total_chars = sum(len(part) for part in raw_parts)
-        group_target_chars = max(18, math.ceil(total_chars / max(1, target_groups)))
-
-        groups = []
-        current = []
-        current_chars = 0
-        remaining_parts = len(raw_parts)
-        remaining_groups = target_groups
-
-        for part in raw_parts:
-            current.append(part)
-            current_chars += len(part)
-            remaining_parts -= 1
-
-            should_flush = False
-            if current_chars >= group_target_chars:
-                should_flush = True
-            if len(current) >= 2 and current_chars >= 14:
-                should_flush = True
-            if remaining_parts < max(0, remaining_groups - 1):
-                should_flush = True
-
-            if should_flush:
-                groups.append("".join(current))
-                current = []
-                current_chars = 0
-                remaining_groups = max(1, remaining_groups - 1)
-
-        if current:
-            groups.append("".join(current))
-
-        return [self.normalize_sentence_text(item) for item in groups if self.normalize_sentence_text(item)]
+        return split_text_into_semantic_groups(text, target_groups=target_groups)
 
     def get_video_duration(self, file_path: Path) -> float:
         """通过 ffprobe 获取视频时长。"""
