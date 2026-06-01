@@ -2,6 +2,29 @@
   "name": "trendcut-studio",
   "version": "1.0.0",
   "description": "Automated hotspot video clipping and publishing workflow",
+  "license": "MIT",
+  "author": "HQAmenghen",
+  "homepage": "https://github.com/HQAmenghen/TrendCut-Studio#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HQAmenghen/TrendCut-Studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HQAmenghen/TrendCut-Studio/issues"
+  },
+  "keywords": [
+    "ai-video",
+    "video-editing",
+    "workflow-automation",
+    "short-video",
+    "vue",
+    "express",
+    "python",
+    "ffmpeg",
+    "comfyui",
+    "playwright",
+    "rpa"
+  ],
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
