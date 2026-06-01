@@ -1,12 +1,12 @@
 {
   "6": {
     "inputs": {
-      "audio": "a.wav",
+      "audio": "b95bdd2ee0a977582cb7cde2ab02b27ef30d3739750297ca209e798cba309189.wav",
       "audioUI": ""
     },
     "class_type": "LoadAudio",
     "_meta": {
-      "title": "Load Audio"
+      "title": "② 上传口播音频（口型与最终音轨）"
     }
   },
   "9": {
@@ -21,17 +21,19 @@
     },
     "class_type": "AudioSeparation",
     "_meta": {
-      "title": "🎵 音频分离"
+      "title": "音频分离｜提取人声 Vocals"
     }
   },
   "12": {
     "inputs": {
       "model_name": "Wan2_1_VAE_bf16.safetensors",
-      "precision": "bf16"
+      "precision": "bf16",
+      "use_cpu_cache": false,
+      "verbose": false
     },
     "class_type": "WanVideoVAELoader",
     "_meta": {
-      "title": "WanVideo VAE Loader"
+      "title": "VAE加载｜Wan2.1 VAE bf16"
     }
   },
   "13": {
@@ -43,7 +45,7 @@
     },
     "class_type": "LoadWanVideoT5TextEncoder",
     "_meta": {
-      "title": "WanVideo T5 Text Encoder Loader"
+      "title": "T5文本编码器｜提示词模型"
     }
   },
   "14": {
@@ -58,7 +60,7 @@
     },
     "class_type": "WanVideoBlockSwap",
     "_meta": {
-      "title": "WanVideo Block Swap"
+      "title": "显存优化｜Block Swap=25"
     }
   },
   "17": {
@@ -67,7 +69,7 @@
     },
     "class_type": "CLIPVisionLoader",
     "_meta": {
-      "title": "Load CLIP Vision"
+      "title": "CLIP Vision 加载"
     }
   },
   "25": {
@@ -90,7 +92,7 @@
     },
     "class_type": "WanVideoClipVisionEncode",
     "_meta": {
-      "title": "WanVideo ClipVision Encode"
+      "title": "身份/风格编码｜ClipVision"
     }
   },
   "27": {
@@ -98,11 +100,11 @@
       "steps": 4,
       "cfg": 1,
       "shift": 11,
-      "seed": 502736448397021,
+      "seed": 175840352472941,
       "force_offload": true,
       "scheduler": "dpm++_sde",
       "riflex_freq_index": 0,
-      "denoise_strength": 1,
+      "denoise_strength": 0.45,
       "batched_cfg": false,
       "rope_function": "comfy",
       "start_step": 0,
@@ -120,6 +122,10 @@
         "114",
         0
       ],
+      "samples": [
+        "287",
+        0
+      ],
       "multitalk_embeds": [
         "131",
         0
@@ -127,7 +133,7 @@
     },
     "class_type": "WanVideoSampler",
     "_meta": {
-      "title": "WanVideo Sampler"
+      "title": "核心采样｜V2V底片 + MultiTalk口型｜1024×576｜denoise=0.45"
     }
   },
   "50": {
@@ -140,7 +146,7 @@
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
-      "title": "Math Expression 🐍"
+      "title": "秒 × 25fps + 1 → 总帧数"
     }
   },
   "88": {
@@ -153,13 +159,13 @@
     },
     "class_type": "PreviewAudio",
     "_meta": {
-      "title": "Preview Audio"
+      "title": "预听：分离后人声"
     }
   },
   "114": {
     "inputs": {
-      "positive_prompt": "男人对着镜头说话",
-      "negative_prompt": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+      "positive_prompt": "男人正面对镜头平稳说话，像新闻主播或职业讲师，身体姿态稳定，双手大部分时间自然放置，动作克制。面部表情自然，口型与语音同步，整体沉稳、专业、不过度表演。",
+      "negative_prompt": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，复动作，机械挥手，循环手势，动作僵硬，左右摇晃，频繁动作，频繁手势，连续手势，每句话都做手势，双手不停摆动，手臂大幅挥动，手部抖动，手指乱动，肢体过度活跃，动作抢戏，夸张肢体语言，双手同时动，",
       "force_offload": true,
       "use_disk_cache": false,
       "device": "gpu",
@@ -170,7 +176,7 @@
     },
     "class_type": "WanVideoTextEncode",
     "_meta": {
-      "title": "WanVideo TextEncode"
+      "title": "提示词编码｜口播风格/抑制乱手"
     }
   },
   "129": {
@@ -182,7 +188,7 @@
     },
     "class_type": "Audio Duration (mtb)",
     "_meta": {
-      "title": "音频时长(mtb)"
+      "title": "读取音频时长｜毫秒"
     }
   },
   "130": {
@@ -195,7 +201,7 @@
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
-      "title": "Math Expression 🐍"
+      "title": "毫秒 → 秒"
     }
   },
   "131": {
@@ -206,9 +212,11 @@
         0
       ],
       "fps": 25,
-      "audio_scale": 1,
-      "audio_cfg_scale": 1,
+      "audio_scale": 1.0000000000000002,
+      "audio_cfg_scale": 1.0000000000000002,
       "multi_audio_type": "para",
+      "add_noise_floor": false,
+      "smooth_transients": false,
       "wav2vec_model": [
         "275",
         0
@@ -220,7 +228,7 @@
     },
     "class_type": "MultiTalkWav2VecEmbeds",
     "_meta": {
-      "title": "Multi/InfiniteTalk Wav2vec2 Embeds"
+      "title": "MultiTalk口型特征｜audio_scale=0.75 / cfg=0.85"
     }
   },
   "136": {
@@ -233,7 +241,7 @@
     },
     "class_type": "PreviewAudio",
     "_meta": {
-      "title": "Preview Audio"
+      "title": "预听：原始音频"
     }
   },
   "137": {
@@ -242,7 +250,7 @@
     },
     "class_type": "MultiTalkModelLoader",
     "_meta": {
-      "title": "Multi/InfiniteTalk Model Loader"
+      "title": "MultiTalk模型｜InfiniteTalk Single"
     }
   },
   "150": {
@@ -264,14 +272,14 @@
     },
     "class_type": "WanVideoDecode",
     "_meta": {
-      "title": "WanVideo Decode"
+      "title": "VAE解码｜Latent → 视频帧"
     }
   },
   "151": {
     "inputs": {
       "frame_rate": 25,
       "loop_count": 0,
-      "filename_prefix": "pl-WanVideo2_1_multitalk",
+      "filename_prefix": "pl_v2v_multitalk_1024x576",
       "format": "video/h264-mp4",
       "pix_fmt": "yuv420p",
       "crf": 19,
@@ -279,6 +287,7 @@
       "trim_to_audio": false,
       "pingpong": false,
       "save_output": true,
+      "no_preview": false,
       "images": [
         "150",
         0
@@ -290,18 +299,18 @@
     },
     "class_type": "VHS_VideoCombine",
     "_meta": {
-      "title": "Video Combine 🎥🅥🅗🅢"
+      "title": "导出MP4｜1024×576｜画面 + 原音频｜25fps"
     }
   },
   "166": {
     "inputs": {
       "width": [
-        "185",
-        3
+        "276",
+        0
       ],
       "height": [
-        "185",
-        4
+        "277",
+        0
       ],
       "frame_window_size": 61,
       "motion_frame": 9,
@@ -309,6 +318,7 @@
       "colormatch": "disabled",
       "tiled_vae": false,
       "mode": "infinitetalk",
+      "output_path": "",
       "vae": [
         "12",
         0
@@ -324,7 +334,7 @@
     },
     "class_type": "WanVideoImageToVideoMultiTalk",
     "_meta": {
-      "title": "WanVideo Long I2V Multi/InfiniteTalk"
+      "title": "图片条件/窗口设置｜1024×576 / window=61"
     }
   },
   "176": {
@@ -334,6 +344,7 @@
       "quantization": "disabled",
       "load_device": "offload_device",
       "attention_mode": "sageattn",
+      "rms_norm_function": "default",
       "block_swap_args": [
         "14",
         0
@@ -349,49 +360,16 @@
     },
     "class_type": "WanVideoModelLoader",
     "_meta": {
-      "title": "WanVideo Model Loader"
+      "title": "WanVideo主模型加载｜含LoRA/MultiTalk"
     }
   },
   "180": {
     "inputs": {
-      "image": "a.png"
+      "image": "9f765c1a3c58b274a6bd9bb9a8f2bb5715db01ba3bdb74731e7575551a1e86be.png"
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
-    }
-  },
-  "185": {
-    "inputs": {
-      "aspect_ratio": "original",
-      "proportional_width": 1,
-      "proportional_height": 1,
-      "fit": "crop",
-      "method": "lanczos",
-      "round_to_multiple": "16",
-      "scale_to_side": "longest",
-      "scale_to_length": [
-        "186",
-        0
-      ],
-      "background_color": "#000000",
-      "image": [
-        "180",
-        0
-      ]
-    },
-    "class_type": "LayerUtility: ImageScaleByAspectRatio V2",
-    "_meta": {
-      "title": "LayerUtility: ImageScaleByAspectRatio V2"
-    }
-  },
-  "186": {
-    "inputs": {
-      "value": 1024
-    },
-    "class_type": "easy int",
-    "_meta": {
-      "title": "Int"
+      "title": "① 上传形象图片（人物身份）"
     }
   },
   "209": {
@@ -406,12 +384,12 @@
     },
     "class_type": "PlaySound|pysssss",
     "_meta": {
-      "title": "PlaySound 🐍"
+      "title": "完成提示音"
     }
   },
   "246": {
     "inputs": {
-      "text": "1052",
+      "text": "992",
       "anything": [
         "131",
         2
@@ -419,7 +397,7 @@
     },
     "class_type": "easy showAnything",
     "_meta": {
-      "title": "Show Any"
+      "title": "显示：本次总帧数"
     }
   },
   "255": {
@@ -427,25 +405,13 @@
       "start_index": 0,
       "num_frames": 1,
       "images": [
-        "185",
+        "278",
         0
       ]
     },
     "class_type": "GetImageRangeFromBatch",
     "_meta": {
-      "title": "Get Image or Mask Range From Batch"
-    }
-  },
-  "267": {
-    "inputs": {
-      "lora": "lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
-      "strength": 1,
-      "low_mem_load": false,
-      "merge_loras": false
-    },
-    "class_type": "WanVideoLoraSelect",
-    "_meta": {
-      "title": "WanVideo Lora Select"
+      "title": "取首帧｜身份参考图"
     }
   },
   "268": {
@@ -457,7 +423,7 @@
     },
     "class_type": "WanVideoLoraSelect",
     "_meta": {
-      "title": "WanVideo Lora Select"
+      "title": "LoRA① LightX2V｜低步数加速"
     }
   },
   "269": {
@@ -473,7 +439,7 @@
     },
     "class_type": "WanVideoLoraSelect",
     "_meta": {
-      "title": "WanVideo Lora Select"
+      "title": "LoRA② HPS Reward｜质量增强 0.5"
     }
   },
   "275": {
@@ -484,7 +450,98 @@
     },
     "class_type": "DownloadAndLoadWav2VecModel",
     "_meta": {
-      "title": "(Down)load Wav2Vec Model"
+      "title": "Wav2Vec模型｜中文口型特征"
+    }
+  },
+  "276": {
+    "inputs": {
+      "value": 1024
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "统一宽度：1024"
+    }
+  },
+  "277": {
+    "inputs": {
+      "value": 576
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "统一高度：576"
+    }
+  },
+  "278": {
+    "inputs": {
+      "width": [
+        "276",
+        0
+      ],
+      "height": [
+        "277",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "keep_proportion": false,
+      "divisible_by": 16,
+      "crop": "disabled",
+      "image": [
+        "180",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJ",
+    "_meta": {
+      "title": "形象图预处理｜裁剪缩放 1024×576"
+    }
+  },
+  "279": {
+    "inputs": {
+      "video": "8360a97d2f5a579af196d0bc885b0a842bff1abcd60b3bd696572ed5bfdf9cdf.mp4",
+      "force_rate": 25,
+      "force_size": "Custom",
+      "custom_width": [
+        "276",
+        0
+      ],
+      "custom_height": [
+        "277",
+        0
+      ],
+      "frame_load_cap": [
+        "50",
+        0
+      ],
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "format": "Wan"
+    },
+    "class_type": "VHS_LoadVideo",
+    "_meta": {
+      "title": "③ 上传参考视频（动作底片 / V2V｜1024×576）"
+    }
+  },
+  "287": {
+    "inputs": {
+      "enable_vae_tiling": true,
+      "tile_x": 272,
+      "tile_y": 272,
+      "tile_stride_x": 144,
+      "tile_stride_y": 128,
+      "noise_aug_strength": 0,
+      "latent_strength": 1,
+      "vae": [
+        "12",
+        0
+      ],
+      "image": [
+        "279",
+        0
+      ]
+    },
+    "class_type": "WanVideoEncode",
+    "_meta": {
+      "title": "参考视频编码｜V2V Latent 底片"
     }
   }
 }
