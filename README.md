@@ -121,7 +121,7 @@ python -m playwright install chromium
 ### 配置环境变量
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item config/env.example .env
 ```
 
 常用配置：
@@ -129,8 +129,7 @@ Copy-Item .env.example .env
 | 变量 | 用途 |
 | --- | --- |
 | `COMFYUI_BASE_URL` | ComfyUI 服务地址。 |
-| `LLM_PROVIDER` | 主 LLM Provider 选择。当前生产链路主要使用 Gemini 和 Qwen。 |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini 凭证。 |
+| `LLM_PROVIDER` | 主 LLM Provider 选择。公开模板默认使用 `qwen`。 |
 | `QWEN_API_KEY` / `DASHSCOPE_API_KEY` | Qwen / DashScope 凭证。 |
 | `XAI_API_KEY` | 热点发现凭证。 |
 | `AGENT_API_TOKEN` | Agent API 与 MCP bridge 使用的本地访问 Token。 |
@@ -138,7 +137,7 @@ Copy-Item .env.example .env
 | `FEISHU_WEBHOOK_URL` | 可选的飞书通知 Webhook。 |
 | `LOGIN_CHECK_ENABLED` | 是否启用定时登录检测。 |
 
-完整配置说明见 [docs/SETUP_AND_OPERATIONS.md](docs/SETUP_AND_OPERATIONS.md)。
+`config/env.example` 只保留开源运行的最小配置和常用可选项。Gemini、Vertex、DeepSeek、多 Key failover、OSS、素材库、TTS 等高级配置仍由代码支持，但不作为公开模板的默认内容。完整配置说明见 [docs/SETUP_AND_OPERATIONS.md](docs/SETUP_AND_OPERATIONS.md)。
 
 ### 启动服务
 

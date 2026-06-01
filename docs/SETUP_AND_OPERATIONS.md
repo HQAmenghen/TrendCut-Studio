@@ -35,8 +35,10 @@ python -m playwright install chromium
 从模板开始：
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item config/env.example .env
 ```
+
+`config/env.example` 是公开仓库使用的最小模板，只保留启动服务、默认 Qwen/DashScope Provider、热点发现、MCP Token、审核、数字人和通知等常用配置。内部运行环境中的 Gemini、Vertex、DeepSeek、多 Key failover、OSS、素材库、TTS 等高级变量不放进默认模板，需要时再按代码或部署环境补充。
 
 ## 重点变量
 
@@ -48,10 +50,7 @@ Copy-Item .env.example .env
 ### LLM
 
 - `LLM_PROVIDER`
-  - 当前支持 `gemini` 和 `qwen`
-- `GEMINI_API_KEY`
-- `GOOGLE_API_KEY`
-- `GEMINI_MODEL`
+  - 公开模板默认使用 `qwen`
 - `QWEN_API_KEY`
 - `QWEN_TEXT_MODEL`
 - `QWEN_VL_MODEL`
