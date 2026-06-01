@@ -125,6 +125,7 @@ None yet.
 | 2026-06-01 | 加固 Node/Python 协议契约、Python 依赖锁和外部能力自检 | `.planning/quick/20260601-runtime-contracts-hardening/SUMMARY.md` |
 | 2026-06-01 | 拆分 reference-authority 字幕逻辑，降低 ASR 巨模块耦合 | `.planning/quick/20260601-reference-authority-decoupling/SUMMARY.md` |
 | 2026-06-01 | 拆分 agent handler 纯工具层，降低请求编排模块耦合 | `.planning/quick/20260601-agent-handler-helper-decoupling/SUMMARY.md` |
+| 2026-06-01 | 批量拆分 agent、scheduler、dashboard 与 material state 纯逻辑模块 | `.planning/quick/20260601-batch-module-decoupling/SUMMARY.md` |
 
 ## Session Continuity
 
