@@ -248,6 +248,16 @@ docker compose up --build
 - [部署与运维](docs/SETUP_AND_OPERATIONS.md)
 - [运行产物边界](docs/RUNTIME_ARTIFACTS_AND_BOUNDARIES.md)
 
+## 协作
+
+| 角色 | 说明 |
+| --- | --- |
+| HQAmenghen | 项目设计、产品方向、核心流程实现与维护。 |
+| Claude | 辅助代码实现、问题排查、文档整理与方案讨论。 |
+| OpenAI Codex | 辅助代码实现、结构梳理、测试验证与发布准备。 |
+
+本项目包含 AI-assisted development 工作流。AI 工具用于提高实现、审查、重构和文档整理效率，最终设计取舍、代码合并和发布责任由项目维护者确认。
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=HQAmenghen/TrendCut-Studio&type=Date)](https://www.star-history.com/#HQAmenghen/TrendCut-Studio&Date)
