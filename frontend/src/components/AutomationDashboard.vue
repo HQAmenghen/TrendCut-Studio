@@ -869,6 +869,7 @@
         <DashboardSupportPanels
           :live-task-items="liveTaskItems"
           :publish-jobs="publishJobs"
+          :deleting-publish-job-ids="deletingPublishJobIds"
           :self-check-summary="selfCheckSummary"
           :self-check-label="selfCheckLabel"
           :self-check-highlights="selfCheckHighlights"
@@ -876,10 +877,12 @@
           :format-time="formatTime"
           :get-publish-job-label="getPublishJobLabel"
           :can-republish-job="canRepublishJob"
+          :can-delete-publish-job="canDeletePublishJob"
           @delete-task="deleteLiveTask"
           @resume-material-task="resumeMaterialTask"
           @retry-material-task="retryMaterialTask"
           @republish-job="republishJob"
+          @delete-publish-job="deletePublishJob"
         />
 
       </div>
@@ -1269,6 +1272,7 @@ const publishCreatingStatusMessage = computed(() => readValue(props.publishCente
 const publishLoading = computed(() => Boolean(readValue(props.publishCenter, 'loading', false)));
 const publishGeneratingDescription = computed(() => Boolean(readValue(props.publishCenter, 'generatingDescription', false)));
 const publishJobs = computed(() => readValue(props.publishCenter, 'jobs', []).filter((job) => !job.archived).slice(0, 4));
+const deletingPublishJobIds = ref([]);
 const publishLogs = computed(() => readValue(props.publishCenter, 'recentLogs', []));
 const publishErrorState = computed(() => readValue(props.publishCenter, 'errorState', { message: '', code: '', stage: '', hint: '', details: '' }));
 const publishEditor = computed(() => readValue(props.publishCenter, 'editor', {
@@ -1624,12 +1628,29 @@ const getTaskState = (task) => String(task?.runtime?.state || task?.status || ''
 const getJobTasks = (job) => Array.isArray(job?.platformTasks) ? job.platformTasks : [];
 const getRepublishTask = (job) => getJobTasks(job).find((task) => ['failed', 'cancelled'].includes(getTaskState(task))) || null;
 const canRepublishJob = (job) => Boolean(getRepublishTask(job) && readFunction(props.publishCenter, 'retryPlatform'));
+const canDeletePublishJob = (job) => {
+  const states = getJobTasks(job).map((task) => getTaskState(task)).filter(Boolean);
+  const jobState = String(job?.status || '').trim();
+  return ['failed', 'cancelled'].includes(jobState) || states.some((state) => ['failed', 'cancelled'].includes(state));
+};
 const republishJob = async (job) => {
   const task = getRepublishTask(job);
   const retry = readFunction(props.publishCenter, 'retryPlatform');
   if (!task || !retry) return;
   const mode = String(task?.runtime?.publishMode || task?.lastRunMode || (task.platform === 'x' ? 'publish' : 'publish')).trim();
   await retry(job, task.platform, mode);
+};
+const deletePublishJob = async (job) => {
+  const jobId = String(job?.id || '').trim();
+  const deleteJob = readFunction(props.publishCenter, 'deleteJob');
+  if (!jobId || !deleteJob || deletingPublishJobIds.value.includes(jobId)) return false;
+  deletingPublishJobIds.value = [...deletingPublishJobIds.value, jobId];
+  await new Promise((resolve) => window.setTimeout(resolve, 180));
+  try {
+    return await deleteJob(job);
+  } finally {
+    deletingPublishJobIds.value = deletingPublishJobIds.value.filter((id) => id !== jobId);
+  }
 };
 
 const canCheckAccount = (account) => ['wechatChannels', 'douyin', 'xiaohongshu'].includes(account?.platformKey);
@@ -2431,6 +2452,7 @@ const { liveTaskItems, createCleanupPayload, createResumePayload, createRetryPay
   unifiedDbTasks,
   verticalQueueStatus,
   publishJobs: computed(() => readValue(props.publishCenter, 'jobs', [])),
+  deletingPublishJobIds,
   platformDefs,
   formatTime,
   getPublishJobLabel
@@ -2511,6 +2533,8 @@ const deleteLiveTask = async (item) => {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || '删除任务记录失败');
       }
+    } else if (payload.action === 'delete-publish-job') {
+      await deletePublishJob({ id: payload.id });
     }
     const currentMaterialJobId = String(readValue(props.materialDriven, 'jobId', '') || '').trim();
     if (payload.action === 'delete-material-task' && currentMaterialJobId && currentMaterialJobId === String(payload.id)) {

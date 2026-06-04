@@ -43,6 +43,30 @@ function mergeSourceMeta(primary = {}, fallback = {}) {
 
 function createMaterialDrivenTaskRegistry(paths, options = {}) {
   const taskStore = options.taskStore || null;
+  const CACHE_TTL_MS = Math.max(100, Number(options.cacheTtlMs || 800) || 800);
+  let cacheRevision = 0;
+  const activeListCache = { revision: -1, createdAt: 0, value: null };
+  const latestCompletedCache = { revision: -1, createdAt: 0, value: undefined };
+
+  function invalidateCaches() {
+    cacheRevision += 1;
+    activeListCache.value = null;
+    latestCompletedCache.value = undefined;
+  }
+
+  function getCached(cache) {
+    if (cache.revision !== cacheRevision) return undefined;
+    if (Date.now() - cache.createdAt > CACHE_TTL_MS) return undefined;
+    return cache.value;
+  }
+
+  function setCached(cache, value) {
+    cache.revision = cacheRevision;
+    cache.createdAt = Date.now();
+    cache.value = value;
+    return value;
+  }
+
   function inferJobIdFromOutputDir(outputDir = '') {
     const value = String(outputDir || '').trim();
     const matched = value.match(/^material_(.+)$/);
@@ -198,6 +222,7 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
 
   function persistTaskStateSnapshot(task) {
     if (!task?.outputPath) return;
+    invalidateCaches();
     writeTaskState(task.outputPath, {
       useSmartClip: task.useSmartClip,
       useCache: task.useCache,
@@ -226,13 +251,15 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
     return recovered;
   }
 
-  function buildStatusPayload(task) {
+  function buildStatusPayload(task, options = {}) {
+    const includeDetails = options.includeDetails !== false;
+    const syncTaskStore = options.syncTaskStore !== false;
     const sourcePost = readJsonSafe(path.join(task.outputPath, 'source_post.json'), task.sourcePost || null);
-    const narration = readJsonSafe(path.join(task.outputPath, 'narration.json'), null);
-    const scriptUnits = readJsonSafe(path.join(task.outputPath, 'script_units.json'), null);
-    const editPlan = readJsonSafe(path.join(task.outputPath, 'edit_plan.json'), null);
-    const executionPlan = readJsonSafe(path.join(task.outputPath, 'execution_plan.json'), null);
-    const avatarSegments = readJsonSafe(path.join(task.outputPath, 'avatar_segments.json'), null);
+    const narration = includeDetails ? readJsonSafe(path.join(task.outputPath, 'narration.json'), null) : null;
+    const scriptUnits = includeDetails ? readJsonSafe(path.join(task.outputPath, 'script_units.json'), null) : null;
+    const editPlan = includeDetails ? readJsonSafe(path.join(task.outputPath, 'edit_plan.json'), null) : null;
+    const executionPlan = includeDetails ? readJsonSafe(path.join(task.outputPath, 'execution_plan.json'), null) : null;
+    const avatarSegments = includeDetails ? readJsonSafe(path.join(task.outputPath, 'avatar_segments.json'), null) : null;
     const sourceMeta = mergeSourceMeta(task.sourceMeta, sourcePost);
     const outputDir = task.outputDir || path.basename(task.outputPath || '');
     const finalVideoUrl = buildVersionedProjectFileUrl(
@@ -269,13 +296,15 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
         avatarSegments: avatarSegments || null
       }
     };
-    syncMaterialTask(taskStore, task, {
-      videoUrl: payload.task.videoUrl,
-      outputDir
-    });
-    const avatarState = payload.task.avatarRenderState || null;
-    if (avatarState?.provider || avatarState?.taskId) {
-      syncAvatarTask(taskStore, task, avatarState);
+    if (syncTaskStore) {
+      syncMaterialTask(taskStore, task, {
+        videoUrl: payload.task.videoUrl,
+        outputDir
+      });
+      const avatarState = payload.task.avatarRenderState || null;
+      if (avatarState?.provider || avatarState?.taskId) {
+        syncAvatarTask(taskStore, task, avatarState);
+      }
     }
     return payload;
   }
@@ -404,6 +433,7 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
   }
 
   function removeTask(jobId, options = {}) {
+    invalidateCaches();
     const normalizedJobId = String(jobId || '').trim();
     if (!normalizedJobId) {
       const error = new Error('任务不存在');
@@ -531,9 +561,15 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
   }
 
   function listActiveStatusPayloads() {
+    const cached = getCached(activeListCache);
+    if (cached !== undefined) return cached;
+
     const tasksByGroup = new Map();
     for (const task of activeTasks.values()) {
-      const payload = buildStatusPayload(task).task;
+      const payload = buildStatusPayload(task, {
+        includeDetails: false,
+        syncTaskStore: false
+      }).task;
       putStatusPayload(tasksByGroup, payload);
     }
 
@@ -549,7 +585,10 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
       const recovered = buildRecoveredTaskFromDir(entry.name, { includeRecoveryLog: false });
       if (!recovered) continue;
       if (!isActiveRunningHubAvatarState(recovered.avatarRenderState)) continue;
-      const payload = buildStatusPayload(recovered).task;
+      const payload = buildStatusPayload(recovered, {
+        includeDetails: false,
+        syncTaskStore: false
+      }).task;
       putStatusPayload(tasksByGroup, payload);
     }
 
@@ -567,11 +606,17 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
       }
     }
 
-    return Array.from(tasksByGroup.values())
-      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return setCached(
+      activeListCache,
+      Array.from(tasksByGroup.values())
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+    );
   }
 
   function getLatestCompletedStatusPayload() {
+    const cached = getCached(latestCompletedCache);
+    if (cached !== undefined) return cached;
+
     let entries = [];
     try {
       entries = fs.readdirSync(paths.PROJECTS_DIR, { withFileTypes: true });
@@ -589,7 +634,9 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
       }
     }
 
-    return latest ? buildStatusPayload(latest).task : null;
+    return setCached(latestCompletedCache, latest
+      ? buildStatusPayload(latest, { includeDetails: false, syncTaskStore: false }).task
+      : null);
   }
 
   function attachProgressClient(jobId, req, res) {
@@ -637,6 +684,7 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
   }
 
   return {
+    invalidateCaches,
     persistTaskStateSnapshot,
     resolveTask,
     buildStatusPayload,

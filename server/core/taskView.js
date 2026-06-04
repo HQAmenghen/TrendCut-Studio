@@ -124,19 +124,50 @@ function xaiTaskRecords(xaiService) {
   }];
 }
 
+function createTimedCache(ttlMs = 800) {
+  let entry = null;
+  return {
+    get(key) {
+      if (!entry) return null;
+      if (entry.key !== key) return null;
+      if (Date.now() - entry.createdAt > ttlMs) return null;
+      return entry.value;
+    },
+    set(key, value) {
+      entry = { key, value, createdAt: Date.now() };
+    },
+    clear() {
+      entry = null;
+    }
+  };
+}
+
 function createUnifiedTaskView({ taskStore, publishStore, xaiService } = {}) {
+  const cache = createTimedCache();
+
   function listTasks(options = {}) {
     const limit = Math.max(1, Math.min(300, Number(options.limit || 120) || 120));
-    return [
+    const cacheKey = [
+      limit,
+      taskStore?.revision || 0,
+      publishStore?.getRevision?.() || 0,
+      xaiService?.getRevision?.() || ''
+    ].join(':');
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+
+    const tasks = [
       ...taskStoreRecords(taskStore, limit),
       ...publishTaskRecords(publishStore, limit),
       ...xaiTaskRecords(xaiService)
     ]
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
       .slice(0, limit);
+    cache.set(cacheKey, tasks);
+    return tasks;
   }
 
-  return { listTasks };
+  return { listTasks, invalidate: cache.clear };
 }
 
 module.exports = {

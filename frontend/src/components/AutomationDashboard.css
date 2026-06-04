@@ -2313,6 +2313,19 @@ h3 {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.plan-row.deleting {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line-soft));
+  background: color-mix(in srgb, var(--danger) 8%, var(--glass-panel));
+  opacity: 0.72;
+  transform: translateX(4px) scale(0.992);
+  animation: row-delete-feedback 0.56s ease both;
+}
+
+.plan-row.deleting strong,
+.plan-row.deleting span {
+  color: color-mix(in srgb, var(--muted) 82%, var(--danger));
+}
+
 .support-row-actions,
 .account-row-actions,
 .account-config-picks,
@@ -2589,6 +2602,17 @@ select.account-config-input {
     opacity: 1;
     transform: translateY(0);
     filter: blur(0);
+  }
+}
+
+@keyframes row-delete-feedback {
+  0% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  100% {
+    opacity: 0.72;
+    transform: translateX(4px) scale(0.992);
   }
 }
 

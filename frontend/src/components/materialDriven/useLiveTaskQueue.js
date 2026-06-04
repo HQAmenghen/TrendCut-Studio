@@ -364,15 +364,20 @@ export function useLiveTaskQueue(sources) {
       const nextTask = tasks.find((task) => getTaskState(task) === chosenState) || tasks[0] || null;
       const progressValue = Number(nextTask?.runtime?.progress ?? 0);
       const scheduledAt = job.scheduledAt || '';
+      const jobId = String(job.id || '');
+      const publishJobDeleting = readRef(sources.deletingPublishJobIds, []).includes(jobId);
       items.push({
-        id: `publish-${job.id}-${nextTask?.platform || 'job'}`,
+        id: `publish-${jobId}-${nextTask?.platform || 'job'}`,
         type: '发布',
-        title: job.publishData?.title || job.asset?.compactLabel || job.asset?.label || job.id,
+        title: job.publishData?.title || job.asset?.compactLabel || job.asset?.label || jobId,
         statusLabel: sources.getPublishJobLabel(job),
         detail: getPublishTaskDetail(job, nextTask, chosenState, platformDefs),
         progress: activeState && Number.isFinite(progressValue) ? Math.max(0, Math.min(100, progressValue)) : null,
         meta: scheduledAt ? sources.formatTime(scheduledAt) : formatRelativeTaskTime(job.updatedAt || job.createdAt, sources.formatTime),
         state: chosenState === 'failed' ? 'danger' : (activeState ? 'running' : 'waiting'),
+        actionBusy: publishJobDeleting,
+        cleanupAction: ['failed', 'cancelled'].includes(chosenState) ? 'delete-publish-job' : '',
+        cleanupId: ['failed', 'cancelled'].includes(chosenState) ? jobId : '',
         order: chosenState === 'failed' ? 2 : (activeState ? 25 : 60)
       });
     }

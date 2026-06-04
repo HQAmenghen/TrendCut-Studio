@@ -1,11 +1,33 @@
 const Database = require('better-sqlite3');
 
 class TaskStore {
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('temp_store = MEMORY');
+    this.db.pragma('busy_timeout = 5000');
+    this.onChange = typeof options.onChange === 'function' ? options.onChange : null;
+    this.revision = 0;
+    this.statements = new Map();
     this.initSchema();
     this.memoryCache = new Map(); // 活跃任务缓存
+  }
+
+  prepare(key, sql) {
+    if (!this.statements.has(key)) {
+      this.statements.set(key, this.db.prepare(sql));
+    }
+    return this.statements.get(key);
+  }
+
+  notifyChange() {
+    this.revision += 1;
+    if (this.onChange) {
+      try {
+        this.onChange(this.revision);
+      } catch (_err) {}
+    }
   }
 
   initSchema() {
@@ -28,6 +50,8 @@ class TaskStore {
       CREATE INDEX IF NOT EXISTS idx_tasks_type_status ON tasks(type, status);
       CREATE INDEX IF NOT EXISTS idx_tasks_updatedAt ON tasks(updatedAt DESC);
       CREATE INDEX IF NOT EXISTS idx_tasks_type_updatedAt ON tasks(type, updatedAt DESC);
+      CREATE INDEX IF NOT EXISTS idx_tasks_status_createdAt ON tasks(status, createdAt ASC);
+      CREATE INDEX IF NOT EXISTS idx_tasks_status_updatedAt ON tasks(status, updatedAt DESC);
     `);
     this.ensureColumn('tasks', 'taskKey', 'TEXT');
     this.db.exec(`
@@ -36,7 +60,7 @@ class TaskStore {
   }
 
   ensureColumn(tableName, columnName, definition) {
-    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+    const columns = this.prepare(`pragma:${tableName}:columns`, `PRAGMA table_info(${tableName})`).all();
     if (columns.some((column) => column.name === columnName)) return;
     this.db.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
   }
@@ -68,7 +92,7 @@ class TaskStore {
       durationSeconds: options.durationSeconds || null
     };
 
-    this.db.prepare(`
+    this.prepare('createTask', `
       INSERT INTO tasks (id, taskKey, type, status, progress, message, logs, metadata, createdAt, updatedAt, startedAt, completedAt, durationSeconds)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -78,6 +102,7 @@ class TaskStore {
     );
 
     this.memoryCache.set(task.id, task);
+    this.notifyChange();
     return task;
   }
 
@@ -121,7 +146,7 @@ class TaskStore {
       ));
     }
 
-    this.db.prepare(`
+    this.prepare('updateTask', `
       UPDATE tasks SET taskKey = ?, status = ?, progress = ?, message = ?, logs = ?,
                        metadata = ?, updatedAt = ?, startedAt = ?, completedAt = ?, durationSeconds = ?
       WHERE id = ?
@@ -133,6 +158,7 @@ class TaskStore {
     );
 
     this.memoryCache.set(id, task);
+    this.notifyChange();
     return task;
   }
 
@@ -140,7 +166,7 @@ class TaskStore {
     const cached = this.memoryCache.get(id);
     if (cached) return cached;
 
-    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+    const row = this.prepare('getTaskById', 'SELECT * FROM tasks WHERE id = ?').get(id);
     if (!row) return null;
 
     const task = this.rowToTask(row);
@@ -167,7 +193,8 @@ class TaskStore {
     const statusClause = statuses.length
       ? ` AND status IN (${statuses.map(() => '?').join(', ')})`
       : '';
-    const row = this.db.prepare(`
+    const statementKey = statuses.length ? `findTaskByKey:${statuses.length}` : 'findTaskByKey:any';
+    const row = this.prepare(statementKey, `
       SELECT * FROM tasks WHERE type = ? AND taskKey = ?${statusClause} ORDER BY updatedAt DESC LIMIT 1
     `).get(type, normalizedKey, ...statuses);
     const task = this.rowToTask(row);
@@ -178,7 +205,7 @@ class TaskStore {
   }
 
   listTasks(type, limit = 50) {
-    const rows = this.db.prepare(`
+    const rows = this.prepare('listTasksByType', `
       SELECT * FROM tasks WHERE type = ? ORDER BY updatedAt DESC LIMIT ?
     `).all(type, limit);
 
@@ -199,7 +226,8 @@ class TaskStore {
       params = [];
     }
 
-    const rows = this.db.prepare(query).all(...params);
+    const statementKey = type ? 'listActiveTasksByType' : 'listActiveTasksAll';
+    const rows = this.prepare(statementKey, query).all(...params);
 
     return rows.map(row => this.rowToTask(row));
   }
@@ -216,8 +244,9 @@ class TaskStore {
   }
 
   deleteTask(id) {
-    this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+    this.prepare('deleteTaskById', 'DELETE FROM tasks WHERE id = ?').run(id);
     this.memoryCache.delete(id);
+    this.notifyChange();
   }
 
   close() {

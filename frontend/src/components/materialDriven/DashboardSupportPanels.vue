@@ -19,7 +19,12 @@
 
         <div class="support-body">
           <div class="plan-list">
-            <div v-for="job in publishJobs" :key="job.id" class="plan-row">
+            <div
+              v-for="job in publishJobs"
+              :key="job.id"
+              class="plan-row"
+              :class="{ deleting: isDeletingPublishJob(job) }"
+            >
               <div>
                 <strong>{{ job.asset?.label || job.asset?.compactLabel || job.title || job.id }}</strong>
                 <span>{{ formatTime(job.scheduledAt) }}</span>
@@ -33,6 +38,19 @@
                   @click="emit('republish-job', job)"
                 >
                   重新发布
+                </button>
+                <button
+                  v-if="canDeletePublishJob(job)"
+                  type="button"
+                  class="mini-button icon-mini danger-mini"
+                  :class="{ loading: isDeletingPublishJob(job) }"
+                  :title="isDeletingPublishJob(job) ? '正在删除发布任务' : '删除发布任务'"
+                  aria-label="删除发布任务"
+                  :disabled="isDeletingPublishJob(job)"
+                  @click="emit('delete-publish-job', job)"
+                >
+                  <RefreshCw v-if="isDeletingPublishJob(job)" class="icon-sm spin-icon" aria-hidden="true" />
+                  <Trash2 v-else class="icon-sm" aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -94,22 +112,27 @@
 </template>
 
 <script setup>
+import { RefreshCw, Trash2 } from 'lucide-vue-next';
 import GlassPanel from '../GlassPanel.vue';
 import LiveTaskQueuePanel from './LiveTaskQueuePanel.vue';
 
-defineProps({
+const props = defineProps({
   liveTaskItems: { type: Array, default: () => [] },
   publishJobs: { type: Array, default: () => [] },
+  deletingPublishJobIds: { type: Array, default: () => [] },
   selfCheckSummary: { type: Object, default: () => ({}) },
   selfCheckLabel: { type: String, default: '' },
   selfCheckHighlights: { type: Array, default: () => [] },
   visibleLogs: { type: Array, default: () => [] },
   formatTime: { type: Function, required: true },
   getPublishJobLabel: { type: Function, required: true },
-  canRepublishJob: { type: Function, required: true }
+  canRepublishJob: { type: Function, required: true },
+  canDeletePublishJob: { type: Function, required: true }
 });
 
-const emit = defineEmits(['delete-task', 'resume-material-task', 'retry-material-task', 'republish-job']);
+const emit = defineEmits(['delete-task', 'resume-material-task', 'retry-material-task', 'republish-job', 'delete-publish-job']);
+
+const isDeletingPublishJob = (job) => props.deletingPublishJobIds.includes(String(job?.id || ''));
 </script>
 
 <style scoped src="../AutomationDashboard.css"></style>

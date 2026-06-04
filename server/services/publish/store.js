@@ -22,6 +22,11 @@ function createPublishStore(deps) {
     buildPublishTask
   } = deps;
 
+  let revision = 0;
+  function bumpRevision() {
+    revision += 1;
+  }
+
   // 创建数据库
   const { db } = createPublishDatabase(publishJobsPath, readJsonIfExists);
 
@@ -271,6 +276,7 @@ function createPublishStore(deps) {
         }
       });
       replaceAll(payload.jobs || []);
+      bumpRevision();
     } catch (err) {
       console.error('SQLite write error:', err);
     }
@@ -291,6 +297,7 @@ function createPublishStore(deps) {
     db.prepare('UPDATE publish_jobs_v1 SET data = ?, updatedAt = ? WHERE id = ?').run(
       JSON.stringify(next), next.updatedAt, jobId
     );
+    bumpRevision();
     return next;
   }
 
@@ -508,7 +515,8 @@ function createPublishStore(deps) {
     getDueScheduledJobs,
     getDueArchiveJobs,
     sanitizePublishJobPayload,
-    getJobTerminalStatus
+    getJobTerminalStatus,
+    getRevision: () => revision
   };
 }
 

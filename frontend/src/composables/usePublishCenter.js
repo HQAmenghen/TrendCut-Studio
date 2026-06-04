@@ -1176,13 +1176,20 @@ export function usePublishCenter() {
   };
 
   const deleteJob = async (job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId) return false;
     clearErrorState();
-    appendLog(`删除发布任务：${job.id}`);
+    appendLog(`删除发布任务：${jobId}`);
+    const previousJobs = jobs.value;
+    jobs.value = jobs.value.filter((item) => String(item.id || '') !== jobId);
     try {
-      const res = await axios.delete(`/api/publish/jobs/${job.id}`);
+      const res = await axios.delete(`/api/publish/jobs/${jobId}`);
       jobs.value = res.data?.jobs || jobs.value;
+      return true;
     } catch (err) {
+      jobs.value = previousJobs;
       setErrorState(normalizeApiError(err, '删除发布任务失败'));
+      return false;
     }
   };
 

@@ -56,11 +56,13 @@
               v-if="item.cleanupAction"
               type="button"
               class="mini-button task-action-button task-delete-button"
-              title="删除任务"
+              :title="item.actionBusy ? '正在删除任务' : '删除任务'"
               aria-label="删除任务"
+              :disabled="item.actionBusy"
               @click="emit('delete-task', item)"
             >
-              <Trash2 class="icon-sm" aria-hidden="true" />
+              <RefreshCw v-if="item.actionBusy" class="icon-sm spin-icon" aria-hidden="true" />
+              <Trash2 v-else class="icon-sm" aria-hidden="true" />
             </button>
             <span class="task-queue-meta">{{ item.meta }}</span>
           </div>
