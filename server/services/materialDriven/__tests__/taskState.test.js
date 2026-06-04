@@ -53,8 +53,6 @@ describe('material-driven task state persistence', () => {
         runningHubOutputNodeId: '151',
         poseNodeId: '301',
         poseFieldName: 'pose_sequence',
-        avatarMotionEnabled: true,
-        avatarMotionRequired: false,
         avatarActionPresetDir: 'C:/avatar_actions',
         trimSeconds: 1.5,
         maxDuration: 42,

@@ -57,7 +57,6 @@ async function ensureSpeechAlignment({
   outputDir,
   speechAudioPath,
   narrationTextPath,
-  fileUrl,
   config = {},
   runPython = runPythonScript
 } = {}) {
@@ -102,10 +101,6 @@ async function ensureSpeechAlignment({
     '--meta-output',
     metaPath
   ];
-  if (fileUrl) {
-    args.push('--file-url', fileUrl);
-  }
-
   const payload = await runPython(SPEECH_ALIGNMENT_SCRIPT, args, {
     cwd: outputDir,
     timeout: Number(process.env.SPEECH_ALIGNMENT_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)

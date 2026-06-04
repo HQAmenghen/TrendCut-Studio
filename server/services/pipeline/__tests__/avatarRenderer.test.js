@@ -33,7 +33,8 @@ describe('avatar render provider selection', () => {
         runningHubImageNodeId: '180'
       },
       audioPath: 'C:/tmp/avatar.wav',
-      imagePath: 'C:/tmp/avatar.png'
+      imagePath: 'C:/tmp/avatar.png',
+      posePath: 'C:/tmp/avatar_motion_source.mp4'
     })).resolves.toMatchObject({
       provider: 'runninghub',
       taskId: 'task-1',
@@ -43,7 +44,8 @@ describe('avatar render provider selection', () => {
     expect(nativeClient.render).not.toHaveBeenCalled();
     expect(runningHubClient.render).toHaveBeenCalledWith(expect.objectContaining({
       audioPath: 'C:/tmp/avatar.wav',
-      imagePath: 'C:/tmp/avatar.png'
+      imagePath: 'C:/tmp/avatar.png',
+      posePath: 'C:/tmp/avatar_motion_source.mp4'
     }));
   });
 
@@ -66,12 +68,14 @@ describe('avatar render provider selection', () => {
       },
       speechAudioPath: 'C:/tmp/avatar_qwen3tts.wav',
       referenceAudioPath: 'C:/tmp/reference_voice.wav',
-      imagePath: 'C:/tmp/avatar.png'
+      imagePath: 'C:/tmp/avatar.png',
+      posePath: 'C:/tmp/avatar_motion_source.mp4'
     });
 
     expect(runningHubClient.render).toHaveBeenCalledWith(expect.objectContaining({
       audioPath: 'C:/tmp/avatar_qwen3tts.wav',
-      referenceAudioPath: 'C:/tmp/reference_voice.wav'
+      referenceAudioPath: 'C:/tmp/reference_voice.wav',
+      posePath: 'C:/tmp/avatar_motion_source.mp4'
     }));
   });
 
@@ -104,6 +108,26 @@ describe('avatar render provider selection', () => {
     }));
   });
 
+  test('requires a motion source video for default RunningHub avatar renders', async () => {
+    const runningHubClient = {
+      render: jest.fn()
+    };
+    const renderer = createAvatarRenderer({
+      nativeClient: { render: jest.fn() },
+      runningHubClient
+    });
+
+    await expect(renderer.render({
+      avatarConfig: {
+        renderProvider: 'runninghub'
+      },
+      speechAudioPath: 'C:/tmp/avatar_qwen3tts.wav',
+      imagePath: 'C:/tmp/avatar.png'
+    })).rejects.toThrow('动作参考视频');
+
+    expect(runningHubClient.render).not.toHaveBeenCalled();
+  });
+
   test('does not retry a RunningHub render after a task id has already been submitted', async () => {
     const submittedError = Object.assign(new Error('Request failed with status code 504'), {
       code: 'RUNNINGHUB_TASK_SUBMITTED_POLLING_FAILED',
@@ -125,7 +149,8 @@ describe('avatar render provider selection', () => {
         renderProvider: 'runninghub'
       },
       speechAudioPath: 'C:/tmp/avatar_qwen3tts.wav',
-      imagePath: 'C:/tmp/avatar.png'
+      imagePath: 'C:/tmp/avatar.png',
+      posePath: 'C:/tmp/avatar_motion_source.mp4'
     })).rejects.toThrow('504');
 
     expect(runningHubClient.render).toHaveBeenCalledTimes(1);

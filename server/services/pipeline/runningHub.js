@@ -201,6 +201,18 @@ function createAuthHeaders(apiKey, extraHeaders = {}) {
   };
 }
 
+function hasRunningHubPoseInput(options = {}) {
+  const poseNodeId = String(options.poseNodeId || RUNNINGHUB_INFINITETALK_3INPUT.poseNodeId).trim();
+  const poseFieldName = String(options.poseFieldName || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName).trim();
+  if (String(options.remotePoseName || '').trim()) return true;
+  const nodeInfoList = Array.isArray(options.nodeInfoList) ? options.nodeInfoList : [];
+  return nodeInfoList.some((item) => {
+    const nodeMatches = !poseNodeId || String(item?.nodeId || '').trim() === poseNodeId;
+    const fieldMatches = !poseFieldName || String(item?.fieldName || '').trim() === poseFieldName;
+    return nodeMatches && fieldMatches && String(item?.fieldValue || '').trim();
+  });
+}
+
 function createRunningHubClient(deps = {}) {
   const axiosClient = deps.axiosClient || axios;
   const fsImpl = deps.fsImpl || fs;
@@ -319,6 +331,9 @@ function createRunningHubClient(deps = {}) {
   async function renderExternalAudio(options = {}) {
     const resumeTaskId = String(options.resumeTaskId || options.taskId || '').trim();
     if (resumeTaskId) {
+      if (!hasRunningHubPoseInput(options)) {
+        throw new Error('RunningHub 数字人合成缺少动作参考视频节点输入，已停止恢复任务');
+      }
       const output = await waitForOutputs({
         ...options,
         taskId: resumeTaskId
@@ -340,9 +355,13 @@ function createRunningHubClient(deps = {}) {
     const audioFileName = await uploadResource(options.audioPath, options);
     const imageFileName = await uploadResource(options.imagePath, options);
     const poseNodeId = String(options.poseNodeId || RUNNINGHUB_INFINITETALK_3INPUT.poseNodeId).trim();
-    const poseFileName = options.posePath && poseNodeId
-      ? await uploadResource(options.posePath, options)
-      : '';
+    if (!options.posePath || !poseNodeId) {
+      throw new Error('RunningHub 数字人合成缺少动作参考视频，已停止提交任务');
+    }
+    const poseFileName = await uploadResource(options.posePath, options);
+    if (!poseFileName) {
+      throw new Error('RunningHub 数字人合成动作参考视频上传失败，已停止提交任务');
+    }
     const nodeInfoList = [
       {
         nodeId: String(options.audioNodeId || RUNNINGHUB_INFINITETALK_3INPUT.audioNodeId),
@@ -355,13 +374,11 @@ function createRunningHubClient(deps = {}) {
         fieldValue: imageFileName
       }
     ];
-    if (poseFileName) {
-      nodeInfoList.push({
-        nodeId: poseNodeId,
-        fieldName: String(options.poseFieldName || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName),
-        fieldValue: poseFileName
-      });
-    }
+    nodeInfoList.push({
+      nodeId: poseNodeId,
+      fieldName: String(options.poseFieldName || RUNNINGHUB_INFINITETALK_3INPUT.poseFieldName),
+      fieldValue: poseFileName
+    });
     const submission = await submitWorkflow({
       ...options,
       nodeInfoList

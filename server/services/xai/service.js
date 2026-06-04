@@ -396,10 +396,95 @@ function createXaiService(deps) {
     }
   }
 
+  async function importUrl(req, res) {
+    const postUrl = String(req.body?.url || req.body?.postUrl || req.body?.post_url || '').trim();
+    if (!postUrl) {
+      return sendError(res, {
+        status: 400,
+        code: 'XAI_IMPORT_URL_MISSING',
+        stage: 'xai.import_url',
+        error: '请输入 X 推文链接'
+      });
+    }
+    if (runningPartitionId) {
+      return sendError(res, {
+        status: 409,
+        code: 'XAI_ALREADY_RUNNING',
+        stage: 'xai.import_url',
+        error: '榜单任务正在运行，请稍后再导入链接'
+      });
+    }
+    if (!fs.existsSync(scriptPath)) {
+      return sendError(res, {
+        status: 500,
+        code: 'XAI_SCRIPT_MISSING',
+        stage: 'xai.import_url',
+        error: 'run_xai_top10.py 不存在，无法导入 X 链接'
+      });
+    }
+
+    const { partition } = resolvePartition(req.body?.partitionId);
+    const paths = getPathsForPartition(partition.id);
+    const stamp = Date.now();
+    const manualResultPath = path.join(path.dirname(paths.resultPath), `manual_import.${partition.id}.${stamp}.json`);
+    const manualPartialPath = path.join(path.dirname(paths.partialPath), `manual_import.${partition.id}.partial.json`);
+    const manualLogPath = path.join(path.dirname(paths.logPath), `manual_import.${partition.id}.log`);
+    const manualErrorLogPath = path.join(path.dirname(paths.errorLogPath), `manual_import.${partition.id}.error.log`);
+
+    try {
+      const resultPayload = await runPythonScript(scriptPath, [
+        '--import-url',
+        postUrl,
+        '--partition-id',
+        partition.id,
+        '--result',
+        manualResultPath,
+        '--partial',
+        manualPartialPath,
+        '--log',
+        manualLogPath,
+        '--error-log',
+        manualErrorLogPath
+      ], {
+        cwd: scriptCwd,
+        timeout: 180000
+      });
+      const stdout = String(resultPayload.stdout || '').trim();
+      const imported = stdout ? JSON.parse(stdout) : readJsonIfExists(manualResultPath, null);
+      const item = Array.isArray(imported?.items) ? imported.items[0] : null;
+      if (!item?.video_url) {
+        return sendError(res, {
+          status: 422,
+          code: 'XAI_IMPORT_VIDEO_NOT_FOUND',
+          stage: 'xai.import_url',
+          error: '该 X 链接未识别到可制作的视频素材',
+          details: postUrl
+        });
+      }
+      return res.json({
+        success: true,
+        item,
+        result: imported,
+        logPath: manualLogPath,
+        errorLogPath: manualErrorLogPath
+      });
+    } catch (error) {
+      return sendError(res, {
+        status: 500,
+        code: error.code || 'XAI_IMPORT_URL_FAILED',
+        stage: error.stage || 'xai.import_url',
+        error: '导入 X 链接失败',
+        details: error.details || error.message,
+        hint: error.hint || '请确认链接是公开 X 推文，且包含可访问的视频素材'
+      });
+    }
+  }
+
   return {
     ensureTranslatedResult,
     getStatus,
     getPathsForPartition,
+    importUrl,
     readConfig,
     run,
     writeConfig

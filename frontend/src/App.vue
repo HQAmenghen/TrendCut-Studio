@@ -65,6 +65,9 @@ const xaiTop10 = useXaiTop10();
 const standalone = useStandalone();
 const materialDriven = useMaterialDriven();
 const autoVerticalInFlightKey = ref('');
+const autoVerticalPendingTasks = ref([]);
+const autoVerticalProcessedKeys = new Set();
+let autoVerticalDrainPromise = null;
 const standaloneAssetTypes = new Set(['standalone_runtime', 'standalone']);
 
 const engineStatusLabel = computed(() => {
@@ -133,38 +136,64 @@ const normalizeTaskDirReference = (value) => {
   return parts[parts.length - 1] || normalized;
 };
 
-const getAutoVerticalKey = () => {
-  const taskDir = getCurrentMaterialTaskDir();
-  const videoPath = normalizeUrlPath(materialDriven.finalVideoUrl.value);
+const createAutoVerticalContext = (task = null) => {
+  const sourcePost = task?.sourcePost && typeof task.sourcePost === 'object' ? task.sourcePost : {};
+  const narration = task?.narration && typeof task.narration === 'object' ? task.narration : {};
+  return {
+    taskDir: normalizeTaskDirReference(task?.outputPath || task?.outputDir || materialDriven.outputPath.value),
+    finalVideoUrl: String(task?.videoUrl || materialDriven.finalVideoUrl.value || '').trim(),
+    narrationFullText: String(narration.full_text || narration.fullText || materialDriven.narrationFullText.value || '').trim(),
+    sourceTitle: String(sourcePost.title || materialDriven.materialSourceTitle.value || '').trim(),
+    sourceBody: String(sourcePost.body || sourcePost.summary || materialDriven.materialSourceBody.value || '').trim()
+  };
+};
+
+const getAutoVerticalKey = (context = createAutoVerticalContext()) => {
+  const taskDir = context.taskDir || '';
+  const videoPath = normalizeUrlPath(context.finalVideoUrl);
   return taskDir && videoPath ? `${taskDir}|${videoPath}` : '';
 };
 
 const getCurrentMaterialTaskDir = () => normalizeTaskDirReference(materialDriven.outputPath.value);
 
-const isStandaloneForCurrentMaterial = () => {
-  const taskDir = getCurrentMaterialTaskDir();
-  return Boolean(
-    taskDir &&
-    normalizeTaskDirReference(standalone.lastSourceTaskDir.value) === taskDir &&
+const hasStandaloneForMaterial = (taskDir) => {
+  const normalizedTaskDir = normalizeTaskDirReference(taskDir);
+  if (!normalizedTaskDir) return false;
+  if (
+    normalizeTaskDirReference(standalone.lastSourceTaskDir.value) === normalizedTaskDir &&
     standalone.finalVideoUrl.value
-  );
+  ) {
+    return true;
+  }
+  return standalone.standaloneTasks.value.some((task) => {
+    const status = String(task?.status || '').trim();
+    const sourceTaskDir = normalizeTaskDirReference(task?.sourceTaskDir || task?.metadata?.sourceTaskDir || '');
+    return sourceTaskDir === normalizedTaskDir && ['queued', 'running', 'completed'].includes(status);
+  });
 };
+
+const isStandaloneForCurrentMaterial = () => hasStandaloneForMaterial(getCurrentMaterialTaskDir());
 
 const refreshPublishAssets = async () => {
   await publishCenter.refresh(true, { silent: true, preserveEditor: true });
 };
 
-const findVerticalAssetForCurrentMaterial = () => {
-  const taskDir = getCurrentMaterialTaskDir();
-  if (!taskDir) return null;
+const findVerticalAssetForMaterial = (taskDir) => {
+  const normalizedTaskDir = normalizeTaskDirReference(taskDir);
+  if (!normalizedTaskDir) return null;
   return publishCenter.assets.value.find((asset) =>
     standaloneAssetTypes.has(asset.sourceType) &&
-    normalizeTaskDirReference(asset.metadata?.sourceTaskDir) === taskDir
+    normalizeTaskDirReference(asset.metadata?.sourceTaskDir) === normalizedTaskDir
   ) || null;
 };
 
-const restoreStandaloneFromAsset = (asset) => {
+const findVerticalAssetForCurrentMaterial = () => {
   const taskDir = getCurrentMaterialTaskDir();
+  if (!taskDir) return null;
+  return findVerticalAssetForMaterial(taskDir);
+};
+
+const restoreStandaloneFromAsset = (asset, taskDir = getCurrentMaterialTaskDir()) => {
   if (!asset || !taskDir) return;
   standalone.finalVideoUrl.value = asset.url || standalone.finalVideoUrl.value;
   standalone.lastSourceTaskDir.value = taskDir;
@@ -240,13 +269,14 @@ const normalizeSubtitlesPayload = (payload) => {
   }).filter(Boolean);
 };
 
-const handleMakeVertical = async ({ automatic = false } = {}) => {
-  if (!materialDriven.finalVideoUrl.value || standalone.loading.value) return false;
-  if (automatic && !getCurrentMaterialTaskDir()) return false;
-  const verticalKey = getAutoVerticalKey();
+const handleMakeVertical = async ({ automatic = false, task = null } = {}) => {
+  const context = createAutoVerticalContext(task);
+  if (!context.finalVideoUrl || standalone.loading.value) return false;
+  if (automatic && !context.taskDir) return false;
+  const verticalKey = getAutoVerticalKey(context);
   if (automatic && (
     autoVerticalInFlightKey.value === verticalKey ||
-    isStandaloneForCurrentMaterial()
+    hasStandaloneForMaterial(context.taskDir)
   )) {
     return false;
   }
@@ -255,14 +285,14 @@ const handleMakeVertical = async ({ automatic = false } = {}) => {
   try {
     if (automatic) {
       await refreshPublishAssets();
-      const existingVerticalAsset = findVerticalAssetForCurrentMaterial();
+      const existingVerticalAsset = findVerticalAssetForMaterial(context.taskDir);
       if (existingVerticalAsset) {
-        restoreStandaloneFromAsset(existingVerticalAsset);
+        restoreStandaloneFromAsset(existingVerticalAsset, context.taskDir);
         return false;
       }
     }
 
-    const projectDir = getCurrentMaterialTaskDir();
+    const projectDir = context.taskDir;
     if (projectDir) {
       standalone.selectMaterialTask(projectDir);
       const candidates = [
@@ -282,20 +312,20 @@ const handleMakeVertical = async ({ automatic = false } = {}) => {
         }
       }
     } else {
-      const response = await fetch(materialDriven.finalVideoUrl.value);
+      const response = await fetch(context.finalVideoUrl);
       if (!response.ok) throw new Error('读取素材成片失败');
       const blob = await response.blob();
       const file = new File([blob], 'output_final.mp4', { type: 'video/mp4' });
       standalone.handleFile('video', file);
     }
 
-    if (materialDriven.narrationFullText.value) {
-      standalone.form.value.script = materialDriven.narrationFullText.value;
+    if (context.narrationFullText) {
+      standalone.form.value.script = context.narrationFullText;
     }
-    if (materialDriven.materialSourceTitle.value || materialDriven.materialSourceBody.value) {
+    if (context.sourceTitle || context.sourceBody) {
       standalone.form.value.context = JSON.stringify({
-        title: materialDriven.materialSourceTitle.value,
-        body: materialDriven.materialSourceBody.value
+        title: context.sourceTitle,
+        body: context.sourceBody
       });
     }
     await standalone.submit();
@@ -321,6 +351,57 @@ const handleMakeVertical = async ({ automatic = false } = {}) => {
     }
   }
   return false;
+};
+
+const queueAutoVerticalTask = (task) => {
+  if (!task || String(task.status || '').trim() !== 'completed') return;
+  const context = createAutoVerticalContext(task);
+  const verticalKey = getAutoVerticalKey(context);
+  if (!verticalKey || !context.taskDir || !context.finalVideoUrl) return;
+  if (
+    autoVerticalProcessedKeys.has(verticalKey) ||
+    autoVerticalInFlightKey.value === verticalKey ||
+    autoVerticalPendingTasks.value.some((item) => getAutoVerticalKey(createAutoVerticalContext(item)) === verticalKey)
+  ) {
+    return;
+  }
+  if (hasStandaloneForMaterial(context.taskDir)) {
+    autoVerticalProcessedKeys.add(verticalKey);
+    return;
+  }
+  autoVerticalPendingTasks.value = [...autoVerticalPendingTasks.value, task];
+  drainAutoVerticalQueue();
+};
+
+const drainAutoVerticalQueue = () => {
+  if (autoVerticalDrainPromise) return autoVerticalDrainPromise;
+  autoVerticalDrainPromise = (async () => {
+    while (autoVerticalPendingTasks.value.length > 0) {
+      if (standalone.loading.value) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        continue;
+      }
+      const task = autoVerticalPendingTasks.value[0];
+      autoVerticalPendingTasks.value = autoVerticalPendingTasks.value.slice(1);
+      const context = createAutoVerticalContext(task);
+      const verticalKey = getAutoVerticalKey(context);
+      if (!verticalKey || autoVerticalProcessedKeys.has(verticalKey)) continue;
+      if (hasStandaloneForMaterial(context.taskDir)) {
+        autoVerticalProcessedKeys.add(verticalKey);
+        continue;
+      }
+      autoVerticalProcessedKeys.add(verticalKey);
+      await handleMakeVertical({ automatic: true, task });
+      await Promise.allSettled([
+        standalone.loadQueue(true),
+        standalone.loadMaterialTasks(true),
+        refreshPublishAssets()
+      ]);
+    }
+  })().finally(() => {
+    autoVerticalDrainPromise = null;
+  });
+  return autoVerticalDrainPromise;
 };
 
 const handleCheckLogin = ({ platformKey, accountId }) => {
@@ -371,10 +452,30 @@ watch(
   ([finalVideoUrl, outputPath]) => {
     if (!finalVideoUrl || !outputPath) return;
     window.setTimeout(() => {
-      handleMakeVertical({ automatic: true });
+      queueAutoVerticalTask({
+        id: materialDriven.jobId.value || outputPath,
+        status: 'completed',
+        outputPath,
+        videoUrl: finalVideoUrl,
+        narration: { full_text: materialDriven.narrationFullText.value },
+        sourcePost: {
+          title: materialDriven.materialSourceTitle.value,
+          body: materialDriven.materialSourceBody.value
+        }
+      });
     }, 0);
   },
   { immediate: true }
+);
+
+watch(
+  () => materialDriven.activeTasks.value,
+  (tasks) => {
+    for (const task of Array.isArray(tasks) ? tasks : []) {
+      queueAutoVerticalTask(task);
+    }
+  },
+  { deep: true, immediate: true }
 );
 </script>
 

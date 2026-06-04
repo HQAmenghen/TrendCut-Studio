@@ -122,6 +122,10 @@ function normalizePartitions(config = {}) {
 
 export function useXaiTop10() {
   const loading = ref(false);
+  const refreshing = ref(false);
+  const importingUrl = ref(false);
+  const manualImportStatus = ref('');
+  const manualImportError = ref('');
   const progressPercent = ref(0);
   const progressMessage = ref('');
   const queueing = ref(false);
@@ -338,22 +342,28 @@ export function useXaiTop10() {
       : partition);
   };
 
-  const refresh = async (silent = false) => {
+  const refresh = async (silent = false, options = {}) => {
+    const forceRefresh = options.force === true || !silent;
+    const requestId = forceRefresh ? Date.now() : null;
+    const baseParams = {
+      partitionId: activePartitionId.value,
+      ...(forceRefresh ? { refresh: 1, _: requestId } : {})
+    };
     if (!silent) {
-      loading.value = true;
+      refreshing.value = true;
       error.value = '';
-      progressPercent.value = 15;
-      progressMessage.value = '正在同步榜单结果与状态';
-      appendLog('刷新榜单结果与状态');
+      result.value = null;
+      selectedKeys.value = [];
+      appendLog('清理榜单缓存并同步最新结果');
     }
     try {
       const [resultRes, statusRes, queueRes] = await Promise.all([
-        axios.get('/api/xai-top10/result', { params: { partitionId: activePartitionId.value } }).catch((err) => {
+        axios.get('/api/xai-top10/result', { params: baseParams }).catch((err) => {
           if (err.response?.status === 404) return { data: { success: false, result: null } };
           throw err;
         }),
-        axios.get('/api/xai-top10/status', { params: { partitionId: activePartitionId.value } }),
-        axios.get('/api/xai-top10/vertical-jobs')
+        axios.get('/api/xai-top10/status', { params: baseParams }),
+        axios.get('/api/xai-top10/vertical-jobs', { params: forceRefresh ? { refresh: 1, _: requestId } : {} })
       ]);
       result.value = resultRes.data?.result || null;
       status.value = statusRes.data?.status || null;
@@ -363,8 +373,7 @@ export function useXaiTop10() {
       if (!silent) appendError(error.value);
     } finally {
       if (!silent) {
-        progressPercent.value = 100;
-        loading.value = false;
+        refreshing.value = false;
       }
     }
   };
@@ -435,6 +444,53 @@ export function useXaiTop10() {
     } finally {
       stream.close();
       loading.value = false;
+    }
+  };
+
+  const importUrl = async (url) => {
+    const postUrl = String(url || '').trim();
+    if (!postUrl || importingUrl.value) {
+      if (!postUrl) {
+        manualImportError.value = '请输入 X 推文链接';
+      }
+      return null;
+    }
+    importingUrl.value = true;
+    error.value = '';
+    manualImportError.value = '';
+    manualImportStatus.value = '正在解析 X 推文内容和视频素材，通常需要 30-180 秒';
+    appendLog(`导入 X 链接：${postUrl}`);
+    try {
+      const res = await axios.post('/api/xai-top10/import-url', {
+        url: postUrl,
+        partitionId: activePartitionId.value
+      });
+      const item = res.data?.item || null;
+      if (!item?.video_url) {
+        throw new Error('该 X 链接未识别到可制作的视频素材');
+      }
+      const label = item.author_summary || item.post_url || postUrl;
+      manualImportStatus.value = `已识别视频素材：${label}`;
+      appendLog(`X 链接导入完成：${label}`);
+      return {
+        ...item,
+        source_partition_id: item.source_partition_id || activePartitionId.value,
+        source_partition_label: item.source_partition_label || activePartitionLabel.value,
+        partition: item.partition || { id: activePartitionId.value, label: activePartitionLabel.value }
+      };
+    } catch (err) {
+      const data = err.response?.data || {};
+      const detail = [data.error, data.details, data.hint]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join('：');
+      error.value = detail || err.message;
+      manualImportError.value = error.value || '导入 X 链接失败';
+      manualImportStatus.value = '';
+      appendError(error.value);
+      return null;
+    } finally {
+      importingUrl.value = false;
     }
   };
 
@@ -513,6 +569,10 @@ export function useXaiTop10() {
 
   return {
     loading,
+    refreshing,
+    importingUrl,
+    manualImportStatus,
+    manualImportError,
     progressPercent,
     progressMessage,
     queueing,
@@ -548,6 +608,7 @@ export function useXaiTop10() {
     removePartition,
     updatePartitionLabel,
     run,
+    importUrl,
     toggleSelect,
     toggleSelectAll,
     queueSelected,

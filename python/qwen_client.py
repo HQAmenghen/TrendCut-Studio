@@ -136,18 +136,6 @@ class QwenClient:
         self.rotator.mark_unavailable(api_key, cooldown_seconds=_key_failure_cooldown_seconds())
 
 
-TEXT_MODEL_ALIASES = {
-    "qwen3.5-plus": "qwen-plus",
-    "qwen-3.5-plus": "qwen-plus",
-    "qwen3.5-turbo": "qwen-turbo",
-    "qwen-3.5-turbo": "qwen-turbo",
-    "qwen3.5-max": "qwen-max",
-    "qwen-3.5-max": "qwen-max",
-    "qwen3.6-plus": "qwen3.6-plus",
-    "qwen-3.6-plus": "qwen3.6-plus",
-}
-
-
 def use_multimodal_text_api(model: str) -> bool:
     normalized = str(model or "").strip().lower()
     if not normalized:
@@ -512,10 +500,7 @@ class ResponseWrapper:
 
 
 def normalize_qwen_text_model(model: str) -> str:
-    normalized = str(model or "").strip()
-    if not normalized:
-        return normalized
-    return TEXT_MODEL_ALIASES.get(normalized.lower(), normalized)
+    return str(model or "").strip()
 
 
 def get_qwen_embedding_model() -> str:
@@ -556,13 +541,17 @@ def generate_content(
     """
     messages = _convert_contents_to_messages(contents)
     resolved_timeout = _resolve_request_timeout(contents, request_timeout)
+    response_format_kwargs = {}
+    if response_mime_type == "application/json":
+        response_format_kwargs["response_format"] = {"type": "json_object"}
 
     def call(api_key: str):
         if _contents_are_text_only(contents):
-            if use_multimodal_text_api(model):
+            normalized_model = normalize_qwen_text_model(model)
+            if use_multimodal_text_api(normalized_model):
                 return MultiModalConversation.call(
                     api_key=api_key,
-                    model=model,
+                    model=normalized_model,
                     messages=[
                         {
                             "role": "user",
@@ -570,8 +559,8 @@ def generate_content(
                         }
                     ],
                     request_timeout=resolved_timeout,
+                    **response_format_kwargs,
                 )
-            normalized_model = normalize_qwen_text_model(model)
             return Generation.call(
                 api_key=api_key,
                 model=normalized_model,
@@ -580,12 +569,14 @@ def generate_content(
                 ],
                 result_format="message",
                 request_timeout=resolved_timeout,
+                **response_format_kwargs,
             )
         return MultiModalConversation.call(
             api_key=api_key,
             model=model,
             messages=messages,
             request_timeout=resolved_timeout,
+            **response_format_kwargs,
         )
 
     response = _call_qwen_response_with_failover(

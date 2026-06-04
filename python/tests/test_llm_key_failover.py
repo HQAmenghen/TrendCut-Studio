@@ -88,6 +88,62 @@ class QwenKeyFailoverTest(unittest.TestCase):
         self.assertEqual(response.text, "ok-after-retries")
         self.assertEqual(len(attempts), 8)
 
+    def test_generate_content_passes_json_response_format_for_qwen(self):
+        captured_kwargs = []
+
+        def fake_generation_call(**kwargs):
+            captured_kwargs.append(kwargs)
+            return FakeQwenResponse(text='{"ok": true}')
+
+        with patch.dict(
+            os.environ,
+            {
+                "QWEN_API_KEY": "qwen-key-1",
+            },
+            clear=False,
+        ), patch("qwen_client.Generation.call", side_effect=fake_generation_call):
+            client = qwen_client.create_qwen_client()
+            response = qwen_client.generate_content(
+                client,
+                model="qwen-plus",
+                contents="return json",
+                response_mime_type="application/json",
+                retries=1,
+            )
+
+        self.assertEqual(response.text, '{"ok": true}')
+        self.assertEqual(captured_kwargs[0]["response_format"], {"type": "json_object"})
+
+    def test_generate_content_keeps_qwen35_model_on_multimodal_api(self):
+        captured_kwargs = []
+
+        def fake_multimodal_call(**kwargs):
+            captured_kwargs.append(kwargs)
+            return FakeQwenResponse(text='{"ok": true}')
+
+        with patch.dict(
+            os.environ,
+            {
+                "QWEN_API_KEY": "qwen-key-1",
+            },
+            clear=False,
+        ), patch("qwen_client.Generation.call") as generation_call, patch(
+            "qwen_client.MultiModalConversation.call", side_effect=fake_multimodal_call
+        ):
+            client = qwen_client.create_qwen_client()
+            response = qwen_client.generate_content(
+                client,
+                model="qwen3.5-plus",
+                contents="return json",
+                response_mime_type="application/json",
+                retries=1,
+            )
+
+        self.assertEqual(response.text, '{"ok": true}')
+        self.assertFalse(generation_call.called)
+        self.assertEqual(captured_kwargs[0]["model"], "qwen3.5-plus")
+        self.assertEqual(captured_kwargs[0]["response_format"], {"type": "json_object"})
+
 
 class FakeDeepSeekMessage:
     content = "ok-from-second-key"

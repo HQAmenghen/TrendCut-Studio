@@ -47,7 +47,8 @@ describe('scheduler utils', () => {
         },
         avatarPipelineConfig: {
           audioPreset: 'base.mp3',
-          imagePreset: 'base.png'
+          imagePreset: 'base.png',
+          avatarActionPresetDir: 'C:/avatar_actions'
         },
         autoPilotSlotRetryLimit: 3
       }
@@ -63,7 +64,8 @@ describe('scheduler utils', () => {
     expect(getAutoPilotSlotSourceRank(config, 'avatar', 1)).toBe(10);
     expect(getAutoPilotSlotAvatarConfig(config, 'avatar', 0)).toEqual(expect.objectContaining({
       audioPreset: 'voice.mp3',
-      imagePreset: 'avatar.png'
+      imagePreset: 'avatar.png',
+      avatarActionPresetDir: 'C:/avatar_actions'
     }));
     expect(getAutoPilotSlotRetryLimit(config)).toBe(3);
   });

@@ -53,36 +53,6 @@ function createVerticalQueueService(deps) {
   const verticalQueueLogPath = path.join(baseDir, 'data', 'logs', 'vertical_queue.log');
   const REFERENCE_AUTHORITY_ALIGNMENT_FAILED = 'REFERENCE_AUTHORITY_ALIGNMENT_FAILED';
 
-  function isPublicHttpUrl(value) {
-    try {
-      const parsed = new URL(String(value || '').trim());
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        return false;
-      }
-      const hostname = String(parsed.hostname || '').toLowerCase();
-      if (
-        hostname === 'localhost' ||
-        hostname === '0.0.0.0' ||
-        hostname === '::1' ||
-        hostname === '[::1]' ||
-        hostname.startsWith('127.')
-      ) {
-        return false;
-      }
-      if (/^10\./.test(hostname) || /^192\.168\./.test(hostname)) {
-        return false;
-      }
-      const private172 = hostname.match(/^172\.(\d+)\./);
-      if (private172) {
-        const secondOctet = Number(private172[1]);
-        if (secondOctet >= 16 && secondOctet <= 31) return false;
-      }
-      return true;
-    } catch (_err) {
-      return false;
-    }
-  }
-
   function appendPersistentLine(filePath, line) {
     try {
       ensureDir(path.dirname(filePath));
@@ -677,9 +647,6 @@ function createVerticalQueueService(deps) {
       if (useReferenceAuthority && referenceSubtitlesPath) {
         args.push('--reference-subtitles-json', referenceSubtitlesPath, '--reference-text-authority');
       }
-      if (isPublicHttpUrl(job.videoUrl)) {
-        args.push('--file-url', String(job.videoUrl).trim());
-      }
       if (Number.isFinite(Number(asrOptions.maxChunkDuration))) {
         args.push('--max-chunk-duration', String(Number(asrOptions.maxChunkDuration)));
       }
@@ -1251,6 +1218,11 @@ function createVerticalQueueService(deps) {
     }
 
     verticalJobs.delete(normalizedJobId);
+    if (taskStore && typeof taskStore.deleteTask === 'function') {
+      try {
+        taskStore.deleteTask(normalizedJobId);
+      } catch (_err) {}
+    }
     removeDirIfExists(path.join(verticalQueueRoot, normalizedJobId));
     removeDirIfExists(path.join(verticalPublicDir, normalizedJobId));
   }

@@ -4,11 +4,13 @@ describe('system routes', () => {
   test('registers unified task endpoint', () => {
     const app = {
       get: jest.fn(),
+      delete: jest.fn(),
       post: jest.fn()
     };
     const handlers = {
       getSelfCheck: jest.fn(),
       getUnifiedTasks: jest.fn(),
+      deleteUnifiedTask: jest.fn(),
       getPresets: jest.fn(),
       getWorkflowConfig: jest.fn(),
       postWorkflowConfig: jest.fn(),
@@ -28,5 +30,6 @@ describe('system routes', () => {
     registerSystemRoutes(app, handlers);
 
     expect(app.get).toHaveBeenCalledWith('/api/system/tasks', handlers.getUnifiedTasks);
+    expect(app.delete).toHaveBeenCalledWith('/api/system/tasks/:taskId', handlers.deleteUnifiedTask);
   });
 });

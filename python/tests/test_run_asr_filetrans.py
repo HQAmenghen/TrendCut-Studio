@@ -290,13 +290,34 @@ class QwenFiletransAsrTest(unittest.TestCase):
 
             with patch.dict(run_asr.os.environ, env, clear=False), \
                     patch("pipeline.run_asr.create_oss_bucket", return_value=fake_bucket):
-                file_url, object_key = run_asr.resolve_filetrans_file_url(str(audio_file), "")
+                file_url, object_key = run_asr.resolve_filetrans_file_url(str(audio_file))
 
         self.assertTrue(file_url.startswith("https://signed.example.com/comfy-panel/asr/"))
         self.assertIn("news_audio", file_url)
         self.assertIn("expires=600", file_url)
         self.assertIsNotNone(object_key)
         self.assertEqual(fake_bucket.uploaded, (object_key, str(audio_file)))
+
+    def test_resolve_filetrans_file_url_ignores_external_material_url(self):
+        uploads = []
+
+        def fake_uploader(local_file):
+            uploads.append(local_file)
+            return "https://signed.example.com/audio.mp3", "audio-key"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_file = Path(tmpdir) / "news_audio.mp3"
+            audio_file.write_bytes(b"audio")
+
+            file_url, object_key = run_asr.asr_filetrans.resolve_filetrans_file_url(
+                str(audio_file),
+                "https://video.twimg.com/source.mp4",
+                uploader=fake_uploader,
+            )
+
+        self.assertEqual(file_url, "https://signed.example.com/audio.mp3")
+        self.assertEqual(object_key, "audio-key")
+        self.assertEqual(uploads, [str(audio_file)])
 
     def test_localhost_urls_are_not_treated_as_public_filetrans_urls(self):
         self.assertFalse(run_asr.is_public_http_url("http://localhost:3001/projects/task/output_final.mp4"))

@@ -8,8 +8,6 @@ const { RUNNINGHUB_INFINITETALK_3INPUT } = require('../../config/runningHub');
 const { QWEN_TTS_REFERENCE_AUDIO_LIMIT_SECONDS, prepareReferenceAudio } = require('./avatarAudio');
 const {
   generateAvatarMotion,
-  isAvatarMotionEnabled,
-  isAvatarMotionRequired,
   resolveActionPresetDir
 } = require('./avatarMotion');
 const { ensureSpeechAlignment } = require('./speechAlignment');
@@ -21,6 +19,7 @@ const runtime = require('../../config/runtime');
 const { downloadToFile } = require('./materialDownload');
 const { addTaskLog, emitTaskEvent } = require('./events');
 const { syncAvatarTask, syncMaterialTask } = require('./taskStoreBridge');
+const { normalizeAvatarConfig } = require('./taskState');
 const { firstExistingFile, nowIso } = require('./utils');
 
 const QWEN_TTS_METADATA_FILE = 'avatar_qwen3tts.json';
@@ -40,9 +39,7 @@ const TERMINAL_RUNNINGHUB_RENDER_STATUSES = new Set([
 ]);
 
 function readAvatarConfigFromBody(body = {}) {
-  const hasAvatarMotionEnabled = Object.prototype.hasOwnProperty.call(body, 'avatarMotionEnabled');
-  const hasAvatarMotionRequired = Object.prototype.hasOwnProperty.call(body, 'avatarMotionRequired');
-  return {
+  return normalizeAvatarConfig({
     genText: String(body.genText || '').trim(),
     renderProvider: String(body.renderProvider || 'comfyui').trim(),
     serverUrl: String(body.serverUrl || '').trim(),
@@ -63,20 +60,11 @@ function readAvatarConfigFromBody(body = {}) {
     runningHubOutputNodeId: String(body.runningHubOutputNodeId || RUNNINGHUB_INFINITETALK_3INPUT.outputNodeId).trim(),
     poseNodeId: String(body.poseNodeId || '').trim(),
     poseFieldName: String(body.poseFieldName || 'pose').trim(),
-    avatarMotionEnabled: hasAvatarMotionEnabled
-      ? body.avatarMotionEnabled === true || body.avatarMotionEnabled === 'true'
-      : undefined,
-    avatarMotionRequired: hasAvatarMotionRequired
-      ? body.avatarMotionRequired === true || body.avatarMotionRequired === 'true'
-      : undefined,
     avatarActionPresetDir: String(body.avatarActionPresetDir || '').trim(),
-    avatarMotionPlanner: String(body.avatarMotionPlanner || '').trim(),
-    avatarMotionLlmProvider: String(body.avatarMotionLlmProvider || '').trim(),
-    avatarMotionLlmModel: String(body.avatarMotionLlmModel || '').trim(),
     speechAlignmentEnabled: body.speechAlignmentEnabled,
     audioPreset: String(body.audioPreset || '').trim(),
     imagePreset: String(body.imagePreset || '').trim()
-  };
+  });
 }
 
 function probeRunningHubConfig(config = {}) {
@@ -349,6 +337,58 @@ function isRunningHubStateOlderThanAudio(state, audioPath) {
   }
 }
 
+function hasRunningHubPoseInput(state = {}) {
+  if (String(state?.remotePoseName || '').trim()) return true;
+  const nodeInfoList = Array.isArray(state?.nodeInfoList) ? state.nodeInfoList : [];
+  return nodeInfoList.some((item) => {
+    const fieldName = String(item?.fieldName || '').trim().toLowerCase();
+    return fieldName === 'video' && String(item?.fieldValue || '').trim();
+  });
+}
+
+function getDetailedErrorMessage(error, fallback = '任务执行失败') {
+  const message = String(error?.message || fallback).trim();
+  const details = String(error?.details || error?.protocol?.details || '').trim();
+  if (details && details !== message && !message.includes(details)) {
+    return `${message}: ${details}`;
+  }
+  return message || fallback;
+}
+
+function buildErrorMetadata(error, detailedMessage) {
+  return {
+    error: detailedMessage,
+    errorCode: String(error?.code || error?.protocol?.code || '').trim(),
+    errorStage: String(error?.stage || error?.protocol?.stage || '').trim(),
+    errorDetails: String(error?.details || error?.protocol?.details || '').trim()
+  };
+}
+
+function hasCurrentRunningHubPoseSignature(state = {}, motionSignature = '') {
+  const expectedSignature = String(motionSignature || '').trim();
+  if (!expectedSignature) return false;
+  return String(state?.remotePoseSignature || '').trim() === expectedSignature;
+}
+
+function validateMotionRenderInput({ cfg, provider, avatarMotion }) {
+  const posePath = String(avatarMotion?.poseInputPath || '').trim();
+  if (!getUsableFileStat(posePath)) {
+    throw new Error('缺少数字人动作参考视频，已停止提交数字人合成');
+  }
+  if (provider === 'comfyui') {
+    const poseNodeId = String(cfg.poseNodeId || process.env.AVATAR_POSE_NODE_ID || '').trim();
+    if (!poseNodeId) {
+      throw new Error('ComfyUI 数字人动作参考已启用，但未配置 AVATAR_POSE_NODE_ID / poseNodeId');
+    }
+  }
+}
+
+function validateMotionRenderResult({ renderResult }) {
+  if (renderResult?.provider === 'runninghub' && !hasRunningHubPoseInput(renderResult)) {
+    throw new Error('RunningHub 数字人合成未提交动作参考视频节点输入，已停止下载错误视频');
+  }
+}
+
 async function downloadAvatarVideoWithRetry({
   downloadFile,
   videoUrl,
@@ -357,6 +397,7 @@ async function downloadAvatarVideoWithRetry({
   provider,
   renderResult,
   renderResumeKey,
+  remotePoseSignature = '',
   targetLabel,
   maxRetries = resolvePositiveIntegerEnv('AVATAR_DOWNLOAD_RETRIES', DEFAULT_AVATAR_DOWNLOAD_RETRIES),
   retryDelayMs = resolvePositiveIntegerEnv('AVATAR_DOWNLOAD_RETRY_DELAY_MS', DEFAULT_AVATAR_DOWNLOAD_RETRY_DELAY_MS)
@@ -396,6 +437,7 @@ async function downloadAvatarVideoWithRetry({
       remoteAudioName: renderResult.remoteAudioName || '',
       remoteImageName: renderResult.remoteImageName || '',
       remotePoseName: renderResult.remotePoseName || '',
+      remotePoseSignature,
       nodeInfoList: renderResult.nodeInfoList || [],
       targetLabel,
       error: lastError?.message || String(lastError)
@@ -410,6 +452,7 @@ function createAvatarGenerationService({
   rendererFactory = createAvatarRenderer,
   synthesizeSpeech = synthesizeQwenTtsSpeech,
   prepareReferenceAudioFn = prepareReferenceAudio,
+  generateAvatarMotionFn = generateAvatarMotion,
   generateSpeechNarration = generateDeepSeekSpeechNarration,
   ensureSpeechAlignmentFn = ensureSpeechAlignment,
   readWorkflowFile = readWorkflow,
@@ -602,38 +645,43 @@ function createAvatarGenerationService({
       speechAlignment = null;
       addTaskLog(task, `口播 ASR 对齐缓存生成失败，后续将使用原有时间估算: ${error?.message || error}`, 'warning');
     }
-    let avatarMotion = null;
-    if (isAvatarMotionEnabled(cfg)) {
-      try {
-        task.statusText = '正在生成数字人动作计划...';
-        task.updatedAt = nowIso();
-        addTaskLog(task, '开始生成数字人动作计划与姿态序列', 'info');
-        emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
-        emitTaskEvent(jobId, 'status', { message: task.statusText });
-        avatarMotion = await generateAvatarMotion({
-          outputDir: task.outputPath,
-          narrationTextPath: speechArtifacts.speechTextPath,
-          speechAudioPath: audioPathForUpload,
-          imagePath,
-          actionPresetDir: resolveActionPresetDir(cfg),
-          avatarMotionPlanner: cfg.avatarMotionPlanner,
-          avatarMotionLlmProvider: cfg.avatarMotionLlmProvider,
-          avatarMotionLlmModel: cfg.avatarMotionLlmModel,
-          speechAlignmentPath: speechAlignment?.alignmentPath || ''
-        });
-        addTaskLog(
-          task,
-          `数字人动作源视频已生成: segments=${avatarMotion.segmentCount}, file=${path.basename(avatarMotion.motionSourcePath || avatarMotion.poseInputPath)}`,
-          'success'
-        );
-      } catch (error) {
-        if (isAvatarMotionRequired(cfg)) {
-          throw error;
-        }
-        avatarMotion = null;
-        addTaskLog(task, `数字人动作计划生成失败，已回退原音频驱动: ${error?.message || error}`, 'warning');
-      }
+    task.statusText = '正在生成数字人动作计划...';
+    task.updatedAt = nowIso();
+    addTaskLog(task, '开始生成数字人动作计划与姿态序列', 'info');
+    emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
+    emitTaskEvent(jobId, 'status', { message: task.statusText });
+    let avatarMotion;
+    try {
+      avatarMotion = await generateAvatarMotionFn({
+        outputDir: task.outputPath,
+        narrationTextPath: speechArtifacts.speechTextPath,
+        speechAudioPath: audioPathForUpload,
+        imagePath,
+        actionPresetDir: resolveActionPresetDir(cfg),
+        speechAlignmentPath: speechAlignment?.alignmentPath || ''
+      });
+    } catch (error) {
+      const detailedMessage = getDetailedErrorMessage(error, '数字人动作计划生成失败');
+      task.status = 'failed';
+      task.error = detailedMessage;
+      task.statusText = detailedMessage;
+      task.completedAt = nowIso();
+      task.updatedAt = nowIso();
+      addTaskLog(task, detailedMessage, 'error');
+      syncMaterialTask(taskStore, task, buildErrorMetadata(error, detailedMessage));
+      emitTaskEvent(jobId, 'error_event', { message: detailedMessage });
+      const wrapped = new Error(detailedMessage);
+      wrapped.code = error?.code;
+      wrapped.stage = error?.stage;
+      wrapped.details = error?.details || error?.protocol?.details || '';
+      wrapped.protocol = error?.protocol || null;
+      throw wrapped;
     }
+    addTaskLog(
+      task,
+      `数字人动作源视频已生成: segments=${avatarMotion.segmentCount}, file=${path.basename(avatarMotion.motionSourcePath || avatarMotion.poseInputPath)}`,
+      'success'
+    );
 
     const provider = resolveAvatarRenderProvider(cfg);
     const workflow = readWorkflowFile(paths.WORKFLOW_PATH);
@@ -669,9 +717,17 @@ function createAvatarGenerationService({
       ? getReusableRunningHubState(task.outputPath, renderResumeKey)
       : null;
     const runningHubStateOlderThanAudio = isRunningHubStateOlderThanAudio(reusableRunningHubState, audioPathForUpload);
+    const runningHubStateMissingMotionPose = provider === 'runninghub' &&
+      reusableRunningHubState &&
+      !hasRunningHubPoseInput(reusableRunningHubState);
+    const runningHubStatePoseSignatureMismatch = provider === 'runninghub' &&
+      reusableRunningHubState &&
+      !hasCurrentRunningHubPoseSignature(reusableRunningHubState, avatarMotion?.motionSignature);
     const canReuseRunningHubState = reusableRunningHubState &&
       !reusableRunningHubState.resumeKeyMismatch &&
-      !runningHubStateOlderThanAudio;
+      !runningHubStateOlderThanAudio &&
+      !runningHubStateMissingMotionPose &&
+      !runningHubStatePoseSignatureMismatch;
     const reusableAimanVideo = canReuseRunningHubState && reusableRunningHubState?.videoUrl && hasUsableAimanVideo(task.outputPath);
 
     task.progress = Math.max(Number(task.progress || 0), 86);
@@ -680,7 +736,7 @@ function createAvatarGenerationService({
     addTaskLog(task, `自动调用 ${providerLabel} 生成数字人`, 'info');
     addTaskLog(
       task,
-      `自动生成人像素材: Qwen3TTS音频=${path.basename(audioPathForUpload)}, 图片=${path.basename(imagePath)}, 姿态=${avatarMotion?.poseInputPath ? path.basename(avatarMotion.poseInputPath) : '未启用'}, 渲染服务=${targetLabel}`,
+      `自动生成人像素材: Qwen3TTS音频=${path.basename(audioPathForUpload)}, 图片=${path.basename(imagePath)}, 姿态=${path.basename(avatarMotion.poseInputPath)}, 渲染服务=${targetLabel}`,
       'info'
     );
     emitTaskEvent(jobId, 'step', { step: 6, message: '步骤6: 自动生成数字人' });
@@ -710,6 +766,12 @@ function createAvatarGenerationService({
     if (runningHubStateOlderThanAudio) {
       addTaskLog(task, `检测到旧 RunningHub 任务早于当前口播音频，已重新提交新任务: previousTaskId=${reusableRunningHubState.taskId}`, 'warning');
     }
+    if (runningHubStateMissingMotionPose) {
+      addTaskLog(task, `检测到旧 RunningHub 任务缺少动作参考视频节点输入，已重新提交新任务: previousTaskId=${reusableRunningHubState.taskId}`, 'warning');
+    }
+    if (runningHubStatePoseSignatureMismatch) {
+      addTaskLog(task, `检测到旧 RunningHub 任务动作参考签名不匹配，已重新上传动作参考并提交新任务: previousTaskId=${reusableRunningHubState.taskId}`, 'warning');
+    }
 
     if (canReuseRunningHubState && reusableRunningHubState?.videoUrl) {
       addTaskLog(task, `复用已完成的 RunningHub 输出: taskId=${reusableRunningHubState.taskId}`, 'success');
@@ -729,6 +791,7 @@ function createAvatarGenerationService({
         addTaskLog(task, `检测到未完成的 RunningHub 任务，继续查询: taskId=${reusableRunningHubState.taskId}`, 'info');
       }
       try {
+        validateMotionRenderInput({ cfg, provider, avatarMotion });
         renderResult = await renderer.render({
           avatarConfig: {
             ...cfg,
@@ -738,7 +801,7 @@ function createAvatarGenerationService({
           speechAudioPath: audioPathForUpload,
           referenceAudioPath,
           imagePath,
-          posePath: avatarMotion?.poseInputPath || '',
+          posePath: avatarMotion.poseInputPath,
           defaultComfyBaseUrl: runtime.DEFAULT_COMFYUI_BASE_URL,
           runningHubTaskId: canReuseRunningHubState ? reusableRunningHubState?.taskId || '' : '',
           runningHubRemoteAudioName: canReuseRunningHubState ? reusableRunningHubState?.remoteAudioName || '' : '',
@@ -754,6 +817,7 @@ function createAvatarGenerationService({
               remoteAudioName: submission.remoteAudioName || '',
               remoteImageName: submission.remoteImageName || '',
               remotePoseName: submission.remotePoseName || '',
+              remotePoseSignature: avatarMotion?.motionSignature || '',
               nodeInfoList: submission.nodeInfoList || [],
               targetLabel,
               submittedAt: nowIso(),
@@ -777,6 +841,7 @@ function createAvatarGenerationService({
               remoteAudioName: err.remoteAudioName || existingState.remoteAudioName || '',
               remoteImageName: err.remoteImageName || existingState.remoteImageName || '',
               remotePoseName: err.remotePoseName || existingState.remotePoseName || '',
+              remotePoseSignature: avatarMotion?.motionSignature || existingState.remotePoseSignature || '',
               nodeInfoList: err.nodeInfoList || existingState.nodeInfoList || [],
               targetLabel,
               error: err.message || String(err)
@@ -790,6 +855,7 @@ function createAvatarGenerationService({
     }
 
     if (renderResult.provider === 'runninghub') {
+      validateMotionRenderResult({ renderResult });
       const completedState = writeAvatarRenderState(task.outputPath, {
         provider: 'runninghub',
         status: 'completed',
@@ -799,6 +865,7 @@ function createAvatarGenerationService({
         remoteAudioName: renderResult.remoteAudioName || '',
         remoteImageName: renderResult.remoteImageName || '',
         remotePoseName: renderResult.remotePoseName || '',
+        remotePoseSignature: avatarMotion?.motionSignature || '',
         nodeInfoList: renderResult.nodeInfoList || [],
         targetLabel,
         completedAt: nowIso(),
@@ -829,6 +896,7 @@ function createAvatarGenerationService({
       provider: renderResult.provider,
       renderResult,
       renderResumeKey,
+      remotePoseSignature: avatarMotion?.motionSignature || '',
       targetLabel
     });
 
@@ -839,7 +907,11 @@ function createAvatarGenerationService({
         resumeKey: renderResumeKey,
         taskId: renderResult.taskId,
         videoUrl,
+        remoteAudioName: renderResult.remoteAudioName || '',
+        remoteImageName: renderResult.remoteImageName || '',
         remotePoseName: renderResult.remotePoseName || '',
+        remotePoseSignature: avatarMotion?.motionSignature || '',
+        nodeInfoList: renderResult.nodeInfoList || [],
         downloadedAt: nowIso(),
         error: ''
       });

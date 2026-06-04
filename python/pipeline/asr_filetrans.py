@@ -117,9 +117,7 @@ def upload_filetrans_audio_to_oss(local_file, *, bucket_factory=create_oss_bucke
     return signed_url, object_key
 
 
-def resolve_filetrans_file_url(local_file, file_url="", *, uploader=upload_filetrans_audio_to_oss):
-    if is_public_http_url(file_url):
-        return file_url, None
+def resolve_filetrans_file_url(local_file, _file_url="", *, uploader=upload_filetrans_audio_to_oss):
     return uploader(local_file)
 
 

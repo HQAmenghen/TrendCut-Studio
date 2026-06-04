@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import traceback
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -197,6 +198,34 @@ def normalize_partition_id(value: str | None, fallback: str = DEFAULT_PARTITION_
     return normalized or fallback
 
 
+def normalize_x_post_url(value: str | None) -> tuple[str, str | None, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("Missing X post URL.")
+    if not re.match(r"^https?://", raw, flags=re.I):
+        raw = f"https://{raw}"
+
+    parsed = urllib.parse.urlparse(raw)
+    host = parsed.netloc.lower().removeprefix("www.").removeprefix("mobile.")
+    if host not in {"x.com", "twitter.com"}:
+        raise ValueError("Only x.com/twitter.com post URLs are supported.")
+
+    path_parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
+    account = None
+    post_id = ""
+    if len(path_parts) >= 3 and path_parts[1].lower() == "status":
+        account = path_parts[0].lstrip("@")
+        post_id = path_parts[2]
+    elif len(path_parts) >= 3 and path_parts[0].lower() == "i" and path_parts[1].lower() == "web" and path_parts[2].lower() == "status":
+        post_id = path_parts[3] if len(path_parts) >= 4 else ""
+
+    if not re.fullmatch(r"\d{5,32}", post_id or ""):
+        raise ValueError("Could not extract a valid X post id from the URL.")
+
+    canonical_url = f"https://x.com/{account}/status/{post_id}" if account else f"https://x.com/i/web/status/{post_id}"
+    return canonical_url, account, post_id
+
+
 def sanitize_account_list(values) -> list[str]:
     accounts: list[str] = []
     seen: set[str] = set()
@@ -280,6 +309,7 @@ def load_accounts(partition_id: str = DEFAULT_PARTITION_ID) -> tuple[list[str], 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run xAI Top10 discovery for a configured account partition.")
     parser.add_argument("--partition-id", default=DEFAULT_PARTITION_ID)
+    parser.add_argument("--import-url", default="", help="Import and enrich one X post URL instead of running the Top10 scan.")
     parser.add_argument("--result", default=str(RESULT_PATH))
     parser.add_argument("--partial", default=str(PARTIAL_PATH))
     parser.add_argument("--log", default=str(RUN_LOG_PATH))
@@ -538,6 +568,7 @@ Rules:
 
 Output:
 {{
+  "author": "{account}",
   "post_id": "{post_id or ''}",
   "post_url": "{post_url}",
   "published_at": "YYYY-MM-DD HH:MM",
@@ -715,18 +746,12 @@ def fetch_followers_from_x_api(account: str) -> int | None:
     return normalize_followers(followers)
 
 
-def fetch_video_variants_from_x_api(post_id: str | None) -> list[dict]:
+def request_tweet_payload_from_x_api(post_id: str | None, params: dict) -> dict | None:
     if not post_id:
-        return []
-    params = {
-        "expansions": "attachments.media_keys",
-        "tweet.fields": "attachments",
-        "media.fields": "variants,height,width,type,url,preview_image_url,duration_ms,media_key",
-    }
+        return None
     request_kwargs = build_requests_kwargs(timeout=FOLLOWER_MIRROR_TIMEOUT)
 
     oauth = build_x_oauth1()
-    tweet_payload = None
     if oauth is not None:
         try:
             response = requests.get(
@@ -736,40 +761,41 @@ def fetch_video_variants_from_x_api(post_id: str | None) -> list[dict]:
                 **request_kwargs,
             )
             if response.status_code == 200:
-                tweet_payload = response.json()
+                return response.json()
             else:
-                log_error(f"Video tweet lookup via OAuth1 failed for {post_id}: HTTP {response.status_code}")
+                log_error(f"Tweet lookup via OAuth1 failed for {post_id}: HTTP {response.status_code}")
         except (requests.RequestException, json.JSONDecodeError):
-            log_error(f"Video tweet lookup via OAuth1 exception for {post_id}")
+            log_error(f"Tweet lookup via OAuth1 exception for {post_id}")
 
-    if tweet_payload is None:
-        bearer = clean_secret(os.getenv("X_BEARER_TOKEN"))
-        if not bearer or not bearer.isascii():
-            return []
-        headers = {
-            "Authorization": f"Bearer {bearer}",
-            "User-Agent": "Mozilla/5.0",
-        }
-        try:
-            with build_http_client() as client:
-                tweet_response = client.get(
-                    f"{X_API_BASE}/tweets/{post_id}",
-                    params=params,
-                    headers=headers,
-                )
-                if tweet_response.status_code != 200:
-                    log_error(f"Video tweet lookup failed for {post_id}: HTTP {tweet_response.status_code}")
-                    return []
-                tweet_payload = tweet_response.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
-            log_error(f"Video tweet lookup exception for {post_id}")
-            return []
+    bearer = clean_secret(os.getenv("X_BEARER_TOKEN"))
+    if not bearer or not bearer.isascii():
+        return None
+    headers = {
+        "Authorization": f"Bearer {bearer}",
+        "User-Agent": "Mozilla/5.0",
+    }
+    try:
+        with build_http_client() as client:
+            tweet_response = client.get(
+                f"{X_API_BASE}/tweets/{post_id}",
+                params=params,
+                headers=headers,
+            )
+            if tweet_response.status_code != 200:
+                log_error(f"Tweet lookup failed for {post_id}: HTTP {tweet_response.status_code}")
+                return None
+            return tweet_response.json()
+    except (httpx.HTTPError, json.JSONDecodeError):
+        log_error(f"Tweet lookup exception for {post_id}")
+        return None
 
+
+def extract_video_variants_from_tweet_payload(tweet_payload: dict | None, post_id: str | None = None) -> list[dict]:
     variants = []
-    media_items = (tweet_payload.get("includes", {}) or {}).get("media", []) or []
+    media_items = ((tweet_payload or {}).get("includes", {}) or {}).get("media", []) or []
     if not media_items:
         media_keys = (
-            tweet_payload.get("data", {})
+            (tweet_payload or {}).get("data", {})
             .get("attachments", {})
             .get("media_keys", [])
         )
@@ -807,6 +833,53 @@ def fetch_video_variants_from_x_api(post_id: str | None) -> list[dict]:
     if not variants:
         log(f"Video tweet lookup returned 0 mp4 variants for {post_id}.")
     return variants
+
+
+def fetch_video_variants_from_x_api(post_id: str | None) -> list[dict]:
+    params = {
+        "expansions": "attachments.media_keys",
+        "tweet.fields": "attachments",
+        "media.fields": "variants,height,width,type,url,preview_image_url,duration_ms,media_key",
+    }
+    return extract_video_variants_from_tweet_payload(request_tweet_payload_from_x_api(post_id, params), post_id)
+
+
+def fetch_post_details_from_x_api(post_id: str | None) -> dict | None:
+    params = {
+        "expansions": "attachments.media_keys,author_id",
+        "tweet.fields": "attachments,created_at,public_metrics,text",
+        "media.fields": "variants,height,width,type,url,preview_image_url,duration_ms,media_key",
+        "user.fields": "username,name,public_metrics",
+    }
+    payload = request_tweet_payload_from_x_api(post_id, params)
+    if not payload or not isinstance(payload.get("data"), dict):
+        return None
+
+    data = payload.get("data") or {}
+    users = ((payload.get("includes") or {}).get("users") or [])
+    user_by_id = {str(user.get("id")): user for user in users if isinstance(user, dict)}
+    author = user_by_id.get(str(data.get("author_id"))) or {}
+    metrics = data.get("public_metrics") or {}
+    published_at, published_iso = parse_iso_to_bj(data.get("created_at"))
+    variants = extract_video_variants_from_tweet_payload(payload, post_id)
+    preferred_variant = choose_preferred_variant(variants)
+
+    return {
+        "author": author.get("username"),
+        "post_id": str(data.get("id") or post_id or ""),
+        "published_at": published_at,
+        "published_at_iso": published_iso or data.get("created_at"),
+        "summary": data.get("text"),
+        "views": safe_number(metrics.get("impression_count")),
+        "likes": safe_number(metrics.get("like_count")) or 0,
+        "reposts": safe_number(metrics.get("retweet_count")) or 0,
+        "replies": safe_number(metrics.get("reply_count")) or 0,
+        "followers": normalize_followers((author.get("public_metrics") or {}).get("followers_count")),
+        "followers_source": "官方接口" if author else None,
+        "video_url": preferred_variant.get("url") if preferred_variant else None,
+        "video_variants": variants,
+        "video_duration_ms": safe_number(preferred_variant.get("duration_ms")) if preferred_variant else None,
+    }
 
 
 def extract_video_urls_from_text(text: str) -> list[str]:
@@ -871,6 +944,29 @@ def fetch_video_variants_from_post_page(post_url: str | None) -> list[dict]:
     if mp4_only:
         log(f"Video page fallback found {len(mp4_only)} mp4 candidates for {post_url}.")
     return mp4_only
+
+
+def fetch_post_text_from_page(post_url: str | None) -> str | None:
+    if not post_url:
+        return None
+    url = f"https://r.jina.ai/http://{post_url.removeprefix('https://')}"
+    try:
+        with build_http_client() as client:
+            text = client.get(url).text
+    except httpx.HTTPError:
+        return None
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+        and not line.startswith(("Title:", "URL Source:", "Markdown Content:"))
+    ]
+    for line in lines:
+        if "/status/" in line or " · " in line:
+            continue
+        if 12 <= len(line) <= 500:
+            return line
+    return None
 
 
 def fetch_followers_from_profile_page(account: str) -> int | None:
@@ -1181,6 +1277,8 @@ def enrich_post(item: dict, cache: dict) -> dict:
     )
     merged = dict(item)
     merged.update(result)
+    if not merged.get("author") and item.get("author"):
+        merged["author"] = item.get("author")
 
     bj_published_at, bj_published_iso = parse_iso_to_bj(merged.get("published_at_iso"))
     if bj_published_at:
@@ -1245,6 +1343,115 @@ def enrich_post(item: dict, cache: dict) -> dict:
         }
         save_cache(cache)
     return merged
+
+
+def build_output_item(item: dict, rank: int, partition: dict) -> dict:
+    return {
+        "rank": rank,
+        "author": item.get("author"),
+        "author_summary": (
+            f"@{item.get('author')} - {item.get('summary')}"
+            if item.get("author") and item.get("summary")
+            else item.get("summary")
+        ),
+        "followers": item.get("followers"),
+        "followers_source": item.get("followers_source"),
+        "post_id": item.get("post_id"),
+        "published_at": item.get("published_at"),
+        "published_at_iso": item.get("published_at_iso"),
+        "views": item.get("views"),
+        "views_display": item.get("views_display"),
+        "likes": item.get("likes"),
+        "reposts": item.get("reposts"),
+        "replies": item.get("replies"),
+        "engagement_rate": item.get("engagement_rate"),
+        "over_follower_ratio": item.get("over_follower_ratio"),
+        "ratio_display": item.get("ratio_display"),
+        "account_avg_views": item.get("account_avg_views"),
+        "breakout_ratio": item.get("breakout_ratio"),
+        "breakout_display": item.get("breakout_display"),
+        "hot_score": item.get("hot_score"),
+        "post_url": item.get("post_url"),
+        "video_url": item.get("video_url"),
+        "video_resolution": item.get("video_resolution"),
+        "video_meets_720p": item.get("video_meets_720p"),
+        "video_variant_count": item.get("video_variant_count"),
+        "source_partition_id": partition.get("id"),
+        "source_partition_label": partition.get("label"),
+        "source_type": item.get("source_type") or "xai_top10",
+    }
+
+
+def import_single_post(import_url: str, partition_id: str) -> dict:
+    global CURRENT_PARTITION
+    canonical_url, account, post_id = normalize_x_post_url(import_url)
+    _accounts, partition = load_accounts(partition_id)
+    CURRENT_PARTITION = partition
+    emit_stage("manual_import", "正在解析 X 链接并识别推文视频素材")
+    reset_usage_totals()
+
+    enriched = fetch_post_details_from_x_api(post_id) or {}
+    enriched = {
+        **enriched,
+        "author": account or enriched.get("author") or "",
+        "post_id": post_id,
+        "post_url": canonical_url,
+    }
+
+    video_variants = list(enriched.get("video_variants") or [])
+    if not video_variants:
+        video_variants = fetch_video_variants_from_x_api(post_id)
+    if not video_variants:
+        video_variants = fetch_video_variants_from_post_page(canonical_url)
+    preferred_variant = choose_preferred_variant(video_variants)
+    if preferred_variant:
+        enriched["video_url"] = preferred_variant.get("url") or enriched.get("video_url")
+        enriched["video_variants"] = video_variants
+        enriched["video_duration_ms"] = safe_number(preferred_variant.get("duration_ms"))
+
+    if not enriched.get("summary"):
+        enriched["summary"] = fetch_post_text_from_page(canonical_url) or ""
+    if not enriched.get("video_url"):
+        raise RuntimeError(
+            "未能从该 X 链接识别到可下载的视频素材。请确认 X_BEARER_TOKEN 或 OAuth1 凭证可用，"
+            "且该公开推文包含视频媒体。"
+        )
+
+    if enriched.get("author"):
+        try:
+            cache = load_cache()
+            followers = fetch_followers(str(enriched.get("author")), cache)
+            enriched["followers"] = followers
+            enriched["followers_source"] = get_follower_source(cache, str(enriched.get("author")))
+        except Exception as exc:
+            log_error(f"Follower fetch failed for manual import @{enriched.get('author')}: {exc}")
+
+    enriched["source_type"] = "x_manual_url"
+    compute_metrics(enriched)
+    output_item = build_output_item(enriched, 1, partition)
+    output_item["manual_import_url"] = canonical_url
+    output = {
+        "title": "手动导入 X 链接",
+        "partition": partition,
+        "items": [output_item],
+        "total_items": 1,
+        "cost_estimate": {
+            "xai_requests_observed": 0,
+            "xai_request_count": 0,
+            "xai_input_tokens": 0,
+            "xai_cached_input_tokens": 0,
+            "xai_output_tokens": 0,
+            "xai_reasoning_tokens": 0,
+            "xai_token_cost_usd": 0.0,
+            "xai_x_search_tool_usd": 0.0,
+            "estimated_total_cost_usd": 0.0,
+            "xapi_request_count_est": 2,
+            "notes": "manual X URL import uses direct X API/page lookup; xAI search is not used",
+        },
+    }
+    RESULT_PATH.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    emit_result("X 链接导入完成", result_json=str(RESULT_PATH), total_items=1)
+    return output
 
 
 def compute_account_baselines(candidates: list[dict], cache: dict) -> dict:
@@ -1323,6 +1530,12 @@ def main() -> int:
     RUN_LOG_PATH.write_text("", encoding="utf-8")
     RUN_ERROR_PATH.write_text("", encoding="utf-8")
     PARTIAL_PATH.write_text("", encoding="utf-8")
+    if args.import_url:
+        log("Manual X URL import started.")
+        output = import_single_post(args.import_url, args.partition_id)
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        return 0
+
     log("Run started.")
     accounts, partition = load_accounts(args.partition_id)
     CURRENT_PARTITION = partition
@@ -1467,41 +1680,7 @@ def main() -> int:
 
     output_items = []
     for idx, item in enumerate(ranked, start=1):
-        output_items.append(
-            {
-                "rank": idx,
-                "author": item.get("author"),
-                "author_summary": (
-                    f"@{item.get('author')} - {item.get('summary')}"
-                    if item.get("author") and item.get("summary")
-                    else None
-                ),
-                "followers": item.get("followers"),
-                "followers_source": item.get("followers_source"),
-                "post_id": item.get("post_id"),
-                "published_at": item.get("published_at"),
-                "published_at_iso": item.get("published_at_iso"),
-                "views": item.get("views"),
-                "views_display": item.get("views_display"),
-                "likes": item.get("likes"),
-                "reposts": item.get("reposts"),
-                "replies": item.get("replies"),
-                "engagement_rate": item.get("engagement_rate"),
-                "over_follower_ratio": item.get("over_follower_ratio"),
-                "ratio_display": item.get("ratio_display"),
-                "account_avg_views": item.get("account_avg_views"),
-                "breakout_ratio": item.get("breakout_ratio"),
-                "breakout_display": item.get("breakout_display"),
-                "hot_score": item.get("hot_score"),
-                "post_url": item.get("post_url"),
-                "video_url": item.get("video_url"),
-                "video_resolution": item.get("video_resolution"),
-                "video_meets_720p": item.get("video_meets_720p"),
-                "video_variant_count": item.get("video_variant_count"),
-                "source_partition_id": partition.get("id"),
-                "source_partition_label": partition.get("label"),
-            }
-        )
+        output_items.append(build_output_item(item, idx, partition))
 
     output = {
         "title": f"{partition.get('label')}过去24小时Top10视频（仅保留播放量>={MIN_REQUIRED_VIEWS}，按复刻爆款潜力排序）",

@@ -12,6 +12,9 @@ const { makeJobId, ensureDir } = require('../../core/runtime');
 const { DEFAULT_RUNNINGHUB_BASE_URL } = require('../pipeline/runningHub');
 const { RUNNINGHUB_INFINITETALK_3INPUT } = require('../../config/runningHub');
 const { createAvatarGenerationService } = require('./avatarGeneration');
+const {
+  AVATAR_MOTION_SOURCE_FILE
+} = require('./avatarMotion');
 const { resolvePresetFile } = require('./presetResolver');
 const { buildMaterialDrivenPipelineArgs } = require('./retryPlan');
 const { normalizeSourceMeta, writeTaskState } = require('./taskState');
@@ -230,8 +233,6 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     runningHubOutputNodeId: String(rawAvatarConfig.runningHubOutputNodeId || RUNNINGHUB_INFINITETALK_3INPUT.outputNodeId).trim(),
     poseNodeId: String(rawAvatarConfig.poseNodeId || '').trim(),
     poseFieldName: String(rawAvatarConfig.poseFieldName || 'pose').trim(),
-    avatarMotionEnabled: rawAvatarConfig.avatarMotionEnabled === true || rawAvatarConfig.avatarMotionEnabled === 'true',
-    avatarMotionRequired: rawAvatarConfig.avatarMotionRequired === true || rawAvatarConfig.avatarMotionRequired === 'true',
     avatarActionPresetDir: String(rawAvatarConfig.avatarActionPresetDir || '').trim(),
     audioPreset: String(rawAvatarConfig.audioPreset || '').trim(),
     imagePreset: String(rawAvatarConfig.imagePreset || '').trim(),
@@ -317,10 +318,10 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
     useCache,
     autoGenerate,
     allowRuleFallback,
-    status: 'running',
+    status: 'queued',
     currentStep: 0,
     progress: 0,
-    statusText: '工作流已启动',
+    statusText: '素材已接收，等待完整流程执行位',
     logs: [],
     startedAt: nowIso(),
     updatedAt: nowIso(),
@@ -345,7 +346,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
 
   task.currentStep = 1;
   task.progress = 2;
-  task.statusText = '素材已接收，准备启动工作流';
+  task.statusText = '素材已接收，等待完整流程执行位';
   addTaskLog(task, '[AutoPilot] 自动启动素材驱动工作流');
   addTaskLog(task, `任务目录: ${outputDir}`, 'info');
   addTaskLog(task, `素材文件已就位: material.mp4 (${formatBytes(fs.statSync(materialPath).size)})`, 'success');
@@ -355,13 +356,85 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
 
   activeTasks.set(jobId, task);
 
+  const workflowScheduler = params.workflowScheduler || null;
+  const launch = () => launchInitialAutoStartPipeline({
+    paths,
+    jobId,
+    task,
+    materialPath,
+    useSmartClip,
+    useCache,
+    allowRuleFallback,
+    taskStore,
+    workflowScheduler
+  });
+
+  if (workflowScheduler && typeof workflowScheduler.submit === 'function') {
+    const scheduleResult = workflowScheduler.submit(jobId, task, launch, {
+      queuedMessage: '完整流程排队中，等待空闲执行位',
+      startedMessage: 'AutoPilot 完整流程开始执行'
+    });
+    return {
+      jobId,
+      outputPath: outputDir,
+      queued: Boolean(scheduleResult?.queued),
+      queuePosition: scheduleResult?.queuePosition || 0,
+      concurrency: scheduleResult?.concurrency || 2
+    };
+  }
+
+  launch();
+  return { jobId, outputPath: outputDir };
+}
+
+function readJsonFile(filePath, fallback = null) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+function hasRunningHubPoseInput(state = {}) {
+  if (String(state?.remotePoseName || '').trim()) return true;
+  const nodeInfoList = Array.isArray(state?.nodeInfoList) ? state.nodeInfoList : [];
+  return nodeInfoList.some((item) => {
+    const fieldName = String(item?.fieldName || '').trim().toLowerCase();
+    return fieldName === 'video' && String(item?.fieldValue || '').trim();
+  });
+}
+
+function assertMotionReferenceReady(task) {
+  const motionSourcePath = path.join(task.outputPath, AVATAR_MOTION_SOURCE_FILE);
+  if (!fs.existsSync(motionSourcePath)) {
+    throw new Error(`缺少数字人动作参考视频，已停止后续混剪: ${AVATAR_MOTION_SOURCE_FILE}`);
+  }
+  const renderState = readJsonFile(path.join(task.outputPath, 'avatar_render_state.json'), task.avatarRenderState || {});
+  const provider = String(renderState?.provider || task?.avatarConfig?.renderProvider || '').trim().toLowerCase();
+  if (provider === 'runninghub' && !hasRunningHubPoseInput(renderState)) {
+    throw new Error('RunningHub 数字人合成缺少动作参考视频节点输入，已停止后续混剪');
+  }
+}
+
+function launchInitialAutoStartPipeline({
+  paths,
+  jobId,
+  task,
+  materialPath,
+  useSmartClip,
+  useCache,
+  allowRuleFallback,
+  taskStore = null,
+  workflowScheduler = null
+}) {
   // 启动 Python 流水线 (步骤 1-5)
   const scriptPath = path.join(paths.PROJECT_ROOT, 'python/pipeline/run_material_driven.py');
   const args = [
     '-u',
     scriptPath,
     materialPath,
-    '--output-dir', outputPath,
+    '--output-dir', task.outputPath,
     '--end-at', '5'
   ];
   if (!useSmartClip) args.push('--no-smart-clip');
@@ -369,7 +442,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
   if (allowRuleFallback) args.push('--allow-rule-fallback');
 
   const pythonProcess = spawn('python', args, {
-    cwd: outputPath,
+    cwd: task.outputPath,
     env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', CODEX_PYTHON_PROTOCOL: 'jsonl-v1' }
   });
 
@@ -433,6 +506,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
         task.updatedAt = nowIso();
         addTaskLog(task, '步骤1-5完成，已停在口播确认点', 'success');
         syncMaterialTask(taskStore, task);
+        workflowScheduler?.release?.(jobId);
         return;
       }
       task.statusText = '前置步骤完成，开始自动生成数字人...';
@@ -442,8 +516,9 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
       // 自动生成数字人
       try {
         await generateAvatar(paths, jobId, task, taskStore);
+        assertMotionReferenceReady(task);
         // 从步骤6继续
-        launchFromStep6(paths, jobId, task, taskStore);
+        launchFromStep6(paths, jobId, task, taskStore, workflowScheduler);
       } catch (err) {
         task.status = 'failed';
         task.error = err?.message || '自动生成数字人失败';
@@ -453,6 +528,7 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
         addTaskLog(task, task.error, 'error');
         syncMaterialTask(taskStore, task, { error: task.error });
         console.error(`[autoStart:${jobId}] 数字人生成失败:`, err.message);
+        workflowScheduler?.release?.(jobId);
       }
     } else {
       const message = summarizeFailureMessage(stderrBuffer, code);
@@ -464,10 +540,11 @@ async function startMaterialDrivenFromUrl(paths, params = {}) {
       addTaskLog(task, message, 'error');
       syncMaterialTask(taskStore, task, { error: message });
       console.error(`[autoStart:${jobId}] 流水线失败:`, message);
+      workflowScheduler?.release?.(jobId);
     }
   });
 
-  return { jobId, outputPath: outputDir };
+  return pythonProcess;
 }
 
 async function generateAvatar(paths, jobId, task, taskStore = null) {
@@ -523,7 +600,7 @@ async function generateAvatar(paths, jobId, task, taskStore = null) {
 /**
  * 从步骤6继续执行（数字人映射 + 混剪）
  */
-function launchFromStep6(paths, jobId, task, taskStore = null) {
+function launchFromStep6(paths, jobId, task, taskStore = null, workflowScheduler = null) {
   const scriptPath = path.join(paths.PROJECT_ROOT, 'python/pipeline/run_material_driven.py');
   const materialPath = path.join(task.outputPath, 'material.mp4');
   const args = buildMaterialDrivenPipelineArgs({
@@ -585,6 +662,7 @@ function launchFromStep6(paths, jobId, task, taskStore = null) {
       addTaskLog(task, '[AutoPilot] 素材驱动工作流全部完成', 'success');
       syncMaterialTask(taskStore, task, { videoUrl });
       console.log(`[autoStart:${jobId}] 制作完成, videoUrl=${videoUrl}`);
+      workflowScheduler?.release?.(jobId);
     } else {
       const message = summarizeFailureMessage(stderrBuffer, code);
       task.status = 'failed';
@@ -595,8 +673,15 @@ function launchFromStep6(paths, jobId, task, taskStore = null) {
       addTaskLog(task, message, 'error');
       syncMaterialTask(taskStore, task, { error: message });
       console.error(`[autoStart:${jobId}] 步骤6-7失败:`, message);
+      workflowScheduler?.release?.(jobId);
     }
   });
 }
 
-module.exports = { startMaterialDrivenFromUrl, getTaskStatus };
+module.exports = {
+  _test: {
+    assertMotionReferenceReady
+  },
+  getTaskStatus,
+  startMaterialDrivenFromUrl
+};

@@ -60,6 +60,48 @@ describe('material driven task store bridge', () => {
     });
   });
 
+  test('stores errored material tasks as failed records', () => {
+    const task = {
+      outputPath: path.join(tempDir, 'material_failed'),
+      outputDir: 'material_failed',
+      status: 'recovered',
+      progress: 5,
+      currentStep: 1,
+      statusText: '已恢复初始素材状态',
+      error: '进程退出，代码: 1'
+    };
+
+    const stored = syncMaterialTask(taskStore, task);
+
+    expect(stored.status).toBe('failed');
+    expect(stored.metadata).toMatchObject({
+      outputDir: 'material_failed',
+      stage: 'recovered',
+      error: '进程退出，代码: 1'
+    });
+  });
+
+  test('persists material task logs during status sync', () => {
+    const task = {
+      outputPath: path.join(tempDir, 'material_logs'),
+      outputDir: 'material_logs',
+      status: 'generating_avatar',
+      progress: 86,
+      currentStep: 6,
+      statusText: '数字人动作计划生成失败: LLM 多次判断均未选择任何出镜动作',
+      logs: [
+        { time: '2026-01-01T00:00:00.000Z', message: '开始生成数字人动作计划与姿态序列', type: 'info' },
+        { time: '2026-01-01T00:00:01.000Z', message: '数字人动作计划生成失败: LLM 多次判断均未选择任何出镜动作', type: 'error' }
+      ]
+    };
+
+    const stored = syncMaterialTask(taskStore, task, { error: task.statusText });
+    const reloaded = taskStore.getTask(stored.id);
+
+    expect(reloaded.logs).toEqual(task.logs);
+    expect(reloaded.status).toBe('failed');
+  });
+
   test('syncs RunningHub avatar task with provider task key', () => {
     const task = {
       outputPath: path.join(tempDir, 'material_123'),

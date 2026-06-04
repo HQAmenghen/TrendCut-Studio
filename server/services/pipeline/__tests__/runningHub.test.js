@@ -162,6 +162,45 @@ describe('RunningHub workflow API helpers', () => {
     );
   });
 
+  test('fails before submit when RunningHub motion reference is required but missing', async () => {
+    const fakeAxios = {
+      post: jest.fn(async () => ({
+        data: {
+          code: 0,
+          data: {
+            fileName: 'api/uploaded.bin'
+          }
+        }
+      }))
+    };
+    const fakeForm = {
+      append: jest.fn(),
+      getHeaders: () => ({ 'content-type': 'multipart/form-data; boundary=test' })
+    };
+    const client = createRunningHubClient({
+      axiosClient: fakeAxios,
+      formDataFactory: () => fakeForm,
+      fsImpl: {
+        createReadStream: (filePath) => ({ filePath })
+      }
+    });
+
+    await expect(client.renderExternalAudio({
+      apiKey: 'rh-key',
+      baseUrl: 'https://www.runninghub.cn/openapi/v2',
+      workflowId: '2051840324212936706',
+      audioPath: 'C:/tmp/avatar.wav',
+      imagePath: 'C:/tmp/avatar.png'
+    })).rejects.toThrow('缺少动作参考视频');
+
+    expect(fakeAxios.post).toHaveBeenCalledTimes(2);
+    expect(fakeAxios.post).not.toHaveBeenCalledWith(
+      'https://www.runninghub.cn/openapi/v2/run/workflow/2051840324212936706',
+      expect.any(Object),
+      expect.any(Object)
+    );
+  });
+
   test('extracts the requested video output URL from flexible query responses', () => {
     const outputUrl = extractRunningHubOutputUrl({
       data: {
@@ -239,7 +278,11 @@ describe('RunningHub workflow API helpers', () => {
       baseUrl: 'https://www.runninghub.cn/openapi/v2',
       resumeTaskId: 'task-resume',
       audioPath: 'C:/tmp/avatar.wav',
-      imagePath: 'C:/tmp/avatar.png'
+      imagePath: 'C:/tmp/avatar.png',
+      remotePoseName: 'api/avatar_pose.mp4',
+      nodeInfoList: [
+        { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_pose.mp4' }
+      ]
     })).resolves.toMatchObject({
       provider: 'runninghub',
       taskId: 'task-resume',
@@ -253,5 +296,44 @@ describe('RunningHub workflow API helpers', () => {
       expect.objectContaining({ taskId: 'task-resume' }),
       expect.any(Object)
     );
+  });
+
+  test('fails before resume when required RunningHub pose state is missing', async () => {
+    const fakeAxios = {
+      post: jest.fn()
+    };
+    const client = createRunningHubClient({ axiosClient: fakeAxios });
+
+    await expect(client.renderExternalAudio({
+      apiKey: 'rh-key',
+      baseUrl: 'https://www.runninghub.cn/openapi/v2',
+      resumeTaskId: 'task-resume',
+      nodeInfoList: [
+        { nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' },
+        { nodeId: '180', fieldName: 'image', fieldValue: 'api/avatar.png' }
+      ]
+    })).rejects.toThrow('缺少动作参考视频节点输入');
+
+    expect(fakeAxios.post).not.toHaveBeenCalled();
+  });
+
+  test('fails before resume when RunningHub pose node has no uploaded value', async () => {
+    const fakeAxios = {
+      post: jest.fn()
+    };
+    const client = createRunningHubClient({ axiosClient: fakeAxios });
+
+    await expect(client.renderExternalAudio({
+      apiKey: 'rh-key',
+      baseUrl: 'https://www.runninghub.cn/openapi/v2',
+      resumeTaskId: 'task-resume',
+      nodeInfoList: [
+        { nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' },
+        { nodeId: '180', fieldName: 'image', fieldValue: 'api/avatar.png' },
+        { nodeId: '279', fieldName: 'video', fieldValue: '' }
+      ]
+    })).rejects.toThrow('缺少动作参考视频节点输入');
+
+    expect(fakeAxios.post).not.toHaveBeenCalled();
   });
 });

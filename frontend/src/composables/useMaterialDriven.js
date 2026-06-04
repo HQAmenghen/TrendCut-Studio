@@ -506,8 +506,14 @@ export function useMaterialDriven() {
       const data = await response.json();
       jobId.value = data.jobId;
       outputPath.value = data.outputPath;
+      if (data.message) {
+        statusText.value = data.message;
+      }
+      if (data.queued) {
+        progress.value = Math.max(1, progress.value || 0);
+      }
 
-      addLog('上传成功，开始处理...', 'success');
+      addLog(data.queued ? `上传成功，已进入完整流程队列（第 ${data.queuePosition || 1} 位）` : '上传成功，开始处理...', 'success');
 
       // 连接SSE监听进度
       connectEventSource(data.jobId);
@@ -809,7 +815,7 @@ export function useMaterialDriven() {
       const task = await refreshTaskSnapshot();
       if (!task) return false;
 
-      if (task.status === 'running') {
+      if (task.status === 'running' || task.status === 'queued') {
         const startedAt = task.startedAt ? new Date(task.startedAt).getTime() : Date.now();
         startTimer(Number.isFinite(startedAt) ? startedAt : Date.now());
         if (WORKFLOW_STEP_IDS.includes(Number(currentStep.value || 0))) {

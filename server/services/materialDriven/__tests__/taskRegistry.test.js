@@ -123,6 +123,49 @@ describe('material-driven task registry source metadata', () => {
     expect(tasks[0].logs[0].message).toBe('字幕已生成，进入数字人合成');
   });
 
+  test('removes recovered material task when it carries a failure error', () => {
+    const outputDir = 'material_failed_recovered';
+    const outputPath = path.join(projectsDir, outputDir);
+    fs.mkdirSync(outputPath, { recursive: true });
+    const storedTask = taskStore.createTask('material_driven', {
+      outputDir,
+      outputPath,
+      stage: 'recovered',
+      error: '进程退出，代码: 1'
+    }, {
+      taskKey: `material:${outputDir}`
+    });
+    taskStore.updateTask(storedTask.id, {
+      status: 'running',
+      progress: 5,
+      message: '已恢复初始素材状态'
+    });
+    const processHandle = { kill: jest.fn() };
+    activeTasks.set('job-failed-recovered', {
+      id: 'job-failed-recovered',
+      status: 'recovered',
+      currentStep: 1,
+      progress: 5,
+      statusText: '已恢复初始素材状态',
+      error: '进程退出，代码: 1',
+      outputPath,
+      outputDir,
+      process: processHandle
+    });
+
+    const registry = createMaterialDrivenTaskRegistry({ PROJECTS_DIR: projectsDir }, { taskStore });
+    const result = registry.removeTask('job-failed-recovered', { outputDir });
+
+    expect(result).toMatchObject({
+      removed: true,
+      outputPath: outputDir
+    });
+    expect(result.deletedRecords).toBe(1);
+    expect(processHandle.kill).toHaveBeenCalledTimes(1);
+    expect(activeTasks.has('job-failed-recovered')).toBe(false);
+    expect(taskStore.getTask(storedTask.id)).toBeNull();
+  });
+
   test('merges active material and avatar tasks from database by output directory', () => {
     const material = taskStore.createTask('material_driven', {
       outputDir: 'material_db',

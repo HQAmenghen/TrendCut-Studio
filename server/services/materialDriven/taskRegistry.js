@@ -25,6 +25,7 @@ const TERMINAL_AVATAR_STATUSES = new Set([
 ]);
 const FAILED_AVATAR_STATUSES = new Set(['failed', 'failure', 'error']);
 const CANCELLED_AVATAR_STATUSES = new Set(['canceled', 'cancelled']);
+const REMOVABLE_TASK_STATUSES = new Set(['queued', 'completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'published', 'recovered']);
 
 function mergeSourceMeta(primary = {}, fallback = {}) {
   const normalizedPrimary = normalizeSourceMeta(primary || {});
@@ -364,6 +365,113 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
     return `${payload.taskType || 'task'}:${payload.id || taskKey}`;
   }
 
+  function deleteTaskStoreRecord(taskId) {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId || !taskStore || typeof taskStore.deleteTask !== 'function') return false;
+    if (typeof taskStore.getTask === 'function' && !taskStore.getTask(normalizedTaskId)) return false;
+    taskStore.deleteTask(normalizedTaskId);
+    return true;
+  }
+
+  function deleteTaskStoreMatches(outputDir = '', extraIds = []) {
+    if (!taskStore || typeof taskStore.listTasks !== 'function') return 0;
+    const normalizedOutputDir = String(outputDir || '').trim();
+    const exactIds = new Set(extraIds.map((id) => String(id || '').trim()).filter(Boolean));
+    let deleted = 0;
+    for (const taskId of exactIds) {
+      if (deleteTaskStoreRecord(taskId)) deleted += 1;
+    }
+    if (!normalizedOutputDir) return deleted;
+
+    const materialKey = `material:${normalizedOutputDir}`;
+    const avatarKey = `avatar:${normalizedOutputDir}`;
+    const candidateTasks = [
+      ...taskStore.listTasks('material_driven', 300),
+      ...taskStore.listTasks('avatar_generation', 300)
+    ];
+    for (const task of candidateTasks) {
+      if (!task?.id || exactIds.has(String(task.id))) continue;
+      const metadata = task.metadata || {};
+      const matchesOutput = String(metadata.outputDir || '').trim() === normalizedOutputDir;
+      const matchesTaskKey = [materialKey, avatarKey].includes(String(task.taskKey || '').trim());
+      const matchesSourceKey = String(metadata.sourceMaterialTaskKey || '').trim() === materialKey;
+      if (matchesOutput || matchesTaskKey || matchesSourceKey) {
+        taskStore.deleteTask(task.id);
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+
+  function removeTask(jobId, options = {}) {
+    const normalizedJobId = String(jobId || '').trim();
+    if (!normalizedJobId) {
+      const error = new Error('任务不存在');
+      error.status = 404;
+      throw error;
+    }
+
+    const outputDir = String(options.outputDir || options.outputPath || '').trim();
+    const task = activeTasks.get(normalizedJobId) || (outputDir ? buildRecoveredTaskFromDir(outputDir, {
+      jobId: normalizedJobId,
+      includeRecoveryLog: false
+    }) : null);
+    const payload = task ? buildStatusPayload(task).task : null;
+    const hasFailureSignal = Boolean(
+      payload?.error ||
+      task?.error ||
+      options.error ||
+      String(payload?.statusText || task?.statusText || '').includes('进程退出')
+    );
+    const status = hasFailureSignal
+      ? 'failed'
+      : String(payload?.status || task?.status || options.status || '').trim().toLowerCase();
+    if (task?.process && !REMOVABLE_TASK_STATUSES.has(status)) {
+      const error = new Error('运行中的任务不能删除，请等待结束后再清理');
+      error.status = 409;
+      throw error;
+    }
+    if (status && !REMOVABLE_TASK_STATUSES.has(status)) {
+      const error = new Error('仅失败、中断、取消或已完成的任务允许删除');
+      error.status = 409;
+      throw error;
+    }
+    if (!task && !options.taskStoreId && !options.avatarTaskStoreId && !outputDir) {
+      const error = new Error('任务不存在');
+      error.status = 404;
+      throw error;
+    }
+
+    if (task?.process && typeof task.process.kill === 'function') {
+      try {
+        task.process.kill();
+      } catch (_err) {}
+    }
+
+    activeTasks.delete(normalizedJobId);
+    const clients = taskClients.get(normalizedJobId);
+    if (clients) {
+      for (const client of clients) {
+        try {
+          client.end();
+        } catch (_err) {}
+      }
+      taskClients.delete(normalizedJobId);
+    }
+
+    const resolvedOutputDir = outputDir || payload?.outputPath || task?.outputDir || path.basename(task?.outputPath || '');
+    const deletedRecords = deleteTaskStoreMatches(resolvedOutputDir, [
+      options.taskStoreId,
+      options.avatarTaskStoreId
+    ]);
+
+    return {
+      removed: true,
+      deletedRecords,
+      outputPath: resolvedOutputDir
+    };
+  }
+
   function isAvatarPayload(payload = {}) {
     return payload.taskType === 'avatar_generation' || Boolean(payload.avatarRenderState?.taskId);
   }
@@ -534,6 +642,7 @@ function createMaterialDrivenTaskRegistry(paths, options = {}) {
     buildStatusPayload,
     listActiveStatusPayloads,
     getLatestCompletedStatusPayload,
+    removeTask,
     attachProgressClient
   };
 }

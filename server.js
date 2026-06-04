@@ -68,6 +68,7 @@ const { registerMaterialDrivenRoutes } = require('./server/routes/materialDriven
 const { createMaterialDrivenTaskRegistry } = require('./server/services/materialDriven/taskRegistry');
 const { createAvatarGenerationService } = require('./server/services/materialDriven/avatarGeneration');
 const { createMaterialDrivenPipelineRunner } = require('./server/services/materialDriven/pipelineProcess');
+const { createMaterialWorkflowScheduler } = require('./server/services/materialDriven/workflowScheduler');
 const { startMaterialDrivenFromUrl, getTaskStatus } = require('./server/services/materialDriven/autoStart');
 const { createAgentHandlers } = require('./server/services/agent/handlers');
 const { registerAgentRoutes } = require('./server/routes/agent');
@@ -167,10 +168,23 @@ const materialDrivenAvatarGeneration = createAvatarGenerationService({
     persistTaskStateSnapshot: materialDrivenTaskRegistry.persistTaskStateSnapshot,
     taskStore
 });
+let materialWorkflowScheduler = null;
 const materialDrivenPipelineRunner = createMaterialDrivenPipelineRunner({
     autoGenerateAvatar: materialDrivenAvatarGeneration.autoGenerateAvatar,
-    taskStore
+    taskStore,
+    onTaskSettled: (jobId) => materialWorkflowScheduler?.release(jobId)
 });
+materialWorkflowScheduler = createMaterialWorkflowScheduler({
+    taskStore,
+    concurrency: 2
+});
+
+function scheduleMaterialWorkflowRun(jobId, task, start, options = {}) {
+    return materialWorkflowScheduler.submit(jobId, task, start, {
+        queuedMessage: options.queuedMessage || '完整流程排队中，等待空闲执行位',
+        startedMessage: options.startedMessage || '完整流程开始执行'
+    });
+}
 
 app.use(express.static(paths.FRONTEND_DIST_DIR));
 app.use(express.static(paths.PUBLIC_DIR));
@@ -548,6 +562,7 @@ const {
         runPythonScript,
         readProjectEnv,
         updateProjectEnv,
+        taskStore,
         unifiedTaskView: deferredUnifiedTaskView
     });
 
@@ -714,7 +729,8 @@ const {
                 sendError(res, { status, code: status === 400 ? 'XAI_ACCOUNTS_EMPTY' : 'XAI_CONFIG_WRITE_FAILED', stage: 'xai.config', error: err.message, details: err.message });
             }
         },
-        run: (req, res) => xaiService.run(req.body?.clientId, res, req.body?.partitionId || req.body?.partition || '')
+        run: (req, res) => xaiService.run(req.body?.clientId, res, req.body?.partitionId || req.body?.partition || ''),
+        importUrl: (req, res) => xaiService.importUrl(req, res)
     });
     verticalQueueService = createVerticalQueueService({
         baseDir: paths.PROJECT_ROOT,
@@ -922,7 +938,8 @@ const {
         taskStore,
         taskRegistry: materialDrivenTaskRegistry,
         avatarGeneration: materialDrivenAvatarGeneration,
-        pipelineRunner: materialDrivenPipelineRunner
+        pipelineRunner: materialDrivenPipelineRunner,
+        workflowScheduler: materialWorkflowScheduler
     });
 
     const agentHandlers = createAgentHandlers({
@@ -931,7 +948,7 @@ const {
         selfCheckService,
         xaiService,
         materialDrivenStarter: {
-            start: (params) => startMaterialDrivenFromUrl(paths, { ...params, taskStore }),
+            start: (params) => startMaterialDrivenFromUrl(paths, { ...params, taskStore, workflowScheduler: materialWorkflowScheduler }),
             getStatus: (jobId, outputPath = '') => {
                 const runtimeStatus = getTaskStatus(jobId);
                 if (runtimeStatus) {
@@ -952,7 +969,15 @@ const {
                     task.useCache = options.useCache;
                 }
                 materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
-                materialDrivenPipelineRunner.startRetryPipeline(jobId, task, step);
+                scheduleMaterialWorkflowRun(
+                    jobId,
+                    task,
+                    () => materialDrivenPipelineRunner.startRetryPipeline(jobId, task, step),
+                    {
+                        queuedMessage: 'Agent 重试流程排队中，等待空闲执行位',
+                        startedMessage: `Agent 开始重试步骤${step || ''}`.trim()
+                    }
+                );
                 return materialDrivenTaskRegistry.buildStatusPayload(task);
             },
             updateAvatarConfig: async (jobId, outputPath = '', options = {}) => {
@@ -990,23 +1015,36 @@ const {
                     }
                 }
                 if (task.status !== 'generating_avatar') {
-                    (async () => {
-                        try {
-                            await materialDrivenAvatarGeneration.autoGenerateAvatar(jobId, task);
-                            task.status = 'waiting_render';
-                            task.currentStep = 6;
-                            task.progress = Math.max(Number(task.progress || 0), 90);
-                            task.statusText = '数字人已生成，等待预览或剪辑出片';
-                            task.updatedAt = new Date().toISOString();
-                            materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
-                        } catch (err) {
-                            task.status = 'failed';
-                            task.error = err?.message || '数字人生成失败';
-                            task.statusText = task.error;
-                            task.completedAt = new Date().toISOString();
-                            task.updatedAt = new Date().toISOString();
+                    scheduleMaterialWorkflowRun(
+                        jobId,
+                        task,
+                        () => {
+                            (async () => {
+                                try {
+                                    await materialDrivenAvatarGeneration.autoGenerateAvatar(jobId, task);
+                                    task.status = 'waiting_render';
+                                    task.currentStep = 6;
+                                    task.progress = Math.max(Number(task.progress || 0), 90);
+                                    task.statusText = '数字人已生成，等待预览或剪辑出片';
+                                    task.updatedAt = new Date().toISOString();
+                                    materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
+                                } catch (err) {
+                                    task.status = 'failed';
+                                    task.error = err?.message || '数字人生成失败';
+                                    task.statusText = task.error;
+                                    task.completedAt = new Date().toISOString();
+                                    task.updatedAt = new Date().toISOString();
+                                } finally {
+                                    materialWorkflowScheduler.release(jobId);
+                                }
+                            })();
+                            return { reused: false, alreadyRunning: false };
+                        },
+                        {
+                            queuedMessage: '数字人生成排队中，等待空闲执行位',
+                            startedMessage: '开始生成数字人'
                         }
-                    })();
+                    );
                 }
                 return materialDrivenTaskRegistry.buildStatusPayload(task);
             },
@@ -1021,15 +1059,31 @@ const {
                 materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
                 const executionPlanPath = path.join(task.outputPath, 'execution_plan.json');
                 if (fs.existsSync(executionPlanPath)) {
-                    materialDrivenPipelineRunner.spawnPipeline(jobId, task, 7, {
-                        step: 7,
-                        progressValue: 90,
-                        statusText: '正在根据当前执行计划剪辑出片',
-                        startLog: 'Agent 触发：剪辑并生成竖屏成片',
-                        stepMessage: '步骤7: 剪辑出片'
-                    });
+                    scheduleMaterialWorkflowRun(
+                        jobId,
+                        task,
+                        () => materialDrivenPipelineRunner.spawnPipeline(jobId, task, 7, {
+                            step: 7,
+                            progressValue: 90,
+                            statusText: '正在根据当前执行计划剪辑出片',
+                            startLog: 'Agent 触发：剪辑并生成竖屏成片',
+                            stepMessage: '步骤7: 剪辑出片'
+                        }),
+                        {
+                            queuedMessage: 'Agent 出片流程排队中，等待空闲执行位',
+                            startedMessage: 'Agent 开始剪辑出片'
+                        }
+                    );
                 } else {
-                    materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task);
+                    scheduleMaterialWorkflowRun(
+                        jobId,
+                        task,
+                        () => materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task),
+                        {
+                            queuedMessage: 'Agent 出片流程排队中，等待空闲执行位',
+                            startedMessage: 'Agent 开始剪辑出片'
+                        }
+                    );
                 }
                 return materialDrivenTaskRegistry.buildStatusPayload(task);
             },
@@ -1046,23 +1100,15 @@ const {
                 }
                 task.autoGenerate = true;
                 materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
-                const aimanPath = path.join(task.outputPath, 'aiman.mp4');
-                if (fs.existsSync(aimanPath)) {
-                    materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task);
-                } else if (task.status !== 'generating_avatar') {
-                    (async () => {
-                        try {
-                            await materialDrivenAvatarGeneration.autoGenerateAvatar(jobId, task);
-                            materialDrivenPipelineRunner.launchFromAvatarReady(jobId, task);
-                        } catch (err) {
-                            task.status = 'failed';
-                            task.error = err?.message || '一步到位流程生成数字人失败';
-                            task.statusText = task.error;
-                            task.completedAt = new Date().toISOString();
-                            task.updatedAt = new Date().toISOString();
-                        }
-                    })();
-                }
+                scheduleMaterialWorkflowRun(
+                    jobId,
+                    task,
+                    () => materialDrivenPipelineRunner.continueFromAvatarStep(jobId, task),
+                    {
+                        queuedMessage: 'Agent 一步到位流程排队中，等待空闲执行位',
+                        startedMessage: 'Agent 开始一步到位流程'
+                    }
+                );
                 return materialDrivenTaskRegistry.buildStatusPayload(task);
             }
         },
@@ -1085,7 +1131,7 @@ const {
     });
 
     const schedulerMaterialDrivenStarter = {
-        start: (params) => startMaterialDrivenFromUrl(paths, { ...params, taskStore }),
+        start: (params) => startMaterialDrivenFromUrl(paths, { ...params, taskStore, workflowScheduler: materialWorkflowScheduler }),
         getStatus: getTaskStatus,
         continueOneClick: async (jobId, outputPath = '', options = {}) => {
             const task = materialDrivenTaskRegistry.resolveTask(jobId, outputPath);
@@ -1100,7 +1146,15 @@ const {
             }
             task.autoGenerate = true;
             materialDrivenTaskRegistry.persistTaskStateSnapshot(task);
-            materialDrivenPipelineRunner.continueFromAvatarStep(jobId, task);
+            scheduleMaterialWorkflowRun(
+                jobId,
+                task,
+                () => materialDrivenPipelineRunner.continueFromAvatarStep(jobId, task),
+                {
+                    queuedMessage: '自动化一步到位流程排队中，等待空闲执行位',
+                    startedMessage: '自动化开始一步到位流程'
+                }
+            );
             return materialDrivenTaskRegistry.buildStatusPayload(task);
         }
     };

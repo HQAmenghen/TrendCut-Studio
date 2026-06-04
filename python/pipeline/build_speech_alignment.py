@@ -84,8 +84,8 @@ def normalize_segments(raw_segments: list[dict]) -> tuple[list[dict], list[dict]
     return segments, words
 
 
-def transcribe_with_filetrans(audio_path: Path, file_url: str = "") -> tuple[list[dict], str, str, str]:
-    resolved_url, _object_key = resolve_filetrans_file_url(str(audio_path), file_url)
+def transcribe_with_filetrans(audio_path: Path) -> tuple[list[dict], str, str, str]:
+    resolved_url, _object_key = resolve_filetrans_file_url(str(audio_path))
     if not resolved_url:
         return [], "", "", ""
     model = get_qwen_asr_model()
@@ -142,14 +142,14 @@ def split_segments_for_subtitles(raw_segments: list[dict]) -> list[dict]:
     return chunks
 
 
-def build_alignment(audio_path: Path, narration_path: Path, file_url: str = "") -> tuple[dict, list[dict]]:
+def build_alignment(audio_path: Path, narration_path: Path) -> tuple[dict, list[dict]]:
     raw_segments = []
     language = ""
     provider = ""
     model = ""
     if os.getenv("SPEECH_ALIGNMENT_FILETRANS", "1").strip().lower() not in {"0", "false", "no", "off"}:
         try:
-            raw_segments, language, provider, model = transcribe_with_filetrans(audio_path, file_url=file_url)
+            raw_segments, language, provider, model = transcribe_with_filetrans(audio_path)
         except Exception as exc:
             print(f"   ⚠️ Qwen Filetrans 口播对齐失败，降级 Whisper: {exc}", file=sys.stderr)
 
@@ -190,7 +190,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alignment-output", required=True, help="Output speech_alignment.json path")
     parser.add_argument("--subtitles-output", required=True, help="Output speech_subtitles.json path")
     parser.add_argument("--meta-output", required=True, help="Output speech_alignment_meta.json path")
-    parser.add_argument("--file-url", default="", help="Optional public URL for Qwen Filetrans")
     return parser.parse_args()
 
 
@@ -203,7 +202,7 @@ def main() -> int:
     if not narration_path.exists():
         raise FileNotFoundError(f"口播文本不存在: {narration_path}")
 
-    alignment, subtitles = build_alignment(audio_path, narration_path, file_url=args.file_url)
+    alignment, subtitles = build_alignment(audio_path, narration_path)
     write_json_file(Path(args.alignment_output), alignment)
     write_json_file(Path(args.subtitles_output), subtitles)
     meta = {

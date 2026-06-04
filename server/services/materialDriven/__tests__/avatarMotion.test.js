@@ -4,29 +4,11 @@ const path = require('path');
 const {
   DEFAULT_MOTION_IDLE_IMAGE_PATH,
   generateAvatarMotion,
-  isAvatarMotionEnabled,
-  resolveMotionLlmModel,
-  resolveMotionLlmProvider,
-  resolveMotionPlannerMode,
   resolveMotionIdleImagePath,
   resolveActionPresetDir
 } = require('../avatarMotion');
 
 describe('avatar motion service', () => {
-  test('keeps avatar motion disabled unless config or env enables it', () => {
-    const previous = process.env.AVATAR_MOTION_ENABLED;
-    delete process.env.AVATAR_MOTION_ENABLED;
-    expect(isAvatarMotionEnabled({})).toBe(false);
-    expect(isAvatarMotionEnabled({ avatarMotionEnabled: true })).toBe(true);
-    process.env.AVATAR_MOTION_ENABLED = 'true';
-    expect(isAvatarMotionEnabled({ avatarMotionEnabled: false })).toBe(true);
-    if (previous === undefined) {
-      delete process.env.AVATAR_MOTION_ENABLED;
-    } else {
-      process.env.AVATAR_MOTION_ENABLED = previous;
-    }
-  });
-
   test('runs plan and pose builder scripts with stable artifact paths', async () => {
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'avatar-motion-'));
     const narrationTextPath = path.join(outputDir, 'narration_speech.txt');
@@ -44,6 +26,9 @@ describe('avatar motion service', () => {
     const calls = [];
     const runPython = jest.fn(async (script, args) => {
       calls.push({ script: path.basename(script), args });
+      if (script.includes('avatar_motion_source_builder')) {
+        fs.writeFileSync(path.join(outputDir, 'avatar_motion_source.mp4'), 'motion', 'utf8');
+      }
       return {
         protocol: {
           result: script.includes('avatar_motion_plan')
@@ -59,9 +44,6 @@ describe('avatar motion service', () => {
       speechAudioPath,
       imagePath,
       actionPresetDir: 'C:/actions',
-      avatarMotionPlanner: 'llm',
-      avatarMotionLlmProvider: 'qwen',
-      avatarMotionLlmModel: 'qwen3.6-plus',
       idleImagePath,
       runPython
     });
@@ -73,12 +55,8 @@ describe('avatar motion service', () => {
     expect(calls[0].args).toContain(path.join(outputDir, 'avatar_motion_plan.json'));
     expect(calls[0].args).toContain('--action-dir');
     expect(calls[0].args).toContain('C:/actions');
-    expect(calls[0].args).toContain('--planner-mode');
-    expect(calls[0].args).toContain('llm');
-    expect(calls[0].args).toContain('--llm-provider');
-    expect(calls[0].args).toContain('qwen');
-    expect(calls[0].args).toContain('--llm-model');
-    expect(calls[0].args).toContain('qwen3.6-plus');
+    expect(calls[0].args).not.toContain('--llm-provider');
+    expect(calls[0].args).not.toContain('--llm-model');
     expect(calls[0].args).toContain('--script-units');
     expect(calls[0].args).toContain(path.join(outputDir, 'script_units.json'));
     expect(calls[0].args).toContain('--edit-plan');
@@ -95,6 +73,96 @@ describe('avatar motion service', () => {
     expect(calls[1].args).not.toContain('--sequence');
     expect(result.motionSignature).toBe('plan-sig:motion-video-sig');
     expect(result.poseInputPath).toBe(path.join(outputDir, 'avatar_motion_source.mp4'));
+  });
+
+  test('fails when the motion source builder does not create the reference video', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'avatar-motion-missing-'));
+    const narrationTextPath = path.join(outputDir, 'narration_speech.txt');
+    const speechAudioPath = path.join(outputDir, 'avatar_qwen3tts.wav');
+    const idleImagePath = path.join(outputDir, 'idle.png');
+    fs.writeFileSync(narrationTextPath, '这是关键。', 'utf8');
+    fs.writeFileSync(speechAudioPath, 'audio', 'utf8');
+    fs.writeFileSync(idleImagePath, 'idle', 'utf8');
+
+    const runPython = jest.fn(async (script) => ({
+      protocol: {
+        result: script.includes('avatar_motion_plan')
+          ? { signature: 'plan-sig', segmentCount: 1 }
+          : { signature: 'motion-video-sig', poseInputPath: path.join(outputDir, 'avatar_motion_source.mp4') }
+      }
+    }));
+
+    await expect(generateAvatarMotion({
+      outputDir,
+      narrationTextPath,
+      speechAudioPath,
+      idleImagePath,
+      runPython
+    })).rejects.toThrow('数字人动作参考视频未生成');
+  });
+
+  test('fails when the motion source builder reports a missing pose input path', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'avatar-motion-missing-pose-'));
+    const narrationTextPath = path.join(outputDir, 'narration_speech.txt');
+    const speechAudioPath = path.join(outputDir, 'avatar_qwen3tts.wav');
+    const idleImagePath = path.join(outputDir, 'idle.png');
+    const motionSourcePath = path.join(outputDir, 'avatar_motion_source.mp4');
+    const missingPosePath = path.join(outputDir, 'missing_pose.mp4');
+    fs.writeFileSync(narrationTextPath, '这是关键。', 'utf8');
+    fs.writeFileSync(speechAudioPath, 'audio', 'utf8');
+    fs.writeFileSync(idleImagePath, 'idle', 'utf8');
+
+    const runPython = jest.fn(async (script) => {
+      if (script.includes('avatar_motion_source_builder')) {
+        fs.writeFileSync(motionSourcePath, 'motion', 'utf8');
+      }
+      return {
+        protocol: {
+          result: script.includes('avatar_motion_plan')
+            ? { signature: 'plan-sig', segmentCount: 1 }
+            : { signature: 'motion-video-sig', poseInputPath: missingPosePath }
+        }
+      };
+    });
+
+    await expect(generateAvatarMotion({
+      outputDir,
+      narrationTextPath,
+      speechAudioPath,
+      idleImagePath,
+      runPython
+    })).rejects.toThrow('数字人姿态输入不存在');
+  });
+
+  test('fails when the motion source builder leaves an empty reference video', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'avatar-motion-empty-'));
+    const narrationTextPath = path.join(outputDir, 'narration_speech.txt');
+    const speechAudioPath = path.join(outputDir, 'avatar_qwen3tts.wav');
+    const idleImagePath = path.join(outputDir, 'idle.png');
+    fs.writeFileSync(narrationTextPath, '这是关键。', 'utf8');
+    fs.writeFileSync(speechAudioPath, 'audio', 'utf8');
+    fs.writeFileSync(idleImagePath, 'idle', 'utf8');
+
+    const runPython = jest.fn(async (script) => {
+      if (script.includes('avatar_motion_source_builder')) {
+        fs.closeSync(fs.openSync(path.join(outputDir, 'avatar_motion_source.mp4'), 'w'));
+      }
+      return {
+        protocol: {
+          result: script.includes('avatar_motion_plan')
+            ? { signature: 'plan-sig', segmentCount: 1 }
+            : { signature: 'motion-video-sig', poseInputPath: path.join(outputDir, 'avatar_motion_source.mp4') }
+        }
+      };
+    });
+
+    await expect(generateAvatarMotion({
+      outputDir,
+      narrationTextPath,
+      speechAudioPath,
+      idleImagePath,
+      runPython
+    })).rejects.toThrow('数字人动作参考视频未生成');
   });
 
   test('prefers conservative idle image for motion source still segments', () => {
@@ -125,9 +193,4 @@ describe('avatar motion service', () => {
     expect(resolveActionPresetDir({ avatarActionPresetDir: 'C:/custom/actions' })).toBe('C:/custom/actions');
   });
 
-  test('resolves avatar motion planner llm options from config first', () => {
-    expect(resolveMotionPlannerMode({ avatarMotionPlanner: 'llm' })).toBe('llm');
-    expect(resolveMotionLlmProvider({ avatarMotionLlmProvider: 'deepseek' })).toBe('deepseek');
-    expect(resolveMotionLlmModel({ avatarMotionLlmModel: 'deepseek-v4-flash' })).toBe('deepseek-v4-flash');
-  });
 });

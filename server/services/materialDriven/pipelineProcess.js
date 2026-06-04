@@ -13,10 +13,14 @@ const {
 } = require('./events');
 const { syncMaterialTask } = require('./taskStoreBridge');
 const { buildVersionedProjectFileUrl, nowIso } = require('./utils');
+const {
+  AVATAR_MOTION_SOURCE_FILE
+} = require('./avatarMotion');
 
 const SCRIPT_PATH = path.join(__dirname, '../../../python/pipeline/run_material_driven.py');
 const DUPLICATE_ACTION_LOG_INTERVAL_MS = 10000;
 const RETRYABLE_TERMINAL_AVATAR_STATUSES = new Set(['failed', 'failure', 'error', 'canceled', 'cancelled']);
+const AVATAR_RENDER_STATE_FILE = 'avatar_render_state.json';
 
 function createPythonEnv() {
   return {
@@ -146,7 +150,54 @@ function resetTerminalAvatarStateForRetry(task) {
   return { previousTaskId, previousStatus: status };
 }
 
-function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = null } = {}) {
+function readAvatarRenderState(outputPath) {
+  if (!outputPath) return null;
+  const statePath = path.join(outputPath, AVATAR_RENDER_STATE_FILE);
+  if (!fs.existsSync(statePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  } catch (_err) {
+    return null;
+  }
+}
+
+function hasPoseNodeInput(state = {}) {
+  if (String(state?.remotePoseName || '').trim()) return true;
+  const nodeInfoList = Array.isArray(state?.nodeInfoList) ? state.nodeInfoList : [];
+  return nodeInfoList.some((item) => {
+    const fieldName = String(item?.fieldName || '').trim().toLowerCase();
+    return fieldName === 'video' && String(item?.fieldValue || '').trim();
+  });
+}
+
+function hasUsableFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.size > 0;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function hasRequiredMotionControlledAvatar(task) {
+  const motionSourcePath = path.join(task.outputPath, AVATAR_MOTION_SOURCE_FILE);
+  if (!hasUsableFile(motionSourcePath)) return false;
+  const renderState = readAvatarRenderState(task.outputPath) || task.avatarRenderState || {};
+  const provider = String(renderState?.provider || task?.avatarConfig?.renderProvider || '').trim().toLowerCase();
+  if (provider === 'runninghub') {
+    return hasPoseNodeInput(renderState);
+  }
+  return true;
+}
+
+function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = null, onTaskSettled = null } = {}) {
+  function settleTask(jobId, task, reason) {
+    if (typeof onTaskSettled === 'function') {
+      onTaskSettled(jobId, task, reason);
+    }
+  }
+
   function launchFromAvatarReady(jobId, task) {
     return spawnPipeline(jobId, task, 6, {
       step: 6,
@@ -162,17 +213,27 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
     if (busy) return busy;
     clearTaskRun(task, `continue:${jobId}`);
     const aimanPath = path.join(task.outputPath, 'aiman.mp4');
-    if (task.autoGenerate && !fs.existsSync(aimanPath)) {
+    const hasAimanVideo = fs.existsSync(aimanPath);
+    const shouldRegenerateForMotion = task.autoGenerate && hasAimanVideo && !hasRequiredMotionControlledAvatar(task);
+    if (task.autoGenerate && (!hasAimanVideo || shouldRegenerateForMotion)) {
       task.lastStdout = '';
       task.lastStderr = '';
       task.process = null;
       task.status = 'generating_avatar';
       task.currentStep = 6;
       task.progress = Math.max(Number(task.progress || 0), 86);
-      task.statusText = '正在恢复数字人合成结果...';
+      task.statusText = shouldRegenerateForMotion
+        ? '正在强制生成动作参考并重新合成数字人...'
+        : '正在恢复数字人合成结果...';
       task.error = '';
       task.updatedAt = nowIso();
-      addTaskLog(task, '步骤6缺少 aiman.mp4，先恢复数字人生成结果再继续混剪', 'info');
+      addTaskLog(
+        task,
+        shouldRegenerateForMotion
+          ? '检测到现有数字人缺少强制动作参考输入，重新生成动作参考视频并提交姿态节点'
+          : '步骤6缺少 aiman.mp4，先恢复数字人生成结果再继续混剪',
+        'info'
+      );
       emitTaskEvent(jobId, 'status', { message: task.statusText });
       emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
       syncMaterialTask(taskStore, task);
@@ -202,6 +263,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
         addTaskLog(task, message, 'error');
         syncMaterialTask(taskStore, task, { error: message });
         emitTaskEvent(jobId, 'error_event', { message });
+        settleTask(jobId, task, 'avatar_failed');
       }
     })();
     return {
@@ -255,9 +317,11 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
       clearTaskRun(task, runKey);
       if (code === 0) {
         markTaskCompleted(jobId, task, { checkVideoExists: false, taskStore });
+        settleTask(jobId, task, 'completed');
         return;
       }
       markTaskFailed(jobId, task, summarizeFailureMessage(task, code), taskStore);
+      settleTask(jobId, task, 'failed');
     });
   }
 
@@ -359,6 +423,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
         }
         if (latest) {
           markTaskWaitingForAvatar(jobId, latest, taskStore);
+          settleTask(jobId, latest, 'waiting_avatar');
         }
       } else {
         const step6MissingAiman = latest?.autoGenerate &&
@@ -370,8 +435,10 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
         const message = summarizeFailureMessage(latest, code);
         if (latest) {
           markTaskFailed(jobId, latest, message, taskStore);
+          settleTask(jobId, latest, 'failed');
         } else {
           emitTaskEvent(jobId, 'error_event', { message });
+          settleTask(jobId, task, 'failed');
         }
       }
     });
@@ -387,7 +454,9 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
 
     const requestedStep = Number(step);
     const aimanPath = path.join(task.outputPath, 'aiman.mp4');
-    if (task.autoGenerate && requestedStep === 6 && !fs.existsSync(aimanPath)) {
+    const hasAimanVideo = fs.existsSync(aimanPath);
+    const shouldRegenerateForMotion = task.autoGenerate && hasAimanVideo && !hasRequiredMotionControlledAvatar(task);
+    if (task.autoGenerate && requestedStep === 6 && (!hasAimanVideo || shouldRegenerateForMotion)) {
       const resetAvatar = resetTerminalAvatarStateForRetry(task);
       task.lastStdout = '';
       task.lastStderr = '';
@@ -395,15 +464,23 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
       task.status = 'generating_avatar';
       task.currentStep = 6;
       task.progress = Math.max(Number(task.progress || 0), 86);
-      task.statusText = '重试步骤6：生成数字人';
+      task.statusText = shouldRegenerateForMotion
+        ? '重试步骤6：强制生成动作参考并重新合成数字人'
+        : '重试步骤6：生成数字人';
       task.error = '';
       task.completedAt = null;
       task.updatedAt = nowIso();
       if (resetAvatar) {
         addTaskLog(task, `上次 RunningHub 任务已失败，本次重试将重新提交新任务: previousTaskId=${resetAvatar.previousTaskId}`, 'warning');
       }
-      addTaskLog(task, '步骤6缺少 aiman.mp4，直接进入数字人生成/恢复链路', 'info');
-      emitTaskEvent(jobId, 'status', { message: '重试步骤6：生成数字人...' });
+      addTaskLog(
+        task,
+        shouldRegenerateForMotion
+          ? '重试步骤6检测到现有数字人缺少强制动作参考输入，重新生成动作参考视频并提交姿态节点'
+          : '步骤6缺少 aiman.mp4，直接进入数字人生成/恢复链路',
+        'info'
+      );
+      emitTaskEvent(jobId, 'status', { message: `${task.statusText}...` });
       syncMaterialTask(taskStore, task);
       return runAutoAvatarThenContinue(jobId, task, '重试自动生成数字人失败');
     }
@@ -488,9 +565,11 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
           syncMaterialTask(taskStore, task);
           emitTaskEvent(jobId, 'status', { message: task.statusText });
           emitTaskEvent(jobId, 'progress', { percent: task.progress, message: task.statusText });
+          settleTask(jobId, task, 'waiting_avatar');
           return;
         }
         markTaskCompleted(jobId, task, { taskStore });
+        settleTask(jobId, task, 'completed');
       } else {
         const step6MissingAiman = task?.autoGenerate &&
           Number(step) === 6 &&
@@ -501,6 +580,7 @@ function createMaterialDrivenPipelineRunner({ autoGenerateAvatar, taskStore = nu
         }
 
         markTaskFailed(jobId, task, summarizeFailureMessage(task, code), taskStore);
+        settleTask(jobId, task, 'failed');
       }
     });
 

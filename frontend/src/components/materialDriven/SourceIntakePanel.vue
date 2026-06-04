@@ -46,17 +46,49 @@
       <button
         type="button"
         class="tool-button"
-        :class="{ loading: hotListBusy }"
+        :class="{ loading: hotListRefreshing }"
         :disabled="hotListBusy"
         @click="emit('refresh-hot-list')"
       >
         <RefreshCw class="icon-sm" aria-hidden="true" />
-        {{ hotListBusy ? '刷新中' : '刷新榜单' }}
+        {{ hotListRefreshing ? '刷新中' : '刷新榜单' }}
       </button>
     </div>
 
+    <div class="manual-url-import">
+      <input
+        type="url"
+        inputmode="url"
+        autocomplete="off"
+        placeholder="粘贴 X 推文链接"
+        :value="manualImportUrl"
+        :disabled="sourceLocked || manualImporting"
+        @input="emit('update-manual-import-url', $event.target.value)"
+        @keydown.enter.prevent="emit('import-manual-url')"
+      />
+      <button
+        type="button"
+        class="tool-button"
+        :class="{ loading: manualImporting }"
+        :disabled="sourceLocked || manualImporting || !manualImportUrl.trim()"
+        @click="emit('import-manual-url')"
+      >
+        <Search class="icon-sm" aria-hidden="true" />
+        {{ manualImporting ? '识别中' : '导入链接' }}
+      </button>
+    </div>
     <div
-      v-if="hotListBusy"
+      v-if="manualImportStatus || manualImportError"
+      class="manual-url-feedback"
+      :class="{ danger: manualImportError }"
+      role="status"
+      aria-live="polite"
+    >
+      {{ manualImportError || manualImportStatus }}
+    </div>
+
+    <div
+      v-if="xaiLoading"
       :key="`source-${hotListProgressKey}`"
       class="hot-refresh-progress source-refresh-progress"
       role="progressbar"
@@ -68,7 +100,7 @@
     >
       <span :style="{ width: xaiProgressWidth }"></span>
     </div>
-    <div v-if="hotListBusy" class="hot-refresh-status source-refresh-status">
+    <div v-if="xaiLoading" class="hot-refresh-status source-refresh-status">
       <strong>{{ xaiProgressLabel }}</strong>
       <span>{{ xaiProgressMessage }}</span>
     </div>
@@ -129,6 +161,7 @@ defineProps({
   activePartitionId: { type: String, default: '' },
   xaiPartitions: { type: Array, default: () => [] },
   xaiLoading: { type: Boolean, default: false },
+  hotListRefreshing: { type: Boolean, default: false },
   hotListProgressKey: { type: Number, default: 0 },
   xaiProgressPercent: { type: Number, default: 0 },
   xaiProgressLabel: { type: String, default: '' },
@@ -136,6 +169,10 @@ defineProps({
   xaiProgressMessage: { type: String, default: '' },
   displayedHotItems: { type: Array, default: () => [] },
   sourceLocked: { type: Boolean, default: false },
+  manualImportUrl: { type: String, default: '' },
+  manualImporting: { type: Boolean, default: false },
+  manualImportStatus: { type: String, default: '' },
+  manualImportError: { type: String, default: '' },
   itemKey: { type: Function, required: true },
   hotTitle: { type: Function, required: true },
   hotMetaLine: { type: Function, required: true },
@@ -149,6 +186,8 @@ const emit = defineEmits([
   'select-partition',
   'run-xai',
   'refresh-hot-list',
+  'update-manual-import-url',
+  'import-manual-url',
   'use-hot-item',
   'open-hot-detail',
   'open-source-picker'

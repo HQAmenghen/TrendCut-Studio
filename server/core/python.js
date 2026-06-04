@@ -115,8 +115,17 @@ function buildPythonArgs(scriptPath, args = []) {
   return [scriptPath, ...args];
 }
 
+function createPythonErrorMessage(scriptPath, protocol, fallbackMessage) {
+  const baseMessage = String(protocol?.message || fallbackMessage || `${path.basename(scriptPath)} failed`).trim();
+  const details = String(protocol?.details || '').trim();
+  if (details && details !== baseMessage && !baseMessage.includes(details)) {
+    return `${baseMessage}: ${details}`;
+  }
+  return baseMessage;
+}
+
 function createPythonError(scriptPath, protocol, fallbackMessage, extra = {}) {
-  const err = new Error(protocol?.message || fallbackMessage || `${path.basename(scriptPath)} failed`);
+  const err = new Error(createPythonErrorMessage(scriptPath, protocol, fallbackMessage));
   err.code = protocol?.code || 'PYTHON_SCRIPT_FAILED';
   err.stage = protocol?.stage || 'python';
   err.details = protocol?.details || fallbackMessage || '';

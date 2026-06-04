@@ -1,6 +1,7 @@
 function registerSystemRoutes(app, handlers) {
   app.get('/api/system/self-check', handlers.getSelfCheck);
   app.get('/api/system/tasks', handlers.getUnifiedTasks);
+  app.delete('/api/system/tasks/:taskId', handlers.deleteUnifiedTask);
   app.get('/api/presets', handlers.getPresets);
   app.get('/api/workflow-config', handlers.getWorkflowConfig);
   app.post('/api/workflow-config', handlers.postWorkflowConfig);

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,9 +18,10 @@ for candidate in (PROJECT_ROOT, PYTHON_ROOT):
 
 from pipeline.avatar_motion_plan import (  # noqa: E402
     build_motion_plan,
-    build_motion_plan_auto,
+    build_motion_plan_llm,
     build_llm_prompt,
     compile_motion_segments,
+    extract_json_object_with_repair,
     parse_llm_assignments,
     resolve_audio_duration,
 )
@@ -62,6 +64,35 @@ class AvatarMotionPlanTest(unittest.TestCase):
         self.assertEqual(plan["segments"][0]["action"], "right_hand_emphasis")
         self.assertEqual(plan["segments"][1]["action"], "idle_talking")
         self.assertTrue(plan["signature"])
+
+    def test_resolve_audio_duration_ignores_untrusted_wav_header(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "speech_bad_header.wav"
+            sample_rate = 24000
+            frames = b"\x00\x00" * sample_rate
+            with audio_path.open("wb") as file_obj:
+                file_obj.write(b"RIFF")
+                file_obj.write((0x7fffffbf).to_bytes(4, "little"))
+                file_obj.write(b"WAVEfmt ")
+                file_obj.write((16).to_bytes(4, "little"))
+                file_obj.write((1).to_bytes(2, "little"))
+                file_obj.write((1).to_bytes(2, "little"))
+                file_obj.write(sample_rate.to_bytes(4, "little"))
+                file_obj.write((sample_rate * 2).to_bytes(4, "little"))
+                file_obj.write((2).to_bytes(2, "little"))
+                file_obj.write((16).to_bytes(2, "little"))
+                file_obj.write(b"data")
+                file_obj.write((0x7fffff9b).to_bytes(4, "little"))
+                file_obj.write(frames)
+
+            wave_duration = None
+            with wave.open(str(audio_path), "rb") as wav_file:
+                wave_duration = wav_file.getnframes() / float(wav_file.getframerate())
+
+            duration = resolve_audio_duration(audio_path, "这才是关键。", 0)
+
+        self.assertGreater(wave_duration, 40000)
+        self.assertAlmostEqual(duration, 1.0, places=2)
 
     def test_semantic_matching_uses_multiple_available_actions(self):
         text = (
@@ -187,6 +218,26 @@ class AvatarMotionPlanTest(unittest.TestCase):
         self.assertEqual(segments[2]["action"], "both_hand_open")
         self.assertEqual(segments[2]["start"], 5.2)
 
+    def test_llm_json_repair_retries_bad_json_with_llm(self):
+        class FakeResponse:
+            text = json.dumps({
+                "segments": [
+                    {"id": "motion_001", "action": "right_hand_emphasis", "reason": "重点", "intensity": 0.7}
+                ]
+            }, ensure_ascii=False)
+
+        bad_json = '{"segments":[{"id":"motion_001","action":"right_hand_emphasis" "reason":"重点"}]}'
+
+        with mock.patch("llm_client.generate_content", return_value=FakeResponse()) as generate_content:
+            payload = extract_json_object_with_repair(
+                bad_json,
+                client=object(),
+                expected_schema='{"segments":[]}',
+            )
+
+        self.assertEqual(payload["segments"][0]["action"], "right_hand_emphasis")
+        self.assertEqual(generate_content.call_count, 1)
+
     def test_llm_assignment_uses_model_selected_word_anchor(self):
         timeline = [
             {
@@ -295,17 +346,166 @@ class AvatarMotionPlanTest(unittest.TestCase):
         self.assertIn('"anchorWordIndex"', prompt)
         self.assertIn("素材插片覆盖", prompt)
 
-    def test_auto_falls_back_to_local_when_llm_fails(self):
-        plan = build_motion_plan_auto(
-            "这是关键。然后解释。最后提醒不要当成唯一依据。",
-            9.0,
-            fps=25,
-            planner_mode="auto",
-            llm_provider="missing-provider",
-        )
+    def test_llm_failure_stops_without_local_fallback(self):
+        with mock.patch("llm_client.create_llm_client", return_value=object()), \
+                mock.patch("llm_client.generate_content", side_effect=RuntimeError("deepseek unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "deepseek unavailable"):
+                build_motion_plan_llm(
+                    "这是关键。然后解释。最后提醒不要当成唯一依据。",
+                    9.0,
+                    fps=25,
+                )
 
-        self.assertEqual(plan["planner"]["method"], "local_sparse_semantic_fallback")
-        self.assertIn("llmError", plan["planner"])
+    def test_llm_motion_planner_uses_deepseek_v4_flash(self):
+        response = type("Response", (), {
+            "text": json.dumps({
+                "segments": [
+                    {
+                        "id": "motion_001",
+                        "action": "right_hand_emphasis",
+                        "reason": "强调关键点",
+                        "intensity": 0.7,
+                    }
+                ]
+            }, ensure_ascii=False)
+        })()
+        with mock.patch("llm_client.create_llm_client", return_value=object()) as create_client, \
+                mock.patch("llm_client.generate_content", return_value=response) as generate_content:
+            plan = build_motion_plan_llm(
+                "这是关键。",
+                4.0,
+                fps=25,
+            )
+
+        create_client.assert_called_once_with("deepseek")
+        self.assertEqual(generate_content.call_args.kwargs["provider"], "deepseek")
+        self.assertEqual(generate_content.call_args.kwargs["model"], "deepseek-v4-flash")
+        self.assertEqual(plan["planner"]["provider"], "deepseek")
+        self.assertEqual(plan["planner"]["model"], "deepseek-v4-flash")
+
+    def test_llm_motion_planner_retries_when_visible_segments_are_all_idle(self):
+        first_response = type("Response", (), {
+            "text": json.dumps({
+                "segments": [
+                    {
+                        "id": "motion_001",
+                        "action": "idle_talking",
+                        "reason": "上一轮过于保守",
+                        "intensity": 0.25,
+                    }
+                ]
+            }, ensure_ascii=False)
+        })()
+        review_response = type("Response", (), {
+            "text": json.dumps({
+                "segments": [
+                    {
+                        "id": "motion_001",
+                        "action": "right_hand_emphasis",
+                        "reason": "自检后确认关键点需要一个出镜动作",
+                        "intensity": 0.68,
+                    }
+                ]
+            }, ensure_ascii=False)
+        })()
+        with mock.patch("llm_client.create_llm_client", return_value=object()), \
+                mock.patch("llm_client.generate_content", side_effect=[first_response, review_response]) as generate_content:
+            plan = build_motion_plan_llm(
+                "这是关键判断，适合在出镜时做一次强调。",
+                6.0,
+                fps=25,
+            )
+
+        actions = [segment["action"] for segment in plan["segments"] if segment["action"] != "idle_talking"]
+        self.assertEqual(generate_content.call_count, 2)
+        self.assertEqual(actions, ["right_hand_emphasis"])
+        self.assertTrue(plan["planner"]["retriedIdleReview"])
+        self.assertIn("上一轮输出", generate_content.call_args.kwargs["contents"])
+
+    def test_llm_motion_planner_stops_when_idle_reviews_still_have_no_gestures(self):
+        idle_response = type("Response", (), {
+            "text": json.dumps({
+                "segments": [
+                    {
+                        "id": "motion_001",
+                        "action": "idle_talking",
+                        "reason": "保守处理",
+                        "intensity": 0.25,
+                    }
+                ]
+            }, ensure_ascii=False)
+        })()
+        with mock.patch("llm_client.create_llm_client", return_value=object()), \
+                mock.patch("llm_client.generate_content", side_effect=[
+                    idle_response,
+                    idle_response,
+                    idle_response,
+                    idle_response,
+                    idle_response,
+                ]) as generate_content:
+            with self.assertRaisesRegex(ValueError, "强制匹配后仍未产出"):
+                build_motion_plan_llm(
+                    "这是关键判断，适合在出镜时做一次强调。",
+                    6.0,
+                    fps=25,
+                )
+        self.assertEqual(generate_content.call_count, 5)
+
+    def test_llm_motion_planner_uses_forced_ai_match_for_two_actions(self):
+        idle_response = type("Response", (), {
+            "text": json.dumps({
+                "segments": [
+                    {
+                        "id": "motion_001",
+                        "action": "idle_talking",
+                        "reason": "保守处理",
+                        "intensity": 0.25,
+                    },
+                    {
+                        "id": "motion_002",
+                        "action": "idle_talking",
+                        "reason": "保守处理",
+                        "intensity": 0.25,
+                    },
+                ]
+            }, ensure_ascii=False)
+        })()
+        forced_response = type("Response", (), {
+            "text": json.dumps({
+                "selected": [
+                    {
+                        "id": "motion_001",
+                        "action": "right_hand_emphasis",
+                        "reason": "强调关键判断",
+                        "intensity": 0.68,
+                    },
+                    {
+                        "id": "motion_002",
+                        "action": "both_hand_open",
+                        "reason": "展开解释原因",
+                        "intensity": 0.58,
+                    },
+                ]
+            }, ensure_ascii=False)
+        })()
+        with mock.patch("llm_client.create_llm_client", return_value=object()), \
+                mock.patch("llm_client.generate_content", side_effect=[
+                    idle_response,
+                    idle_response,
+                    idle_response,
+                    forced_response,
+                ]) as generate_content:
+            plan = build_motion_plan_llm(
+                "这是关键判断，需要明确强调。这里解释原因和背景，适合展开说明。",
+                12.0,
+                fps=25,
+            )
+
+        actions = [segment["action"] for segment in plan["segments"] if segment["action"] != "idle_talking"]
+        self.assertGreaterEqual(len(actions), 2)
+        self.assertIn("right_hand_emphasis", actions)
+        self.assertIn("both_hand_open", actions)
+        self.assertEqual(generate_content.call_count, 4)
 
 
 class AvatarPoseBuilderTest(unittest.TestCase):

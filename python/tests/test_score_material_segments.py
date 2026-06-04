@@ -77,6 +77,7 @@ class ScoreMaterialSegmentsProviderTest(unittest.TestCase):
 
         self.assertEqual(result["batch_errors"], [])
         self.assertEqual(captured_kwargs[0]["provider"], "qwen")
+        self.assertEqual(captured_kwargs[0]["response_mime_type"], "application/json")
 
 
 if __name__ == "__main__":

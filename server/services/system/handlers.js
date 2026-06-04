@@ -16,8 +16,10 @@ function createSystemHandlers(deps) {
     runPythonScript,
     readProjectEnv,
     updateProjectEnv,
+    taskStore,
     unifiedTaskView
   } = deps;
+  const REMOVABLE_TASK_STATUSES = new Set(['queued', 'completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'published']);
 
   const getEnvValue = (values, key, fallback = '') => values[key] ?? process.env[key] ?? fallback;
   const normalizeProvider = (value, fallback = 'gemini') => {
@@ -76,6 +78,54 @@ function createSystemHandlers(deps) {
           code: 'SYSTEM_TASKS_READ_FAILED',
           stage: 'system.tasks',
           error: '读取统一任务视图失败',
+          details: err.message
+        });
+      }
+    },
+    deleteUnifiedTask: (req, res) => {
+      try {
+        const taskId = String(req.params.taskId || '').trim();
+        if (!taskId || !taskStore || typeof taskStore.getTask !== 'function' || typeof taskStore.deleteTask !== 'function') {
+          return sendError(res, {
+            status: 404,
+            code: 'SYSTEM_TASK_DELETE_FAILED',
+            stage: 'system.tasks',
+            error: '任务不存在'
+          });
+        }
+        const task = taskStore.getTask(taskId);
+        if (!task) {
+          return sendError(res, {
+            status: 404,
+            code: 'SYSTEM_TASK_DELETE_FAILED',
+            stage: 'system.tasks',
+            error: '任务不存在'
+          });
+        }
+        const metadata = task.metadata && typeof task.metadata === 'object' ? task.metadata : {};
+        const hasFailureSignal = Boolean(metadata.error);
+        const status = hasFailureSignal
+          ? 'failed'
+          : String(task.status || '').trim().toLowerCase();
+        if (!REMOVABLE_TASK_STATUSES.has(status)) {
+          return sendError(res, {
+            status: 409,
+            code: 'SYSTEM_TASK_DELETE_FAILED',
+            stage: 'system.tasks',
+            error: '仅失败、中断、取消或已完成的任务允许删除'
+          });
+        }
+        taskStore.deleteTask(taskId);
+        const tasks = unifiedTaskView && typeof unifiedTaskView.listTasks === 'function'
+          ? unifiedTaskView.listTasks({ limit: req.query?.limit })
+          : [];
+        res.json({ success: true, tasks });
+      } catch (err) {
+        sendError(res, {
+          status: 500,
+          code: 'SYSTEM_TASK_DELETE_FAILED',
+          stage: 'system.tasks',
+          error: '删除统一任务记录失败',
           details: err.message
         });
       }

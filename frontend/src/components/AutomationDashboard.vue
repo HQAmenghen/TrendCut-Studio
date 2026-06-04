@@ -83,6 +83,131 @@
           继续当前任务
         </button>
 
+        <details class="avatar-config-panel">
+          <summary>
+            <span class="avatar-config-title">
+              <UserRound class="icon-sm" aria-hidden="true" />
+              数字人配置
+            </span>
+            <span class="avatar-config-summary">
+              <span>
+                <Volume2 class="icon-sm" aria-hidden="true" />
+                {{ avatarAudioLabel }}
+              </span>
+              <span>
+                <ImageIcon class="icon-sm" aria-hidden="true" />
+                {{ avatarImageLabel }}
+              </span>
+            </span>
+            <ChevronDown class="icon-sm avatar-config-chevron" aria-hidden="true" />
+          </summary>
+
+          <div class="avatar-config-body">
+            <label class="field-control avatar-config-field">
+              <span>声音</span>
+              <select
+                :value="avatarAudioChoice"
+                :disabled="avatarConfigLocked"
+                @change="handleAvatarAudioChoice"
+              >
+                <option value="" disabled>请选择声音</option>
+                <option v-for="preset in avatarAudioPresetList" :key="preset" :value="preset">
+                  {{ getAvatarPresetLabel(preset) }}
+                </option>
+                <option value="__upload__">上传声音文件</option>
+              </select>
+            </label>
+
+            <label class="field-control avatar-config-field">
+              <span>形象</span>
+              <select
+                :value="avatarImageChoice"
+                :disabled="avatarConfigLocked"
+                @change="handleAvatarImageChoice"
+              >
+                <option value="" disabled>请选择形象</option>
+                <option v-for="preset in avatarImagePresetList" :key="preset" :value="preset">
+                  {{ getAvatarPresetLabel(preset) }}
+                </option>
+                <option value="__upload__">上传形象图片</option>
+              </select>
+            </label>
+
+            <label
+              v-if="audioModeValue === 'upload'"
+              class="tool-button avatar-upload-button"
+              :class="{ disabled: avatarConfigLocked }"
+            >
+              <Mic class="icon-sm" aria-hidden="true" />
+              <span>{{ avatarAudioUploadLabel }}</span>
+              <input
+                type="file"
+                accept="audio/*,.mp3,.wav,.m4a"
+                hidden
+                :disabled="avatarConfigLocked"
+                @change="handleAvatarAudioFileSelect"
+              />
+            </label>
+
+            <label
+              v-if="imageModeValue === 'upload'"
+              class="tool-button avatar-upload-button"
+              :class="{ disabled: avatarConfigLocked }"
+            >
+              <ImageIcon class="icon-sm" aria-hidden="true" />
+              <span>{{ avatarImageUploadLabel }}</span>
+              <input
+                type="file"
+                accept="image/*"
+                hidden
+                :disabled="avatarConfigLocked"
+                @change="handleAvatarImageFileSelect"
+              />
+            </label>
+
+            <div class="avatar-render-row">
+              <label class="field-control avatar-config-field">
+                <span>渲染引擎</span>
+                <select
+                  :value="gen.renderProvider || 'comfyui'"
+                  :disabled="avatarConfigLocked"
+                  @change="updateAvatarGenField('renderProvider', $event.target.value)"
+                >
+                  <option value="comfyui">ComfyUI</option>
+                  <option value="runninghub">RunningHub</option>
+                </select>
+              </label>
+              <label class="field-control avatar-config-field">
+                <span>服务地址</span>
+                <input
+                  type="url"
+                  :value="gen.serverUrl || ''"
+                  :disabled="avatarConfigLocked"
+                  @input="updateAvatarGenField('serverUrl', $event.target.value)"
+                />
+              </label>
+              <button
+                type="button"
+                class="tool-button avatar-test-button"
+                :class="{ loading: comfyTestLoading }"
+                :disabled="avatarConfigLocked || comfyTestLoading"
+                @click="testAvatarConnection"
+              >
+                <Server class="icon-sm" aria-hidden="true" />
+                {{ comfyTestLoading ? '检测中' : '检测' }}
+              </button>
+            </div>
+
+            <div
+              v-if="comfyTestResult.message"
+              class="avatar-test-result"
+              :class="comfyTestResult.status"
+            >
+              {{ comfyTestResult.message }}
+            </div>
+          </div>
+        </details>
+
         <div class="action-row">
           <label class="tool-button local-upload" :class="{ disabled: sourceLocked }">
             <Upload class="icon-sm" aria-hidden="true" />
@@ -98,12 +223,12 @@
           <button
             type="button"
             class="tool-button"
-            :class="{ loading: hotListBusy }"
+            :class="{ loading: isHotListRefreshing }"
             :disabled="hotListBusy"
             @click="refreshHotList"
           >
             <RefreshCw class="icon-sm" aria-hidden="true" />
-            {{ hotListBusy ? '刷新中' : '刷新榜单' }}
+            {{ isHotListRefreshing ? '刷新中' : '刷新榜单' }}
           </button>
           <button type="button" class="tool-button" :disabled="!hasResettableWorkflow" @click="resetWorkflow">
             <RotateCcw class="icon-sm" aria-hidden="true" />
@@ -131,17 +256,17 @@
           <button
             type="button"
             class="tool-button"
-            :class="{ loading: hotListBusy }"
+            :class="{ loading: isHotListRefreshing }"
             :disabled="hotListBusy"
             @click="refreshHotList"
           >
             <RefreshCw class="icon-sm" aria-hidden="true" />
-            {{ hotListBusy ? '刷新中' : '刷新榜单' }}
+            {{ isHotListRefreshing ? '刷新中' : '刷新榜单' }}
           </button>
         </div>
 
         <div
-          v-if="hotListBusy"
+          v-if="xaiLoading"
           :key="`modal-${hotListProgressKey}`"
           class="hot-refresh-progress"
           role="progressbar"
@@ -153,7 +278,7 @@
         >
           <span :style="{ width: xaiProgressWidth }"></span>
         </div>
-        <div v-if="hotListBusy" class="hot-refresh-status">
+        <div v-if="xaiLoading" class="hot-refresh-status">
           <strong>{{ xaiProgressLabel }}</strong>
           <span>{{ xaiProgressMessage }}</span>
         </div>
@@ -697,6 +822,7 @@
           :active-partition-id="activePartitionId"
           :xai-partitions="xaiPartitions"
           :xai-loading="xaiLoading"
+          :hot-list-refreshing="isHotListRefreshing"
           :hot-list-progress-key="hotListProgressKey"
           :xai-progress-percent="xaiProgressPercent"
           :xai-progress-label="xaiProgressLabel"
@@ -704,6 +830,10 @@
           :xai-progress-message="xaiProgressMessage"
           :displayed-hot-items="displayedHotItems"
           :source-locked="sourceLocked"
+          :manual-import-url="manualImportUrl"
+          :manual-importing="manualUrlImporting"
+          :manual-import-status="manualImportStatus"
+          :manual-import-error="manualImportError"
           :item-key="itemKey"
           :hot-title="hotTitle"
           :hot-meta-line="hotMetaLine"
@@ -714,6 +844,8 @@
           @select-partition="selectPartitionFromMenu"
           @run-xai="$emit('run-xai')"
           @refresh-hot-list="refreshHotList"
+          @update-manual-import-url="manualImportUrl = $event"
+          @import-manual-url="importManualXUrl"
           @use-hot-item="useHotItem"
           @open-hot-detail="openHotDetail"
           @open-source-picker="openSourcePicker"
@@ -744,7 +876,9 @@
           :format-time="formatTime"
           :get-publish-job-label="getPublishJobLabel"
           :can-republish-job="canRepublishJob"
+          @delete-task="deleteLiveTask"
           @resume-material-task="resumeMaterialTask"
+          @retry-material-task="retryMaterialTask"
           @republish-job="republishJob"
         />
 
@@ -959,9 +1093,11 @@ import {
   ExternalLink,
   FileVideo,
   Gauge,
+  Image as ImageIcon,
   Info,
   Layers,
   Maximize2,
+  Mic,
   Play,
   Radio,
   RefreshCw,
@@ -970,9 +1106,12 @@ import {
   Save,
   Search,
   Send,
+  Server,
   ShieldCheck,
   Trash2,
-  Upload
+  Upload,
+  UserRound,
+  Volume2
 } from 'lucide-vue-next';
 const props = defineProps({
   materialDriven: { type: Object, required: true },
@@ -997,6 +1136,7 @@ const emit = defineEmits([
 ]);
 
 const selectedFile = ref(null);
+const manualImportUrl = ref('');
 const sourcePickerOpen = ref(false);
 const selectedHotItem = ref(null);
 const selectedAssetDetail = ref(null);
@@ -1096,6 +1236,23 @@ const scriptUnits = computed(() => readValue(props.materialDriven, 'scriptUnits'
 const materialLogs = computed(() => readValue(props.materialDriven, 'recentLogs', []));
 const materialResumingTaskIds = computed(() => readValue(props.materialDriven, 'resumingTaskIds', []));
 const gen = computed(() => readValue(props.materialDriven, 'gen', {}));
+const audioModeValue = computed(() => String(readValue(props.materialDriven, 'audioMode', 'preset') || 'preset'));
+const imageModeValue = computed(() => String(readValue(props.materialDriven, 'imageMode', 'preset') || 'preset'));
+const avatarPresets = computed(() => readValue(props.materialDriven, 'presets', { audio: [], image: [] }));
+const avatarAudioPresetList = computed(() => {
+  const materialPresets = Array.isArray(avatarPresets.value?.audio) ? avatarPresets.value.audio : [];
+  return materialPresets.length ? materialPresets : avatarAudioPresetOptions.value;
+});
+const avatarImagePresetList = computed(() => {
+  const materialPresets = Array.isArray(avatarPresets.value?.image) ? avatarPresets.value.image : [];
+  return materialPresets.length ? materialPresets : avatarImagePresetOptions.value;
+});
+const comfyTestLoading = computed(() => Boolean(readValue(props.materialDriven, 'comfyTestLoading', false)));
+const comfyTestResult = computed(() => readValue(props.materialDriven, 'comfyTestResult', {
+  status: '',
+  message: '',
+  testedUrl: ''
+}));
 const uploading = computed(() => Boolean(readValue(props.materialDriven, 'uploading', false)));
 const rebuildingPlan = computed(() => Boolean(readValue(props.materialDriven, 'rebuildingPlan', false)));
 const rerenderingVideo = computed(() => Boolean(readValue(props.materialDriven, 'rerenderingVideo', false)));
@@ -1160,7 +1317,12 @@ const xaiItems = computed(() => readValue(props.xai, 'items', []));
 const hotItems = computed(() => xaiItems.value.slice(0, 5));
 const displayedHotItems = computed(() => xaiItems.value);
 const xaiLoading = computed(() => Boolean(readValue(props.xai, 'loading', false)));
-const hotListBusy = computed(() => Boolean(xaiLoading.value || hotListRefreshing.value));
+const xaiRefreshing = computed(() => Boolean(readValue(props.xai, 'refreshing', false)));
+const manualUrlImporting = computed(() => Boolean(readValue(props.xai, 'importingUrl', false)));
+const manualImportStatus = computed(() => String(readValue(props.xai, 'manualImportStatus', '') || '').trim());
+const manualImportError = computed(() => String(readValue(props.xai, 'manualImportError', '') || '').trim());
+const isHotListRefreshing = computed(() => Boolean(xaiRefreshing.value || hotListRefreshing.value));
+const hotListBusy = computed(() => Boolean(xaiLoading.value || isHotListRefreshing.value));
 const xaiProgressPercent = computed(() => Math.max(0, Math.min(100, Number(readValue(props.xai, 'progressPercent', 0)) || 0)));
 const xaiProgressMessage = computed(() => String(readValue(props.xai, 'progressMessage', '') || '').trim() || '正在刷新榜单数据');
 const xaiProgressLabel = computed(() => `${xaiProgressPercent.value}%`);
@@ -1396,9 +1558,30 @@ const localUploadLabel = computed(() => {
   return '本地上传备用';
 });
 
-const canStart = computed(() => Boolean(!isBusy.value && !jobId.value && hasSource.value));
+const avatarConfigLocked = computed(() => Boolean(isBusy.value || jobId.value));
+const defaultAvatarAudioPreset = computed(() => String(gen.value?.audioPreset || avatarAudioPresetList.value[0] || ''));
+const defaultAvatarImagePreset = computed(() => String(gen.value?.imagePreset || avatarImagePresetList.value[0] || ''));
+const avatarAudioChoice = computed(() => audioModeValue.value === 'upload' ? '__upload__' : defaultAvatarAudioPreset.value);
+const avatarImageChoice = computed(() => imageModeValue.value === 'upload' ? '__upload__' : defaultAvatarImagePreset.value);
+const avatarAudioLabel = computed(() => {
+  if (audioModeValue.value === 'upload') return gen.value?.audioFile?.name || '自定义声音';
+  return getAvatarPresetLabel(defaultAvatarAudioPreset.value);
+});
+const avatarImageLabel = computed(() => {
+  if (imageModeValue.value === 'upload') return gen.value?.imageFile?.name || '自定义形象';
+  return getAvatarPresetLabel(defaultAvatarImagePreset.value);
+});
+const avatarAudioUploadLabel = computed(() => gen.value?.audioFile?.name || '选择声音文件');
+const avatarImageUploadLabel = computed(() => gen.value?.imageFile?.name || '选择形象图片');
+const avatarConfigReady = computed(() => Boolean(
+  (audioModeValue.value !== 'upload' || gen.value?.audioFile)
+  && (imageModeValue.value !== 'upload' || gen.value?.imageFile)
+));
+
+const canStart = computed(() => Boolean(!isBusy.value && !jobId.value && hasSource.value && avatarConfigReady.value));
 const startActionLabel = computed(() => {
   if (isBusy.value) return '正在接入素材';
+  if (!avatarConfigReady.value) return '补全数字人配置';
   if (hasSource.value) return '一键自动生产';
   return '先选择素材';
 });
@@ -1631,11 +1814,76 @@ const autoPilotEditablePlans = computed(() => activeAutoPilotMappings.value
     displayIndex: index + 1
   })));
 
+const setMaterialDrivenValue = (key, value) => {
+  const target = props.materialDriven?.[key];
+  if (target && typeof target === 'object' && 'value' in target) {
+    target.value = value;
+  }
+};
+
+const updateAvatarGenField = (field, value) => {
+  if (!gen.value || typeof gen.value !== 'object') return;
+  gen.value[field] = value;
+};
+
+const ensureAvatarDefaults = () => {
+  if (audioModeValue.value === 'preset' && !gen.value?.audioPreset && defaultAvatarAudioPreset.value) {
+    updateAvatarGenField('audioPreset', defaultAvatarAudioPreset.value);
+  }
+  if (imageModeValue.value === 'preset' && !gen.value?.imagePreset && defaultAvatarImagePreset.value) {
+    updateAvatarGenField('imagePreset', defaultAvatarImagePreset.value);
+  }
+};
+
+const handleAvatarAudioChoice = (event) => {
+  const value = String(event.target.value || '').trim();
+  if (value === '__upload__') {
+    setMaterialDrivenValue('audioMode', 'upload');
+    return;
+  }
+  setMaterialDrivenValue('audioMode', 'preset');
+  updateAvatarGenField('audioPreset', value);
+};
+
+const handleAvatarImageChoice = (event) => {
+  const value = String(event.target.value || '').trim();
+  if (value === '__upload__') {
+    setMaterialDrivenValue('imageMode', 'upload');
+    return;
+  }
+  setMaterialDrivenValue('imageMode', 'preset');
+  updateAvatarGenField('imagePreset', value);
+};
+
+const handleAvatarAudioFileSelect = (event) => {
+  const file = event.target.files?.[0] || null;
+  if (file) {
+    setMaterialDrivenValue('audioMode', 'upload');
+    updateAvatarGenField('audioFile', file);
+  }
+  event.target.value = '';
+};
+
+const handleAvatarImageFileSelect = (event) => {
+  const file = event.target.files?.[0] || null;
+  if (file) {
+    setMaterialDrivenValue('imageMode', 'upload');
+    updateAvatarGenField('imageFile', file);
+  }
+  event.target.value = '';
+};
+
+const testAvatarConnection = async () => {
+  const fn = readFunction(props.materialDriven, 'testComfyConnection');
+  if (fn) await fn();
+};
+
 const handleFileSelect = (event) => {
   selectedFile.value = event.target.files?.[0] || null;
   if (selectedFile.value) {
     sourcePickerOpen.value = false;
     selectedHotItem.value = null;
+    manualImportUrl.value = '';
   }
 };
 
@@ -1646,8 +1894,19 @@ const useHotItem = (item) => {
   selectedHotItem.value = null;
 };
 
+const importManualXUrl = async () => {
+  if (sourceLocked.value || manualUrlImporting.value) return;
+  const importUrl = readFunction(props.xai, 'importUrl');
+  if (!importUrl) return;
+  const item = await importUrl(manualImportUrl.value);
+  if (!item) return;
+  manualImportUrl.value = '';
+  useHotItem(item);
+};
+
 const resetWorkflow = () => {
   selectedFile.value = null;
+  manualImportUrl.value = '';
   sourcePickerOpen.value = false;
   selectedHotItem.value = null;
   emit('reset-workflow');
@@ -2023,21 +2282,18 @@ const selectPartitionFromMenu = async (partitionId) => {
 
 const refreshHotList = async () => {
   if (hotListBusy.value) return;
-  const run = readFunction(props.xai, 'run');
   const refresh = readFunction(props.xai, 'refresh');
   const startedAt = Date.now();
   hotListRefreshing.value = true;
   hotListProgressKey.value += 1;
   try {
-    if (run) {
-      await run();
-    } else if (refresh) {
-      await refresh(false);
+    if (refresh) {
+      await refresh(false, { force: true });
     } else {
       emit('refresh');
     }
   } finally {
-    const remainingMs = run ? 0 : Math.max(0, 900 - (Date.now() - startedAt));
+    const remainingMs = Math.max(0, 900 - (Date.now() - startedAt));
     window.setTimeout(() => {
       hotListRefreshing.value = false;
     }, remainingMs);
@@ -2046,6 +2302,7 @@ const refreshHotList = async () => {
 
 const emitStart = () => {
   if (!canStart.value) return;
+  ensureAvatarDefaults();
   emit('start-automation', {
     file: selectedFile.value,
     config: {
@@ -2141,9 +2398,10 @@ const formatTime = (value) => {
   return date.toLocaleString('zh-CN', { hour12: false });
 };
 
-const { liveTaskItems, createResumePayload } = useLiveTaskQueue({
+const { liveTaskItems, createCleanupPayload, createResumePayload, createRetryPayload } = useLiveTaskQueue({
   jobId,
   outputPath,
+  currentStep,
   activeMaterialTasks: computed(() => readValue(props.materialDriven, 'activeTasks', [])),
   selectedFile,
   uploading,
@@ -2181,6 +2439,90 @@ const { liveTaskItems, createResumePayload } = useLiveTaskQueue({
 const resumeMaterialTask = (item) => {
   const payload = createResumePayload(item);
   if (payload) emit('resume-material-task', payload);
+};
+
+const retryMaterialTask = async (item) => {
+  const payload = createRetryPayload(item);
+  if (!payload) return;
+  try {
+    const res = await fetch(`/api/material-driven/retry/${encodeURIComponent(payload.jobId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        step: payload.step,
+        outputPath: payload.outputPath
+      })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '重试素材任务失败');
+    }
+    await refreshLiveTaskSources();
+  } catch (err) {
+    const setErrorState = readValue(props.standalone, 'setErrorState', null);
+    if (typeof setErrorState === 'function') {
+      setErrorState({ message: err.message || '重试素材任务失败', code: '', stage: 'task.queue', hint: '', details: '' });
+    }
+  }
+};
+
+const callStandaloneMethod = async (name, ...args) => {
+  const method = readValue(props.standalone, name, null);
+  if (typeof method === 'function') {
+    return method(...args);
+  }
+  return null;
+};
+
+const callMaterialDrivenMethod = async (name, ...args) => {
+  const method = readValue(props.materialDriven, name, null);
+  if (typeof method === 'function') {
+    return method(...args);
+  }
+  return null;
+};
+
+const refreshLiveTaskSources = async () => {
+  await Promise.all([
+    callStandaloneMethod('loadQueue', true),
+    callStandaloneMethod('loadUnifiedTasks', true),
+    callStandaloneMethod('loadMaterialTasks', true),
+    callMaterialDrivenMethod('refreshActiveTasks', true)
+  ]);
+};
+
+const deleteLiveTask = async (item) => {
+  const payload = createCleanupPayload(item);
+  if (!payload) return;
+
+  try {
+    if (payload.action === 'delete-vertical-queue') {
+      await callStandaloneMethod('deleteQueueJob', payload.id);
+    } else if (payload.action === 'delete-material-task') {
+      const query = payload.outputPath ? `?outputPath=${encodeURIComponent(payload.outputPath)}` : '';
+      const res = await fetch(`/api/material-driven/tasks/${encodeURIComponent(payload.id)}${query}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || '删除素材驱动任务失败');
+      }
+    } else if (payload.action === 'delete-unified-task') {
+      const res = await fetch(`/api/system/tasks/${encodeURIComponent(payload.id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || '删除任务记录失败');
+      }
+    }
+    const currentMaterialJobId = String(readValue(props.materialDriven, 'jobId', '') || '').trim();
+    if (payload.action === 'delete-material-task' && currentMaterialJobId && currentMaterialJobId === String(payload.id)) {
+      await callMaterialDrivenMethod('resetWorkflow', { clearDraftText: false });
+    }
+    await refreshLiveTaskSources();
+  } catch (err) {
+    const setErrorState = readValue(props.standalone, 'setErrorState', null);
+    if (typeof setErrorState === 'function') {
+      setErrorState({ message: err.message || '删除任务失败', code: '', stage: 'task.queue', hint: '', details: '' });
+    }
+  }
 };
 
 </script>

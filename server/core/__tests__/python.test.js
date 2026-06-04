@@ -1,4 +1,7 @@
-const { summarizePythonError } = require('../python');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { runPythonScript, summarizePythonError } = require('../python');
 const {
   loadPythonProtocolSchema,
   validatePythonProtocolEvent
@@ -45,6 +48,37 @@ describe('Python 子进程管理', () => {
 
       expect(summary.stderrTail.length).toBe(20);
       expect(summary.stdoutTail.length).toBe(12);
+    });
+  });
+
+  describe('runPythonScript', () => {
+    test('includes protocol error details in thrown message', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'python-protocol-error-'));
+      const scriptPath = path.join(tempDir, 'fail_with_protocol.py');
+      fs.writeFileSync(scriptPath, [
+        'import json',
+        'import sys',
+        'payload = {',
+        '    "type": "error",',
+        '    "code": "AVATAR_MOTION_PLAN_FAILED",',
+        '    "message": "数字人动作计划生成失败",',
+        '    "stage": "avatar_motion_plan",',
+        '    "details": "数字人动作 LLM 多次判断均未选择任何出镜动作",',
+        '    "hint": ""',
+        '}',
+        'print("__CODEX_PYTHON__" + json.dumps(payload, ensure_ascii=False), flush=True)',
+        'sys.exit(1)'
+      ].join('\n'), 'utf8');
+
+      try {
+        await expect(runPythonScript(scriptPath, [], { cwd: tempDir })).rejects.toMatchObject({
+          code: 'AVATAR_MOTION_PLAN_FAILED',
+          details: '数字人动作 LLM 多次判断均未选择任何出镜动作',
+          message: expect.stringContaining('数字人动作计划生成失败: 数字人动作 LLM 多次判断均未选择任何出镜动作')
+        });
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 

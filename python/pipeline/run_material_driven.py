@@ -22,7 +22,6 @@ import argparse
 import subprocess
 import re
 from pathlib import Path
-from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -130,10 +129,6 @@ class MaterialDrivenPipeline(MaterialRuntimeMixin):
     def load_source_post(self) -> dict:
         payload = self.load_json_file(self.source_post_json, {})
         return normalize_source_post(payload)
-
-    def is_public_http_url(self, value: str) -> bool:
-        parsed = urlparse(str(value or "").strip())
-        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
     def is_avatar_cache_compatible(self, script_units: list) -> bool:
         if not self.aiman_file.exists():
@@ -1516,11 +1511,6 @@ class MaterialDrivenPipeline(MaterialRuntimeMixin):
             "--subtitles-json", "subtitles.json",
             "--speaker-scene-json", "speaker_scene.json"
         ]
-        source_post = self.load_source_post()
-        material_url = source_post.get("materialUrl") or ""
-        if self.is_public_http_url(material_url):
-            asr_args.extend(["--file-url", material_url])
-
         asr_proc = self._run_script_async("run_asr.py", asr_args)
         vlm_proc = self._run_script_async("video_vlm.py")
 

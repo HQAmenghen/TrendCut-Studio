@@ -202,6 +202,8 @@ export function useLiveTaskQueue(sources) {
       const selectedFile = readRef(sources.selectedFile, null);
       items.push({
         id: `material-${jobId || 'draft'}`,
+        taskId: String(jobId || ''),
+        outputPath: browserMaterialOutputPath,
         type: '主流程',
         title: readRef(sources.materialSourceLabel, '') || selectedFile?.name || outputPath || '素材驱动生产',
         statusLabel: readRef(sources.combinedErrorText, '') ? '需处理' : readRef(sources.currentStepLabel, ''),
@@ -209,6 +211,12 @@ export function useLiveTaskQueue(sources) {
         progress: readRef(sources.displayProgress, 0),
         meta: jobId ? `任务 ${jobId}` : '本地任务',
         state: readRef(sources.combinedErrorText, '') ? 'danger' : 'running',
+        retryAction: readRef(sources.combinedErrorText, '') && jobId ? 'retry-material-step' : '',
+        retryStep: Number(readRef(sources.currentStep, 0)) || 1,
+        retryOutputPath: browserMaterialOutputPath,
+        cleanupAction: readRef(sources.combinedErrorText, '') && jobId ? 'delete-material-task' : '',
+        cleanupId: readRef(sources.combinedErrorText, '') && jobId ? String(jobId) : '',
+        cleanupOutputPath: browserMaterialOutputPath,
         order: readRef(sources.combinedErrorText, '') ? 0 : 10
       });
     }
@@ -238,7 +246,7 @@ export function useLiveTaskQueue(sources) {
       items.push({
         id: `material-active-${taskId}`,
         taskId,
-        outputPath: task?.outputPath || task?.outputDir || '',
+        outputPath: task?.outputDir || task?.outputPath || '',
         type: hasVerticalTask ? '竖屏' : getMaterialTaskTypeLabel(task),
         title: getMaterialTaskTitle(task),
         statusLabel: hasVerticalTask ? getStandaloneTaskStatusLabel(verticalTask) : getMaterialTaskStatusLabel(task),
@@ -250,8 +258,18 @@ export function useLiveTaskQueue(sources) {
           ? (verticalTask.runtimeJobId || formatRelativeTaskTime(verticalTask.updatedAt || verticalTask.startedAt, sources.formatTime))
           : (taskId ? `任务 ${taskId}` : formatRelativeTaskTime(task?.updatedAt || task?.startedAt, sources.formatTime)),
         state: mergedStatus === 'failed' || task?.error || verticalTask?.errorDetails ? 'danger' : (mergedStatus === 'queued' ? 'waiting' : 'running'),
+        retryAction: !hasVerticalTask && (mergedStatus === 'failed' || task?.error) ? 'retry-material-step' : '',
+        retryStep: Number(task?.currentStep || 0) || 1,
+        retryOutputPath: task?.outputDir || task?.outputPath || '',
         action: !hasVerticalTask && task?.avatarRenderState?.taskId && !task?.videoUrl ? 'resume-material' : '',
         actionBusy: isResuming,
+        cleanupAction: (mergedStatus === 'queued' || mergedStatus === 'failed' || task?.error || verticalTask?.errorDetails)
+          ? (hasVerticalTask ? 'delete-unified-task' : 'delete-material-task')
+          : '',
+        cleanupId: (mergedStatus === 'queued' || mergedStatus === 'failed' || task?.error || verticalTask?.errorDetails)
+          ? (hasVerticalTask ? verticalTask.id : taskId)
+          : '',
+        cleanupOutputPath: task?.outputDir || task?.outputPath || '',
         order: mergedStatus === 'failed' || task?.error ? 0 : (hasVerticalTask ? 30 : 12 + Math.max(0, taskStep))
       });
     }
@@ -302,6 +320,8 @@ export function useLiveTaskQueue(sources) {
         progress: clampProgress(task.progress),
         meta: task.runtimeJobId || formatRelativeTaskTime(task.updatedAt || task.startedAt, sources.formatTime),
         state: status === 'queued' ? 'waiting' : (status === 'failed' ? 'danger' : 'running'),
+        cleanupAction: ['failed', 'interrupted'].includes(status) ? 'delete-unified-task' : '',
+        cleanupId: ['failed', 'interrupted'].includes(status) ? String(task.id || '') : '',
         order: status === 'failed' ? 1 : 32
       });
     }
@@ -321,6 +341,8 @@ export function useLiveTaskQueue(sources) {
         progress: clampProgress(job.progress),
         meta: formatRelativeTaskTime(job.updatedAt || job.startedAt || job.createdAt, sources.formatTime),
         state: ['failed', 'cancelled', 'skipped'].includes(status) ? 'danger' : (status === 'queued' ? 'waiting' : 'running'),
+        cleanupAction: ['failed', 'cancelled', 'skipped'].includes(status) ? 'delete-vertical-queue' : '',
+        cleanupId: ['failed', 'cancelled', 'skipped'].includes(status) ? String(job.id || '') : '',
         order: status === 'queued' ? 45 : 35
       });
     }
@@ -369,8 +391,32 @@ export function useLiveTaskQueue(sources) {
     };
   };
 
+  const createCleanupPayload = (item) => {
+    const action = String(item?.cleanupAction || '').trim();
+    const id = String(item?.cleanupId || '').trim();
+    if (!action || !id) return null;
+    return {
+      action,
+      id,
+      outputPath: item?.cleanupOutputPath || item?.outputPath || ''
+    };
+  };
+
+  const createRetryPayload = (item) => {
+    if (String(item?.retryAction || '').trim() !== 'retry-material-step') return null;
+    const taskId = String(item?.taskId || '').trim();
+    if (!taskId) return null;
+    return {
+      jobId: taskId,
+      step: Number(item?.retryStep || 0) || 1,
+      outputPath: item?.retryOutputPath || item?.outputPath || ''
+    };
+  };
+
   return {
     liveTaskItems,
-    createResumePayload
+    createCleanupPayload,
+    createResumePayload,
+    createRetryPayload
   };
 }

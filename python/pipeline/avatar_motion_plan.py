@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -26,6 +27,7 @@ MIN_GESTURE_INTERVAL_SECONDS = 3.0
 TARGET_GESTURE_INTERVAL_SECONDS = 6.0
 MIN_GESTURE_SEGMENT_SECONDS = 0.8
 MIN_VISIBLE_GESTURE_SECONDS = 0.8
+MAX_REASONABLE_AVATAR_AUDIO_SECONDS = 10 * 60
 SENTENCE_PATTERN = re.compile(r"[^。！？!?…\n]+[。！？!?…]?", re.UNICODE)
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]", re.UNICODE)
 ANCHOR_TRIGGER_KEYWORDS = [
@@ -68,8 +70,8 @@ ACTION_FALLBACK_ORDER = [
     "both_hand_open",
     "both_hand_emphasis",
 ]
-SUPPORTED_PLANNER_MODES = {"auto", "local", "llm"}
-SUPPORTED_LLM_PROVIDERS = {"deepseek", "qwen", "gemini", "vertex"}
+MOTION_LLM_PROVIDER = "deepseek"
+MOTION_LLM_MODEL = "deepseek-v4-flash"
 
 
 def read_text_file(path: Path) -> str:
@@ -102,9 +104,80 @@ def extract_json_object(text: str) -> dict:
     raise ValueError("LLM response did not contain a JSON object")
 
 
+def extract_json_object_with_repair(
+    text: str,
+    *,
+    client,
+    expected_schema: str,
+    provider: str = MOTION_LLM_PROVIDER,
+    model: str = MOTION_LLM_MODEL,
+) -> dict:
+    try:
+        return extract_json_object(text)
+    except json.JSONDecodeError as exc:
+        from llm_client import generate_content
+
+        repair_prompt = (
+            "下面是一段 LLM 输出，但它不是合法 JSON。请只修复 JSON 语法，不要改写字段含义，"
+            "不要新增解释，不要 Markdown。必须输出一个能被 json.loads 解析的 JSON 对象。\n"
+            f"期望结构：{expected_schema}\n"
+            f"解析错误：{exc}\n\n"
+            f"原始输出：\n{text}"
+        )
+        repaired = generate_content(
+            client,
+            model=model,
+            contents=repair_prompt,
+            response_mime_type="application/json",
+            retries=1,
+            request_timeout=int(os.getenv("AVATAR_MOTION_LLM_REPAIR_TIMEOUT_SECONDS", "45") or 45),
+            provider=provider,
+        )
+        return extract_json_object(getattr(repaired, "text", ""))
+
+
 def hash_payload(payload: dict) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha1(encoded).hexdigest()
+
+
+def read_ffprobe_duration(path: Path) -> float:
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration:stream=duration",
+        "-of", "json",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+            timeout=15,
+        )
+        payload = json.loads(result.stdout or "{}")
+    except (FileNotFoundError, subprocess.SubprocessError, json.JSONDecodeError):
+        return 0.0
+
+    candidates = [(payload.get("format") or {}).get("duration")]
+    candidates.extend(stream.get("duration") for stream in payload.get("streams") or [] if isinstance(stream, dict))
+    for value in candidates:
+        try:
+            duration = float(value)
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            return duration
+    return 0.0
+
+
+def is_reasonable_audio_duration(duration: float) -> bool:
+    return 0 < duration <= MAX_REASONABLE_AVATAR_AUDIO_SECONDS
 
 
 def read_wav_duration(path: Path) -> float:
@@ -113,7 +186,15 @@ def read_wav_duration(path: Path) -> float:
         frame_rate = wav_file.getframerate()
         if frame_rate <= 0:
             return 0.0
-        return frame_count / float(frame_rate)
+        duration = frame_count / float(frame_rate)
+        channels = max(1, int(wav_file.getnchannels() or 1))
+        sample_width = max(1, int(wav_file.getsampwidth() or 1))
+
+    data_bytes = max(0, path.stat().st_size - 44)
+    max_duration_from_file_size = data_bytes / float(max(1, frame_rate * channels * sample_width))
+    if max_duration_from_file_size > 0 and duration > max_duration_from_file_size * 1.2 + 1.0:
+        raise wave.Error("WAV header duration is inconsistent with file size")
+    return duration
 
 
 def estimate_duration(text: str) -> float:
@@ -124,10 +205,14 @@ def estimate_duration(text: str) -> float:
 def resolve_audio_duration(audio_path: Path, text: str, explicit_duration: float = 0.0) -> float:
     if explicit_duration > 0:
         return explicit_duration
+    if audio_path.exists():
+        ffprobe_duration = read_ffprobe_duration(audio_path)
+        if is_reasonable_audio_duration(ffprobe_duration):
+            return ffprobe_duration
     if audio_path.exists() and audio_path.suffix.lower() == ".wav":
         try:
             duration = read_wav_duration(audio_path)
-            if duration > 0:
+            if is_reasonable_audio_duration(duration):
                 return duration
         except (OSError, wave.Error):
             pass
@@ -736,31 +821,6 @@ def build_motion_plan(
     return payload
 
 
-def get_text_model(provider: str) -> str:
-    if provider == "deepseek":
-        return os.getenv("AVATAR_MOTION_LLM_MODEL") or os.getenv("DEEPSEEK_TEXT_MODEL", "deepseek-v4-pro")
-    if provider == "qwen":
-        return os.getenv("AVATAR_MOTION_LLM_MODEL") or os.getenv("QWEN_TEXT_MODEL", "qwen3.6-plus")
-    if provider == "vertex":
-        return os.getenv("AVATAR_MOTION_LLM_MODEL") or os.getenv("VERTEX_SCRIPT_MODEL") or os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
-    return os.getenv("AVATAR_MOTION_LLM_MODEL") or os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
-
-
-def resolve_llm_provider(provider: str | None = None) -> str:
-    requested = str(provider or os.getenv("AVATAR_MOTION_LLM_PROVIDER") or "").strip().lower()
-    if requested:
-        if requested not in SUPPORTED_LLM_PROVIDERS:
-            raise ValueError(f"不支持的数字人动作 LLM provider: {requested}")
-        return requested
-
-    from llm_client import get_text_llm_provider
-
-    resolved = get_text_llm_provider()
-    if resolved not in SUPPORTED_LLM_PROVIDERS:
-        raise ValueError(f"不支持的数字人动作 LLM provider: {resolved}")
-    return resolved
-
-
 def compact_edit_context(edit_plan: dict | None = None, clip_matches: dict | None = None, timeline: list[dict] | None = None) -> dict:
     blocks = []
     if isinstance(edit_plan, dict):
@@ -867,7 +927,9 @@ def build_llm_prompt(
             "min_gesture_interval_seconds": MIN_GESTURE_INTERVAL_SECONDS,
             "target_gesture_interval_seconds": TARGET_GESTURE_INTERVAL_SECONDS,
             "min_avatar_visible_seconds_for_gesture": MIN_VISIBLE_GESTURE_SECONDS,
-            "style": "动作要丰富但不要频繁重复；动作组件本身已包含默认态到动作再回默认态，不能要求裁掉组件开头或中段。",
+            "style": "动作要自然、有表达感、不要机械重复；但数字人口播不能长时间僵硬不动。动作组件本身已包含默认态到动作再回默认态，不能要求裁掉组件开头或中段。",
+            "target_gesture_count": "动作策略调到积极模式：只要数字人可见窗口足够放下动作，就尽量每个可见窗口都匹配一个自然动作；不要只保守选择 1-2 个。",
+            "minimum_gesture_policy": "所有通过可见窗口约束的候选片段都应该优先匹配非 idle_talking 动作。你负责从 allowed_actions 中选择最合适的动作和锚点。",
         },
     }
     return (
@@ -886,8 +948,238 @@ def build_llm_prompt(
         "9. 你要结合 timed_subtitles 和 edit_context 判断：哪些重点发生在数字人可见段，哪些重点被素材插片覆盖；只有数字人可见段才安排动作。\n"
         "10. timeline.alignmentWords 是该时间段附近可选锚词。选择动作时由你判断语义重点，并从 alignmentWords 中选一个最该对齐动作主动段的 anchorWordIndex；没有合适词就填 null。\n"
         "11. 不要根据固定关键词机械选择锚点；必须结合整句语义、剪辑上下文、可见窗口和动作含义。\n\n"
+        "12. 产品目标已调到“出镜积极表达”：不要只偶尔动；只要该句有足够数字人可见窗口，就优先匹配一个自然动作。\n"
+        "13. 多个出镜窗口时，最佳结果是每个可放动作的出镜窗口都有动作；全 idle、只有 1 个动作或只选 2 个动作都偏保守。\n"
+        "14. 除非动作主动段无法落在可见窗口内，否则不要把通过可见窗口校验的片段判成 idle_talking。\n\n"
         f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def build_llm_idle_review_prompt(base_prompt: str, first_response_text: str) -> str:
+    return (
+        f"{base_prompt}\n\n"
+        "上一轮输出经系统校验后没有任何可用动作，全部是 idle_talking。\n"
+        "请重新自检：这会导致合成动作参考视频全程无动作，不符合“出镜时偶尔有动作”的产品目标。\n"
+        "会议、访谈、观点解释、数字判断、因果说明这类口播都可以自然配合轻度手势；不要把“不是强情绪”当成全 idle 的理由。\n"
+        "如果 timeline 中存在多个 avatarVisibleDuration 足够的出镜片段，必须尽量给每个候选片段都选择动作；"
+        "如果只有 1 个足够出镜片段，也必须选择 1 个最自然的动作。"
+        "允许连续多个片段都有动作，只要动作语义自然。不要再次全部 idle_talking，也不要只保守挑 1-2 个。\n"
+        "只有在所有出镜片段都太短、或动作主动段无法落在可见窗口时，才允许全部 idle_talking；"
+        "如果你认为不能安排动作，reason 必须具体说明可见窗口约束，而不是泛泛说语义不强。\n"
+        "仍然只输出同一 JSON 格式，不要 Markdown，不要解释。\n\n"
+        f"上一轮输出：\n{first_response_text}"
+    )
+
+
+def has_visible_gesture_candidate(timeline: list[dict], profiles: dict) -> bool:
+    return bool(get_visible_gesture_candidates(timeline, profiles))
+
+
+def get_visible_gesture_candidates(timeline: list[dict], profiles: dict) -> list[dict]:
+    if not profiles:
+        return []
+    source_durations = []
+    for profile in profiles.values():
+        try:
+            source_durations.append(max(0.2, float(profile.get("sourceDuration") or MIN_GESTURE_SEGMENT_SECONDS)))
+        except (TypeError, ValueError):
+            source_durations.append(MIN_GESTURE_SEGMENT_SECONDS)
+    min_source_duration = min(source_durations)
+    min_visible_duration = max(MIN_VISIBLE_GESTURE_SECONDS, min_source_duration * 0.5)
+    candidates = []
+    for item in timeline:
+        visible_duration = visible_duration_for_segment(item)
+        if visible_duration < min_visible_duration:
+            continue
+        candidates.append({
+            "id": item["id"],
+            "text": item.get("text", ""),
+            "start": item.get("start"),
+            "end": item.get("end"),
+            "duration": item.get("duration"),
+            "avatarVisibleStart": item.get("visibility", {}).get("avatarVisibleStart"),
+            "avatarVisibleEnd": item.get("visibility", {}).get("avatarVisibleEnd"),
+            "avatarVisibleDuration": visible_duration,
+            "alignmentWords": item.get("alignmentWords", [])[:16],
+        })
+    return candidates
+
+
+def build_llm_forced_selection_prompt(
+    timeline: list[dict],
+    profiles: dict,
+    previous_response_text: str,
+) -> str:
+    candidates = get_visible_gesture_candidates(timeline, profiles)
+    target_count = min(2, len(candidates)) if candidates else 0
+    payload = {
+        "target_non_idle_action_count": target_count,
+        "candidate_segments": candidates,
+        "allowed_non_idle_actions": sorted(profiles.keys()),
+        "action_profiles": {
+            action: {
+                "label": profile.get("label", action),
+                "description": profile.get("description", ""),
+                "sourceDuration": profile.get("sourceDuration"),
+                "activeStart": profile.get("activeStart"),
+                "activeEnd": profile.get("activeEnd"),
+            }
+            for action, profile in sorted(profiles.items())
+        },
+    }
+    return (
+        "你是数字人口播手势导演。系统已确认下列候选片段都有足够数字人出镜时间。\n"
+        "上一轮仍然全 idle，必须修正。请只基于 candidate_segments 做最终动作选择。\n"
+        f"你必须选择 exactly {target_count} 个非 idle_talking 动作；"
+        "每个被选择片段的 action 必须来自 allowed_non_idle_actions。未选择的片段可以省略。\n"
+        "会议、访谈、观点解释、数字判断、因果说明都适合轻度手势；不要因为语气平稳就全部 idle。\n"
+        "请优先选择观点转折、结论、因果解释、数字判断、概念展开处。"
+        "anchorWordIndex 优先从该片段 alignmentWords 中选择语义锚词，没有合适词填 null。\n"
+        "只输出 JSON：{\"segments\":[{\"id\":\"motion_001\",\"action\":\"right_hand_emphasis\",\"reason\":\"中文原因\",\"intensity\":0.25到0.85,\"anchorWordIndex\":数字或null,\"anchorTime\":秒数或null}]}\n\n"
+        f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        f"上一轮输出：\n{previous_response_text}"
+    )
+
+
+def has_gesture_assignment(segments: list[dict], profiles: dict) -> bool:
+    return any(str(item.get("action") or "") in profiles for item in segments)
+
+
+def has_compiled_gesture(segments: list[dict], profiles: dict) -> bool:
+    return any(str(item.get("action") or "") in profiles for item in segments)
+
+
+def count_compiled_gestures(segments: list[dict], profiles: dict) -> int:
+    return sum(1 for item in segments if str(item.get("action") or "") in profiles)
+
+
+def get_required_gesture_count(timeline: list[dict], profiles: dict) -> int:
+    candidates = get_visible_gesture_candidates(timeline, profiles)
+    return len(candidates)
+
+
+def build_candidate_selection_sets(candidates: list[dict], target_count: int) -> list[dict]:
+    if target_count <= 0:
+        return []
+    if target_count == 1:
+        return [{"ids": [item["id"]]} for item in candidates]
+    return [{"ids": [item["id"] for item in candidates]}]
+
+
+def build_llm_forced_match_prompt(
+    timeline: list[dict],
+    profiles: dict,
+    previous_response_text: str,
+    invalid_reason: str = "",
+) -> str:
+    candidates = get_visible_gesture_candidates(timeline, profiles)
+    target_count = get_required_gesture_count(timeline, profiles)
+    selection_sets = build_candidate_selection_sets(candidates, target_count)
+    payload = {
+        "target_non_idle_action_count": target_count,
+        "candidate_segments": candidates,
+        "allowed_selection_sets": selection_sets,
+        "allowed_non_idle_actions": sorted(profiles.keys()),
+        "action_profiles": {
+            action: {
+                "label": profile.get("label", action),
+                "description": profile.get("description", ""),
+                "sourceDuration": profile.get("sourceDuration"),
+                "activeStart": profile.get("activeStart"),
+                "activeEnd": profile.get("activeEnd"),
+            }
+            for action, profile in sorted(profiles.items())
+        },
+    }
+    repair_note = f"\n上一次强制匹配无效：{invalid_reason}\n" if invalid_reason else ""
+    return (
+        "你是数字人口播动作匹配器。系统已经筛出可放动作的出镜候选和合法组合。\n"
+        "现在不是判断要不要动作，而是必须完成积极动作匹配。\n"
+        f"你必须从 allowed_selection_sets 里选择一组，并为其中 exactly {target_count} 个片段分别匹配非 idle_talking 动作。\n"
+        "selected 里的 id 必须完全来自你选择的 allowed_selection_sets；action 必须来自 allowed_non_idle_actions，禁止 idle_talking。\n"
+        "会议、访谈、观点解释、数字判断、因果说明都适合轻度手势；语气平稳不是拒绝动作的理由。每个候选段都要有动作。\n"
+        "请优先把 right_hand_emphasis 用于关键概念/数字/结论，把 both_hand_open 用于因果解释/总结展开；但最终动作由你根据语义选择。\n"
+        "只输出 JSON：{\"selected\":[{\"id\":\"motion_001\",\"action\":\"right_hand_emphasis\",\"reason\":\"中文原因\",\"intensity\":0.25到0.85,\"anchorWordIndex\":数字或null,\"anchorTime\":秒数或null}]}\n"
+        f"{repair_note}\n"
+        f"输入数据：\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        f"上一轮全 idle 输出：\n{previous_response_text}"
+    )
+
+
+def parse_forced_match_response(
+    response_text: str,
+    timeline: list[dict],
+    profiles: dict,
+    *,
+    client=None,
+) -> tuple[list[dict], str]:
+    candidates = get_visible_gesture_candidates(timeline, profiles)
+    target_count = get_required_gesture_count(timeline, profiles)
+    selection_sets = {
+        frozenset(item["ids"])
+        for item in build_candidate_selection_sets(candidates, target_count)
+    }
+    candidate_ids = {item["id"] for item in candidates}
+    try:
+        payload = (
+            extract_json_object_with_repair(
+                response_text,
+                client=client,
+                expected_schema='{"selected":[{"id":"motion_001","action":"right_hand_emphasis","reason":"中文原因","intensity":0.5,"anchorWordIndex":null,"anchorTime":null}]}',
+            )
+            if client
+            else extract_json_object(response_text)
+        )
+    except json.JSONDecodeError as exc:
+        return [], f"LLM 返回的 JSON 无法解析: {exc}"
+    selected = payload.get("selected")
+    if not isinstance(selected, list):
+        return [], "LLM 未返回 selected 数组"
+
+    normalized = []
+    seen_ids = set()
+    for item in selected:
+        if not isinstance(item, dict):
+            continue
+        segment_id = str(item.get("id") or "").strip()
+        action = str(item.get("action") or "").strip()
+        if segment_id not in candidate_ids:
+            continue
+        if segment_id in seen_ids:
+            continue
+        if action not in profiles:
+            continue
+        seen_ids.add(segment_id)
+        normalized.append({
+            "id": segment_id,
+            "action": action,
+            "reason": str(item.get("reason") or "llm_forced_match").strip() or "llm_forced_match",
+            "intensity": item.get("intensity"),
+            "anchorWordIndex": item.get("anchorWordIndex"),
+            "anchorTime": item.get("anchorTime"),
+        })
+
+    if len(normalized) != target_count:
+        return [], f"LLM 返回 {len(normalized)}/{target_count} 个有效动作"
+    if target_count > 1 and frozenset(item["id"] for item in normalized) not in selection_sets:
+        return [], "LLM 选择的片段组合不在 allowed_selection_sets 中"
+
+    assignment_by_id = {item["id"]: item for item in normalized}
+    decisions = []
+    for item in timeline:
+        assignment = assignment_by_id.get(item["id"])
+        segment = {
+            **item,
+            "action": assignment["action"] if assignment else "idle_talking",
+            "reason": assignment["reason"] if assignment else "forced_match_unselected",
+            "intensity": assignment.get("intensity") if assignment else None,
+        }
+        if assignment:
+            anchor = resolve_llm_anchor(assignment, item)
+            if anchor:
+                segment["anchor"] = anchor
+        decisions.append(segment)
+    return apply_pacing_to_llm_segments(decisions, profiles, enforce_pacing=False), ""
 
 
 def normalize_llm_intensity(value, fallback: float) -> float:
@@ -898,7 +1190,7 @@ def normalize_llm_intensity(value, fallback: float) -> float:
     return round(min(0.85, max(0.25, parsed)), 2)
 
 
-def apply_pacing_to_llm_segments(segments: list[dict], profiles: dict) -> list[dict]:
+def apply_pacing_to_llm_segments(segments: list[dict], profiles: dict, enforce_pacing: bool = True) -> list[dict]:
     last_gesture_start = -999.0
     recent_actions = []
     normalized = []
@@ -907,13 +1199,13 @@ def apply_pacing_to_llm_segments(segments: list[dict], profiles: dict) -> list[d
         action = requested_action if requested_action in profiles or requested_action == "idle_talking" else "idle_talking"
         reason = str(segment.get("semantic") or segment.get("reason") or "llm_selected").strip() or "llm_selected"
 
-        if action != "idle_talking" and segment["duration"] < MIN_GESTURE_SEGMENT_SECONDS:
+        if enforce_pacing and action != "idle_talking" and segment["duration"] < MIN_GESTURE_SEGMENT_SECONDS:
             action = "idle_talking"
             reason = "llm_short_sentence_suppressed"
-        elif action != "idle_talking" and segment["start"] - last_gesture_start < MIN_GESTURE_INTERVAL_SECONDS:
+        elif enforce_pacing and action != "idle_talking" and segment["start"] - last_gesture_start < MIN_GESTURE_INTERVAL_SECONDS:
             action = "idle_talking"
             reason = "llm_cooldown_suppressed"
-        elif action != "idle_talking" and action in recent_actions[-2:]:
+        elif enforce_pacing and action != "idle_talking" and action in recent_actions[-2:]:
             action = "idle_talking"
             reason = "llm_repeat_suppressed"
 
@@ -974,8 +1266,16 @@ def resolve_llm_anchor(assignment: dict, item: dict) -> dict | None:
     }
 
 
-def parse_llm_assignments(response_text: str, timeline: list[dict], profiles: dict) -> list[dict]:
-    payload = extract_json_object(response_text)
+def parse_llm_assignments(response_text: str, timeline: list[dict], profiles: dict, *, client=None) -> list[dict]:
+    payload = (
+        extract_json_object_with_repair(
+            response_text,
+            client=client,
+            expected_schema='{"segments":[{"id":"motion_001","action":"动作id或idle_talking","reason":"简短中文原因","intensity":0.5,"anchorWordIndex":null,"anchorTime":null}]}',
+        )
+        if client
+        else extract_json_object(response_text)
+    )
     raw_segments = payload.get("segments")
     if not isinstance(raw_segments, list):
         raise ValueError("LLM response missing segments list")
@@ -1010,8 +1310,6 @@ def build_motion_plan_with_llm(
     duration: float,
     fps: int = DEFAULT_FPS,
     action_dir: Path | None = None,
-    provider: str | None = None,
-    model: str | None = None,
     script_units: list[dict] | None = None,
     edit_plan: dict | None = None,
     clip_matches: dict | None = None,
@@ -1029,14 +1327,9 @@ def build_motion_plan_with_llm(
         include_alignment_words=bool(speech_alignment),
         attach_rule_anchors=False,
     )
-    resolved_provider = resolve_llm_provider(provider)
-    resolved_model = str(model or get_text_model(resolved_provider)).strip()
-    if not resolved_model:
-        raise ValueError("缺少数字人动作 LLM 模型配置")
-
     from llm_client import create_llm_client, generate_content
 
-    client = create_llm_client(resolved_provider)
+    client = create_llm_client(MOTION_LLM_PROVIDER)
     prompt = build_llm_prompt(
         timeline,
         profiles,
@@ -1046,29 +1339,86 @@ def build_motion_plan_with_llm(
     )
     response = generate_content(
         client,
-        model=resolved_model,
+        model=MOTION_LLM_MODEL,
         contents=prompt,
         response_mime_type="application/json",
         retries=2,
         request_timeout=int(os.getenv("AVATAR_MOTION_LLM_TIMEOUT_SECONDS", "90") or 90),
-        provider=resolved_provider,
+        provider=MOTION_LLM_PROVIDER,
     )
-    decisions = parse_llm_assignments(getattr(response, "text", ""), timeline, profiles)
+    response_text = getattr(response, "text", "")
+    decisions = parse_llm_assignments(response_text, timeline, profiles, client=client)
+    retried_idle_review = False
     segments = compile_motion_segments(decisions, profiles, duration)
+    required_gesture_count = get_required_gesture_count(timeline, profiles)
+    if required_gesture_count > 0:
+        max_idle_review_attempts = max(1, int(os.getenv("AVATAR_MOTION_IDLE_REVIEW_ATTEMPTS", "2") or 2))
+        idle_review_attempts = 0
+        while (
+            idle_review_attempts < max_idle_review_attempts
+            and (
+                not has_gesture_assignment(decisions, profiles)
+                or count_compiled_gestures(segments, profiles) < required_gesture_count
+            )
+        ):
+            retried_idle_review = True
+            idle_review_attempts += 1
+            review_prompt = build_llm_idle_review_prompt(prompt, response_text)
+            review_response = generate_content(
+                client,
+                model=MOTION_LLM_MODEL,
+                contents=review_prompt,
+                response_mime_type="application/json",
+                retries=2,
+                request_timeout=int(os.getenv("AVATAR_MOTION_LLM_TIMEOUT_SECONDS", "90") or 90),
+                provider=MOTION_LLM_PROVIDER,
+            )
+            response_text = getattr(review_response, "text", "")
+            decisions = parse_llm_assignments(response_text, timeline, profiles, client=client)
+            segments = compile_motion_segments(decisions, profiles, duration)
+        forced_match_attempts = max(1, int(os.getenv("AVATAR_MOTION_FORCED_MATCH_ATTEMPTS", "2") or 2))
+        forced_match_error = ""
+        forced_match_attempt = 0
+        while count_compiled_gestures(segments, profiles) < required_gesture_count and forced_match_attempt < forced_match_attempts:
+            retried_idle_review = True
+            forced_match_attempt += 1
+            forced_response = generate_content(
+                client,
+                model=MOTION_LLM_MODEL,
+                contents=build_llm_forced_match_prompt(timeline, profiles, response_text, forced_match_error),
+                response_mime_type="application/json",
+                retries=2,
+                request_timeout=int(os.getenv("AVATAR_MOTION_LLM_TIMEOUT_SECONDS", "90") or 90),
+                provider=MOTION_LLM_PROVIDER,
+            )
+            response_text = getattr(forced_response, "text", "")
+            forced_decisions, forced_match_error = parse_forced_match_response(response_text, timeline, profiles, client=client)
+            if forced_decisions:
+                decisions = forced_decisions
+                segments = compile_motion_segments(decisions, profiles, duration)
+                forced_match_error = (
+                    "" if count_compiled_gestures(segments, profiles) >= required_gesture_count
+                    else "AI 选择的动作未全部通过最终可见窗口校验"
+                )
+        if count_compiled_gestures(segments, profiles) < required_gesture_count:
+            raise ValueError(
+                f"数字人动作 LLM 强制匹配后仍未产出至少 {required_gesture_count} 个可用出镜动作，已停止生成全 idle 动作参考视频"
+            )
     payload = {
         "version": 1,
         "fps": int(fps or DEFAULT_FPS),
         "duration": round(duration, 3),
         "planner": {
             "method": "llm",
-            "provider": resolved_provider,
-            "model": resolved_model,
+            "provider": MOTION_LLM_PROVIDER,
+            "model": MOTION_LLM_MODEL,
             "availableActions": sorted(profiles.keys()),
             "minGestureIntervalSeconds": MIN_GESTURE_INTERVAL_SECONDS,
             "targetGestureIntervalSeconds": TARGET_GESTURE_INTERVAL_SECONDS,
             "usesScriptUnits": bool(script_units),
             "cutawayAware": bool(cutaway_windows),
             "usesSpeechAlignment": bool(speech_alignment),
+            "retriedIdleReview": retried_idle_review,
         },
         "decisionSegments": decisions,
         "segments": segments,
@@ -1077,65 +1427,26 @@ def build_motion_plan_with_llm(
     return payload
 
 
-def build_motion_plan_auto(
+def build_motion_plan_llm(
     narration_text: str,
     duration: float,
     fps: int = DEFAULT_FPS,
     action_dir: Path | None = None,
-    planner_mode: str = "auto",
-    llm_provider: str | None = None,
-    llm_model: str | None = None,
     script_units: list[dict] | None = None,
     edit_plan: dict | None = None,
     clip_matches: dict | None = None,
     speech_alignment: dict | None = None,
 ) -> dict:
-    mode = str(planner_mode or "auto").strip().lower()
-    if mode not in SUPPORTED_PLANNER_MODES:
-        raise ValueError(f"不支持的数字人动作 planner 模式: {planner_mode}")
-    if mode == "local":
-        return build_motion_plan(
-            narration_text,
-            duration,
-            fps=fps,
-            action_dir=action_dir,
-            script_units=script_units,
-            edit_plan=edit_plan,
-            clip_matches=clip_matches,
-            speech_alignment=speech_alignment,
-        )
-
-    try:
-        return build_motion_plan_with_llm(
-            narration_text,
-            duration,
-            fps=fps,
-            action_dir=action_dir,
-            provider=llm_provider,
-            model=llm_model,
-            script_units=script_units,
-            edit_plan=edit_plan,
-            clip_matches=clip_matches,
-            speech_alignment=speech_alignment,
-        )
-    except Exception as exc:
-        if mode == "llm":
-            raise
-        fallback = build_motion_plan(
-            narration_text,
-            duration,
-            fps=fps,
-            action_dir=action_dir,
-            script_units=script_units,
-            edit_plan=edit_plan,
-            clip_matches=clip_matches,
-            speech_alignment=speech_alignment,
-        )
-        fallback["planner"]["method"] = "local_sparse_semantic_fallback"
-        fallback["planner"]["llmError"] = str(exc)
-        fallback["signature"] = hash_payload(fallback)
-        print(f"[avatar_motion_plan] LLM planner failed, fallback to local semantic: {exc}", file=sys.stderr)
-        return fallback
+    return build_motion_plan_with_llm(
+        narration_text,
+        duration,
+        fps=fps,
+        action_dir=action_dir,
+        script_units=script_units,
+        edit_plan=edit_plan,
+        clip_matches=clip_matches,
+        speech_alignment=speech_alignment,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1146,9 +1457,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS)
     parser.add_argument("--duration", type=float, default=0.0, help="Optional explicit duration override")
     parser.add_argument("--action-dir", default="", help="Optional avatar action preset directory for semantic matching")
-    parser.add_argument("--planner-mode", default=os.getenv("AVATAR_MOTION_PLANNER", "auto"), choices=sorted(SUPPORTED_PLANNER_MODES))
-    parser.add_argument("--llm-provider", default=os.getenv("AVATAR_MOTION_LLM_PROVIDER", ""), help="Optional provider override: deepseek/qwen/gemini/vertex")
-    parser.add_argument("--llm-model", default=os.getenv("AVATAR_MOTION_LLM_MODEL", ""), help="Optional model override")
     parser.add_argument("--script-units", default="", help="Optional script_units.json used to align gestures with edit script")
     parser.add_argument("--edit-plan", default="", help="Optional edit_plan.json used to avoid gestures under material cutaways")
     parser.add_argument("--clip-matches", default="", help="Optional clip_matches.json used to avoid gestures under material cutaways")
@@ -1170,14 +1478,11 @@ def main() -> int:
     edit_plan = read_json_file(Path(args.edit_plan)) if args.edit_plan and Path(args.edit_plan).exists() else {}
     clip_matches = read_json_file(Path(args.clip_matches)) if args.clip_matches and Path(args.clip_matches).exists() else {}
     speech_alignment = load_speech_alignment(Path(args.speech_alignment)) if args.speech_alignment else {}
-    plan = build_motion_plan_auto(
+    plan = build_motion_plan_llm(
         narration_text,
         duration,
         args.fps,
         action_dir=action_dir,
-        planner_mode=args.planner_mode,
-        llm_provider=args.llm_provider,
-        llm_model=args.llm_model,
         script_units=script_units,
         edit_plan=edit_plan,
         clip_matches=clip_matches,

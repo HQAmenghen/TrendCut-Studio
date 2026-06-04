@@ -2,6 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { TaskStore } = require('../../../core/taskStore');
 const {
   AVATAR_RENDER_STATE_FILE,
   NARRATION_SPEECH_METADATA_FILE,
@@ -27,6 +28,20 @@ function mockSpeechNarration() {
     model: 'deepseek-v4-flash',
     normalizations: []
   }));
+}
+
+function mockAvatarMotion(outputPath) {
+  const motionSourcePath = path.join(outputPath, 'avatar_motion_source.mp4');
+  return jest.fn(async () => {
+    fs.writeFileSync(motionSourcePath, 'motion', 'utf8');
+    return {
+      enabled: true,
+      motionSourcePath,
+      poseInputPath: motionSourcePath,
+      motionSignature: 'motion-sig',
+      segmentCount: 1
+    };
+  });
 }
 
 function createBaseProject() {
@@ -101,7 +116,11 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: [{ nodeId: '6', fieldName: 'audio' }]
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [
+        { nodeId: '6', fieldName: 'audio' },
+        { nodeId: '279', fieldName: 'video' }
+      ]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -109,6 +128,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -151,6 +171,80 @@ describe('createAvatarGenerationService', () => {
     expect(task.logs.map((item) => item.message)).toContain(`复用已生成的 Qwen3TTS 口播音频: ${path.basename(cachedAudioPath)}`);
   });
 
+  test('persists detailed avatar motion planning failures and does not render', async () => {
+    const { outputPath, paths } = createBaseProject();
+    const taskStore = new TaskStore(path.join(paths.projectRoot || path.dirname(paths.WORKFLOW_PATH), 'tasks.db'));
+    const render = jest.fn();
+    const synthesizeSpeech = jest.fn(async () => {
+      const outputPathForSpeech = path.join(outputPath, 'avatar_qwen3tts.wav');
+      fs.writeFileSync(outputPathForSpeech, 'speech', 'utf8');
+      return {
+        outputPath: outputPathForSpeech,
+        model: 'qwen3-tts'
+      };
+    });
+    const details = '数字人动作 LLM 多次判断均未选择任何出镜动作';
+    const generateAvatarMotionFn = jest.fn(async () => {
+      const error = new Error('数字人动作计划生成失败');
+      error.code = 'AVATAR_MOTION_PLAN_FAILED';
+      error.stage = 'avatar_motion_plan';
+      error.details = details;
+      throw error;
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      taskStore,
+      synthesizeSpeech,
+      generateAvatarMotionFn,
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
+      rendererFactory: () => ({ render }),
+      downloadFile: jest.fn()
+    });
+    const task = {
+      outputPath,
+      outputDir: 'material_job',
+      progress: 80,
+      currentStep: 5,
+      logs: [],
+      status: 'waiting_avatar',
+      statusText: '等待数字人',
+      autoGenerate: true,
+      useSmartClip: true,
+      useCache: true,
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    try {
+      await expect(service.autoGenerateAvatar('job-1', task)).rejects.toThrow(details);
+      expect(render).not.toHaveBeenCalled();
+      expect(task.error).toContain(details);
+      expect(task.logs.map((item) => item.message).join('\n')).toContain(details);
+      const stored = taskStore.findTaskByKey('material_driven', 'material:material_job');
+      expect(stored.status).toBe('failed');
+      expect(stored.message).toContain(details);
+      expect(stored.logs.map((item) => item.message).join('\n')).toContain(details);
+      expect(stored.metadata).toMatchObject({
+        errorCode: 'AVATAR_MOTION_PLAN_FAILED',
+        errorStage: 'avatar_motion_plan',
+        errorDetails: details
+      });
+    } finally {
+      taskStore.close();
+    }
+  });
+
   test('reuses legacy Qwen3TTS audio even when retry trims a newer reference file', async () => {
     const { outputPath, paths } = createBaseProject();
     const cachedAudioPath = path.join(outputPath, 'avatar_qwen3tts.wav');
@@ -171,7 +265,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -179,6 +274,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ outputDir }) => {
         const trimmedPath = path.join(outputDir, 'avatar_reference_audio_trimmed.mp3');
         fs.writeFileSync(trimmedPath, 'trimmed-reference', 'utf8');
@@ -231,7 +327,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -239,6 +336,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -286,7 +384,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -294,6 +393,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -374,7 +474,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -382,6 +483,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -432,7 +534,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -440,6 +543,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -491,6 +595,7 @@ describe('createAvatarGenerationService', () => {
           videoUrl: 'https://example.com/resumed.mp4',
           remoteAudioName: options.runningHubRemoteAudioName,
           remoteImageName: options.runningHubRemoteImageName,
+          remotePoseName: options.runningHubRemotePoseName,
           nodeInfoList: options.runningHubNodeInfoList
         };
       }
@@ -499,13 +604,21 @@ describe('createAvatarGenerationService', () => {
         taskId: 'task-submitted',
         remoteAudioName: 'api/avatar.wav',
         remoteImageName: 'api/avatar.png',
-        nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' }]
+        remotePoseName: 'api/avatar_motion_source.mp4',
+        nodeInfoList: [
+          { nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' },
+          { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+        ]
       });
       throw Object.assign(new Error('Request failed with status code 504'), {
         runningHubTaskId: 'task-submitted',
         remoteAudioName: 'api/avatar.wav',
         remoteImageName: 'api/avatar.png',
-        nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' }]
+        remotePoseName: 'api/avatar_motion_source.mp4',
+        nodeInfoList: [
+          { nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' },
+          { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+        ]
       });
     });
     const synthesizeSpeech = jest.fn(async () => ({
@@ -518,6 +631,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -560,7 +674,8 @@ describe('createAvatarGenerationService', () => {
     expect(renderCalls[1]).toMatchObject({
       runningHubTaskId: 'task-submitted',
       runningHubRemoteAudioName: 'api/avatar.wav',
-      runningHubRemoteImageName: 'api/avatar.png'
+      runningHubRemoteImageName: 'api/avatar.png',
+      runningHubRemotePoseName: 'api/avatar_motion_source.mp4'
     });
     expect(downloadFile).toHaveBeenCalledWith(
       'https://example.com/resumed.mp4',
@@ -587,6 +702,7 @@ describe('createAvatarGenerationService', () => {
       submittedAt: '2000-01-01T00:00:00.000Z',
       remoteAudioName: 'api/old.wav',
       remoteImageName: 'api/avatar.png',
+      remotePoseName: 'api/avatar_motion_source.mp4',
       videoUrl: 'https://example.com/old.mp4'
     });
 
@@ -595,7 +711,11 @@ describe('createAvatarGenerationService', () => {
         taskId: 'new-task',
         remoteAudioName: 'api/new.wav',
         remoteImageName: 'api/avatar.png',
-        nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/new.wav' }]
+        remotePoseName: 'api/avatar_motion_source.mp4',
+        nodeInfoList: [
+          { nodeId: '6', fieldName: 'audio', fieldValue: 'api/new.wav' },
+          { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+        ]
       });
       return {
         provider: 'runninghub',
@@ -603,7 +723,8 @@ describe('createAvatarGenerationService', () => {
         videoUrl: 'https://example.com/new.mp4',
         remoteAudioName: 'api/new.wav',
         remoteImageName: 'api/avatar.png',
-        nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/new.wav' }]
+        remotePoseName: 'api/avatar_motion_source.mp4',
+        nodeInfoList: [{ nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }]
       };
     });
     const synthesizeSpeech = jest.fn(async () => {
@@ -620,6 +741,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech,
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -667,13 +789,21 @@ describe('createAvatarGenerationService', () => {
           taskId: 'task-false-failed',
           remoteAudioName: 'api/avatar.wav',
           remoteImageName: 'api/avatar.png',
-          nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' }]
+          remotePoseName: 'api/avatar_motion_source.mp4',
+          nodeInfoList: [
+            { nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' },
+            { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+          ]
         });
         throw Object.assign(new Error('[RunningHub 任务失败] temporary false negative'), {
           runningHubTaskId: 'task-false-failed',
           remoteAudioName: 'api/avatar.wav',
           remoteImageName: 'api/avatar.png',
-          nodeInfoList: [{ nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' }]
+          remotePoseName: 'api/avatar_motion_source.mp4',
+          nodeInfoList: [
+            { nodeId: '6', fieldName: 'audio', fieldValue: 'api/avatar.wav' },
+            { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+          ]
         });
       })
       .mockImplementationOnce(async () => ({
@@ -682,7 +812,8 @@ describe('createAvatarGenerationService', () => {
         videoUrl: 'https://example.com/retried.mp4',
         remoteAudioName: 'api/retried.wav',
         remoteImageName: 'api/avatar.png',
-        nodeInfoList: []
+        remotePoseName: 'api/avatar_motion_source.mp4',
+        nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
       }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -693,6 +824,7 @@ describe('createAvatarGenerationService', () => {
         outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
         model: 'qwen3-tts'
       })),
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -748,7 +880,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/done.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest.fn(async (_url, outputFile) => {
       fs.writeFileSync(outputFile, 'video', 'utf8');
@@ -756,6 +889,7 @@ describe('createAvatarGenerationService', () => {
     const service = createAvatarGenerationService({
       paths,
       synthesizeSpeech: jest.fn(),
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,
@@ -790,6 +924,298 @@ describe('createAvatarGenerationService', () => {
     expect(task.logs.map((item) => item.message)).toContain('复用已下载的数字人视频: aiman.mp4, taskId=task-done');
   });
 
+  test('stops before rendering when avatar motion generation fails', async () => {
+    const { outputPath, paths } = createBaseProject();
+    const render = jest.fn();
+    const downloadFile = jest.fn();
+    const generateAvatarMotionFn = jest.fn(async () => {
+      throw new Error('motion builder crashed');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(async () => ({
+        outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+        model: 'qwen3-tts'
+      })),
+      generateAvatarMotionFn,
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await expect(service.autoGenerateAvatar('job-1', task)).rejects.toThrow('motion builder crashed');
+
+    expect(generateAvatarMotionFn).toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  test('does not download or reuse a RunningHub result without motion reference node proof', async () => {
+    const { outputPath, paths } = createBaseProject();
+    const render = jest.fn(async () => ({
+      provider: 'runninghub',
+      taskId: 'task-no-pose',
+      videoUrl: 'https://example.com/no-pose.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      remotePoseName: '',
+      nodeInfoList: [
+        { nodeId: '6', fieldName: 'audio' },
+        { nodeId: '180', fieldName: 'image' },
+        { nodeId: '279', fieldName: 'video', fieldValue: '' }
+      ]
+    }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(async () => ({
+        outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+        model: 'qwen3-tts'
+      })),
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await expect(service.autoGenerateAvatar('job-1', task)).rejects.toThrow('未提交动作参考视频节点输入');
+
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(outputPath, 'aiman.mp4'))).toBe(false);
+    expect(readAvatarRenderState(outputPath)).toEqual({});
+  });
+
+  test('does not call the renderer when avatar motion generation fails', async () => {
+    const { outputPath, paths } = createBaseProject();
+    const render = jest.fn();
+    const downloadFile = jest.fn();
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(async () => ({
+        outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
+        model: 'qwen3-tts'
+      })),
+      generateAvatarMotionFn: jest.fn(async () => {
+        throw new Error('motion builder failed');
+      }),
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await expect(service.autoGenerateAvatar('job-1', task)).rejects.toThrow('motion builder failed');
+
+    expect(render).not.toHaveBeenCalled();
+    expect(downloadFile).not.toHaveBeenCalled();
+  });
+
+  test('does not reuse cached aiman video when RunningHub state has no pose node proof', async () => {
+    const { outputPath, paths } = createBaseProject();
+    fs.writeFileSync(path.join(outputPath, 'avatar_qwen3tts.wav'), 'cached-audio', 'utf8');
+    fs.writeFileSync(path.join(outputPath, 'aiman.mp4'), 'stale-video', 'utf8');
+    writeJson(path.join(outputPath, AVATAR_RENDER_STATE_FILE), {
+      provider: 'runninghub',
+      status: 'downloaded',
+      taskId: 'old-no-pose-task',
+      videoUrl: 'https://example.com/old-no-pose.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      remotePoseName: '',
+      nodeInfoList: [
+        { nodeId: '6', fieldName: 'audio' },
+        { nodeId: '180', fieldName: 'image' },
+        { nodeId: '279', fieldName: 'video', fieldValue: '' }
+      ]
+    });
+    const render = jest.fn(async (options) => ({
+      provider: 'runninghub',
+      taskId: 'new-pose-task',
+      videoUrl: 'https://example.com/new-pose.mp4',
+      remoteAudioName: 'api/new.wav',
+      remoteImageName: 'api/avatar.png',
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [
+        { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+      ],
+      receivedResumeTaskId: options.runningHubTaskId
+    }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'new-video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(),
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({
+      runningHubTaskId: '',
+      runningHubRemotePoseName: ''
+    }));
+    expect(downloadFile).toHaveBeenCalledWith(
+      'https://example.com/new-pose.mp4',
+      path.join(outputPath, 'aiman.mp4'),
+      expect.any(Object)
+    );
+    expect(fs.readFileSync(path.join(outputPath, 'aiman.mp4'), 'utf8')).toBe('new-video');
+    expect(task.logs.some((item) => item.message.includes('缺少动作参考视频节点输入'))).toBe(true);
+  });
+
+  test('does not reuse cached RunningHub output when pose signature is missing', async () => {
+    const { outputPath, paths } = createBaseProject();
+    fs.writeFileSync(path.join(outputPath, 'avatar_qwen3tts.wav'), 'cached-audio', 'utf8');
+    fs.writeFileSync(path.join(outputPath, 'aiman.mp4'), 'stale-video', 'utf8');
+    writeJson(path.join(outputPath, AVATAR_RENDER_STATE_FILE), {
+      provider: 'runninghub',
+      status: 'downloaded',
+      taskId: 'old-unsigned-pose-task',
+      videoUrl: 'https://example.com/old-unsigned-pose.mp4',
+      remoteAudioName: 'api/avatar.wav',
+      remoteImageName: 'api/avatar.png',
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [
+        { nodeId: '279', fieldName: 'video', fieldValue: 'api/avatar_motion_source.mp4' }
+      ]
+    });
+    const render = jest.fn(async () => ({
+      provider: 'runninghub',
+      taskId: 'new-signed-pose-task',
+      videoUrl: 'https://example.com/new-signed-pose.mp4',
+      remoteAudioName: 'api/new.wav',
+      remoteImageName: 'api/avatar.png',
+      remotePoseName: 'api/new_avatar_motion_source.mp4',
+      nodeInfoList: [
+        { nodeId: '279', fieldName: 'video', fieldValue: 'api/new_avatar_motion_source.mp4' }
+      ]
+    }));
+    const downloadFile = jest.fn(async (_url, outputFile) => {
+      fs.writeFileSync(outputFile, 'new-video', 'utf8');
+    });
+    const service = createAvatarGenerationService({
+      paths,
+      synthesizeSpeech: jest.fn(),
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
+      prepareReferenceAudioFn: ({ inputPath }) => ({
+        audioPath: inputPath,
+        wasTrimmed: false,
+        durationSeconds: 8
+      }),
+      generateSpeechNarration: mockSpeechNarration(),
+      readWorkflowFile: () => ({}),
+      ensureSpeechAlignmentFn: jest.fn(async () => ({ enabled: false })),
+      rendererFactory: () => ({ render }),
+      downloadFile
+    });
+    const task = {
+      outputPath,
+      progress: 80,
+      logs: [],
+      avatarConfig: {
+        renderProvider: 'runninghub',
+        audioPreset: 'voice.mp3',
+        imagePreset: 'avatar.png',
+        runningHubWorkflowId: '2051840324212936706'
+      }
+    };
+
+    await service.autoGenerateAvatar('job-1', task);
+
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({
+      runningHubTaskId: '',
+      runningHubRemotePoseName: ''
+    }));
+    expect(downloadFile).toHaveBeenCalledWith(
+      'https://example.com/new-signed-pose.mp4',
+      path.join(outputPath, 'aiman.mp4'),
+      expect.any(Object)
+    );
+    expect(fs.readFileSync(path.join(outputPath, 'aiman.mp4'), 'utf8')).toBe('new-video');
+    expect(readAvatarRenderState(outputPath)).toMatchObject({
+      taskId: 'new-signed-pose-task',
+      remotePoseSignature: 'motion-sig'
+    });
+    expect(task.logs.some((item) => item.message.includes('动作参考签名不匹配'))).toBe(true);
+  });
+
   test('retries avatar video download before marking RunningHub task downloaded', async () => {
     const { outputPath, paths } = createBaseProject();
     const render = jest.fn(async () => ({
@@ -798,7 +1224,8 @@ describe('createAvatarGenerationService', () => {
       videoUrl: 'https://example.com/avatar.mp4',
       remoteAudioName: 'api/avatar.wav',
       remoteImageName: 'api/avatar.png',
-      nodeInfoList: []
+      remotePoseName: 'api/avatar_motion_source.mp4',
+      nodeInfoList: [{ nodeId: '279', fieldName: 'video' }]
     }));
     const downloadFile = jest
       .fn()
@@ -812,6 +1239,7 @@ describe('createAvatarGenerationService', () => {
         outputPath: path.join(outputPath, 'avatar_qwen3tts.wav'),
         model: 'qwen3-tts'
       })),
+      generateAvatarMotionFn: mockAvatarMotion(outputPath),
       prepareReferenceAudioFn: ({ inputPath }) => ({
         audioPath: inputPath,
         wasTrimmed: false,

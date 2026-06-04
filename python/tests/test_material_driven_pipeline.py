@@ -18,7 +18,7 @@ from pipeline.skills.base import SkillResult  # noqa: E402
 
 
 class MaterialDrivenPipelineReuseTest(unittest.TestCase):
-    def test_step2_passes_material_url_to_asr_filetrans(self):
+    def test_step2_uses_local_audio_for_asr_filetrans(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             (output_dir / "material.mp4").write_text("video", encoding="utf-8")
@@ -48,8 +48,8 @@ class MaterialDrivenPipelineReuseTest(unittest.TestCase):
                 self.assertTrue(pipeline.step2_analyze_material())
 
             asr_args = next(args for script_name, args, _cwd in calls if script_name == "run_asr.py")
-            self.assertIn("--file-url", asr_args)
-            self.assertEqual(asr_args[asr_args.index("--file-url") + 1], "https://cdn.example.com/news.mp4")
+            self.assertNotIn("--file-url", asr_args)
+            self.assertIn(str(output_dir / "material.mp4"), asr_args)
 
     def test_load_source_post_preserves_xai_partition_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -3,7 +3,9 @@
     <div class="support-grid">
       <LiveTaskQueuePanel
         :items="liveTaskItems"
+        @delete-task="emit('delete-task', $event)"
         @resume-material-task="emit('resume-material-task', $event)"
+        @retry-material-task="emit('retry-material-task', $event)"
       />
 
       <GlassPanel class="ops-panel support-panel publish-panel">
@@ -107,7 +109,7 @@ defineProps({
   canRepublishJob: { type: Function, required: true }
 });
 
-const emit = defineEmits(['resume-material-task', 'republish-job']);
+const emit = defineEmits(['delete-task', 'resume-material-task', 'retry-material-task', 'republish-job']);
 </script>
 
 <style scoped src="../AutomationDashboard.css"></style>

@@ -33,6 +33,8 @@ function syncMaterialTask(taskStore, task, extraMetadata = {}) {
   const taskKey = getMaterialTaskKey(task);
   if (!taskKey) return null;
   const outputDir = getMaterialOutputDir(task);
+  const errorMessage = String(extraMetadata.error || task.error || '').trim();
+  const status = errorMessage ? 'failed' : mapMaterialStatus(task.status);
   const metadata = {
     outputDir,
     outputPath: task.outputPath || '',
@@ -44,20 +46,25 @@ function syncMaterialTask(taskStore, task, extraMetadata = {}) {
     autoGenerate: Boolean(task.autoGenerate),
     useSmartClip: Boolean(task.useSmartClip),
     useCache: Boolean(task.useCache),
-    ...extraMetadata
+    errorCode: '',
+    errorStage: '',
+    errorDetails: '',
+    ...extraMetadata,
+    error: errorMessage
   };
   if (task.avatarRenderState && typeof task.avatarRenderState === 'object') {
     metadata.avatarRenderState = task.avatarRenderState;
   }
   const result = taskStore.createOrReuseTask('material_driven', taskKey, metadata, {
-    status: mapMaterialStatus(task.status),
+    status,
     progress: Number(task.progress || 0),
     message: task.statusText || ''
   });
   return taskStore.updateTask(result.task.id, {
-    status: mapMaterialStatus(task.status),
+    status,
     progress: Number(task.progress || 0),
     message: task.statusText || '',
+    logs: Array.isArray(task.logs) ? task.logs : result.task.logs,
     startedAt: task.startedAt || result.task.startedAt,
     completedAt: task.completedAt || null,
     metadata: {
@@ -104,6 +111,7 @@ function syncAvatarTask(taskStore, task, avatarState = {}, extraMetadata = {}) {
     status,
     progress,
     message: task.statusText || rawStatus || '数字人任务进行中',
+    logs: Array.isArray(task.logs) ? task.logs : result.task.logs,
     startedAt: avatarState.submittedAt || result.task.startedAt || task.startedAt || null,
     completedAt: avatarState.downloadedAt || avatarState.completedAt || (status === 'completed' ? task.updatedAt : null),
     metadata: {

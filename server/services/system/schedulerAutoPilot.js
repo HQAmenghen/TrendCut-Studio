@@ -420,7 +420,10 @@ function createAutoPilotScheduler({
                 runningHubAudioFieldName: avatarConfig.runningHubAudioFieldName || '',
                 runningHubImageNodeId: avatarConfig.runningHubImageNodeId || '',
                 runningHubImageFieldName: avatarConfig.runningHubImageFieldName || '',
+                runningHubPoseNodeId: avatarConfig.runningHubPoseNodeId || '',
+                runningHubPoseFieldName: avatarConfig.runningHubPoseFieldName || '',
                 runningHubOutputNodeId: avatarConfig.runningHubOutputNodeId || '',
+                avatarActionPresetDir: avatarConfig.avatarActionPresetDir || '',
                 audioPreset: avatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
                 imagePreset: avatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET,
                 genText: avatarConfig.genText || ''
@@ -701,6 +704,7 @@ function createAutoPilotScheduler({
             maxRetries: normalizeNonNegativeInteger(pendingTask.maxRetries, getAutoPilotSlotRetryLimit(config)),
             fallbackCandidates: Array.isArray(pendingTask.fallbackCandidates) ? pendingTask.fallbackCandidates : [],
             avatarConfig: {
+              ...startedAvatarConfig,
               audioPreset: startedAvatarConfig.audioPreset || DEFAULT_AVATAR_AUDIO_PRESET,
               imagePreset: startedAvatarConfig.imagePreset || DEFAULT_AVATAR_IMAGE_PRESET
             },

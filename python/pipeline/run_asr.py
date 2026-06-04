@@ -130,8 +130,8 @@ def upload_filetrans_audio_to_oss(local_file):
     return asr_filetrans.upload_filetrans_audio_to_oss(local_file, bucket_factory=create_oss_bucket)
 
 
-def resolve_filetrans_file_url(local_file, file_url=""):
-    return asr_filetrans.resolve_filetrans_file_url(local_file, file_url, uploader=upload_filetrans_audio_to_oss)
+def resolve_filetrans_file_url(local_file):
+    return asr_filetrans.resolve_filetrans_file_url(local_file, uploader=upload_filetrans_audio_to_oss)
 
 
 def parse_seconds(value, *, milliseconds=False):
@@ -461,10 +461,10 @@ def build_raw_segments_qwen_flash(audio_file, split_config=None, model=None):
     return raw_segments, detected_language
 
 
-def build_raw_segments_aliyun(audio_file, split_config=None, file_url=""):
+def build_raw_segments_aliyun(audio_file, split_config=None):
     model = get_qwen_asr_model()
     if model == DEFAULT_QWEN_ASR_MODEL:
-        resolved_file_url, _object_key = resolve_filetrans_file_url(audio_file, file_url)
+        resolved_file_url, _object_key = resolve_filetrans_file_url(audio_file)
         if resolved_file_url:
             return build_raw_segments_filetrans(resolved_file_url, model=model, split_config=split_config)
         print("   ⚠️ Qwen Filetrans 需要公网 file_url 或可用 OSS 上传配置，当前将降级使用 qwen3-asr-flash。")
@@ -2862,7 +2862,6 @@ def video_has_audio_stream(input_video: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="ASR and Translation script.")
     parser.add_argument("--input", default="aiman.mp4", help="Input video file.")
-    parser.add_argument("--file-url", default="", help="Public audio/video URL for DashScope Filetrans ASR.")
     parser.add_argument("--allow-no-audio", action="store_true", help="Allow silent videos and generate empty subtitle files instead of failing.")
     parser.add_argument("--audio-json", default="audio.json", help="Output audio timeline JSON file.")
     parser.add_argument("--subtitles-json", default="subtitles.json", help="Output subtitles JSON file.")
@@ -2938,7 +2937,7 @@ def main():
     
     if get_llm_provider() == "qwen" and (os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("GEMINI_API_KEY")):
         try:
-            raw_segments, detected_language = build_raw_segments_aliyun(audio_file, split_config, file_url=args.file_url)
+            raw_segments, detected_language = build_raw_segments_aliyun(audio_file, split_config)
             if raw_segments:
                 print("   ✅ 使用阿里云 ASR 识别完成。")
             else:

@@ -11,6 +11,7 @@ const { activeTasks } = require('../services/materialDriven/sharedState');
 const { createMaterialDrivenTaskRegistry } = require('../services/materialDriven/taskRegistry');
 const { createAvatarGenerationService, probeRunningHubConfig, readAvatarConfigFromBody } = require('../services/materialDriven/avatarGeneration');
 const { createMaterialDrivenPipelineRunner } = require('../services/materialDriven/pipelineProcess');
+const { createMaterialWorkflowScheduler } = require('../services/materialDriven/workflowScheduler');
 const { downloadMaterialFromUrl, probeComfyUI } = require('../services/materialDriven/materialDownload');
 const { addTaskLog } = require('../services/materialDriven/events');
 const { normalizeSourceMeta } = require('../services/materialDriven/taskState');
@@ -58,6 +59,14 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
     autoGenerateAvatar: avatarGeneration.autoGenerateAvatar,
     taskStore
   });
+  const workflowScheduler = deps.workflowScheduler || createMaterialWorkflowScheduler({ taskStore });
+
+  function submitWorkflowRun(jobId, task, start, options = {}) {
+    return workflowScheduler.submit(jobId, task, start, {
+      queuedMessage: options.queuedMessage || '完整流程排队中，等待空闲执行位',
+      startedMessage: options.startedMessage || '完整流程开始执行'
+    });
+  }
 
   app.post('/api/material-driven/test-comfy', async (req, res) => {
     try {
@@ -166,10 +175,10 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
         useCache,
         autoGenerate,
         allowRuleFallback: true,
-        status: 'running',
+        status: 'queued',
         currentStep: 1,
-        progress: 2,
-        statusText: '素材已接收，准备启动工作流',
+        progress: 1,
+        statusText: '素材已接收，等待完整流程执行位',
         logs: [],
         startedAt: nowIso(),
         updatedAt: nowIso(),
@@ -189,7 +198,7 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
       };
 
       taskRegistry.persistTaskStateSnapshot(task);
-      addTaskLog(task, '工作流已启动');
+      addTaskLog(task, '工作流已提交');
       addTaskLog(task, `任务目录: ${outputDir}`, 'info');
       addTaskLog(task, `素材文件已就位: ${path.basename(materialPath)} (${formatBytes(fs.statSync(materialPath).size)})`, 'success');
       addTaskLog(task, `启动参数: smartClip=${useSmartClip ? 'on' : 'off'}, cache=${useCache ? 'on' : 'off'}, autoGenerate=${autoGenerate ? 'on' : 'off'}, manualScript=${manualScript ? 'on' : 'off'}`, 'info');
@@ -201,8 +210,17 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
       }
       activeTasks.set(jobId, task);
 
+      let scheduleResult;
       try {
-        pipelineRunner.startInitialPipeline(jobId, task);
+        scheduleResult = submitWorkflowRun(
+          jobId,
+          task,
+          () => pipelineRunner.startInitialPipeline(jobId, task),
+          {
+            queuedMessage: '完整流程排队中，等待空闲执行位',
+            startedMessage: '完整流程开始执行'
+          }
+        );
       } catch (spawnError) {
         activeTasks.delete(jobId);
         throw spawnError;
@@ -211,7 +229,10 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
       res.json({
         jobId,
         outputPath: outputDir,
-        message: '工作流已启动'
+        queued: Boolean(scheduleResult?.queued),
+        queuePosition: scheduleResult?.queuePosition || 0,
+        concurrency: scheduleResult?.concurrency || 2,
+        message: scheduleResult?.message || '工作流已启动'
       });
     } catch (error) {
       console.error('启动工作流失败:', error);
@@ -236,6 +257,26 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
     });
   });
 
+  app.delete('/api/material-driven/tasks/:jobId', (req, res) => {
+    try {
+      const result = taskRegistry.removeTask(req.params.jobId, {
+        outputPath: req.query?.outputPath,
+        taskStoreId: req.query?.taskStoreId,
+        avatarTaskStoreId: req.query?.avatarTaskStoreId,
+        status: req.query?.status
+      });
+      workflowScheduler.remove(req.params.jobId);
+      res.json({
+        success: true,
+        ...result,
+        tasks: taskRegistry.listActiveStatusPayloads()
+      });
+    } catch (error) {
+      console.error('删除素材驱动任务失败:', error);
+      res.status(error.status || 500).json({ success: false, error: error.message });
+    }
+  });
+
   app.get('/api/material-driven/latest-completed', (_req, res) => {
     res.json({
       success: true,
@@ -258,7 +299,15 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
         return res.status(404).json({ error: '任务不存在' });
       }
 
-      const runState = pipelineRunner.continueFromAvatarStep(jobId, task) || {};
+      const runState = submitWorkflowRun(
+        jobId,
+        task,
+        () => pipelineRunner.continueFromAvatarStep(jobId, task),
+        {
+          queuedMessage: '继续流程排队中，等待空闲执行位',
+          startedMessage: '继续执行混剪'
+        }
+      ) || {};
 
       res.json({
         success: true,
@@ -290,7 +339,15 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
         addTaskLog(task, `重试配置已更新: ${req.body.avatarConfig.serverUrl || '保持原地址'}`, 'info');
       }
 
-      const runState = pipelineRunner.startRetryPipeline(jobId, task, step) || {};
+      const runState = submitWorkflowRun(
+        jobId,
+        task,
+        () => pipelineRunner.startRetryPipeline(jobId, task, step),
+        {
+          queuedMessage: '重试流程排队中，等待空闲执行位',
+          startedMessage: `开始重试步骤${step || ''}`.trim()
+        }
+      ) || {};
 
       res.json({
         success: true,
@@ -313,13 +370,21 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
         return res.status(404).json({ error: '任务不存在' });
       }
       task.useCache = req.body?.useCache !== false && req.body?.useCache !== 'false';
-      const runState = pipelineRunner.spawnPipeline(jobId, task, 5, {
-        step: 5,
-        progressValue: 76,
-        statusText: '正在从口播脚本开始重建剪辑计划',
-        startLog: '手动触发：从步骤5重建脚本、映射与执行计划',
-        stepMessage: '步骤5: 重建脚本与执行计划'
-      }) || {};
+      const runState = submitWorkflowRun(
+        jobId,
+        task,
+        () => pipelineRunner.spawnPipeline(jobId, task, 5, {
+          step: 5,
+          progressValue: 76,
+          statusText: '正在从口播脚本开始重建剪辑计划',
+          startLog: '手动触发：从步骤5重建脚本、映射与执行计划',
+          stepMessage: '步骤5: 重建脚本与执行计划'
+        }),
+        {
+          queuedMessage: '重建流程排队中，等待空闲执行位',
+          startedMessage: '开始重建剪辑计划'
+        }
+      ) || {};
       res.json({
         success: true,
         reused: Boolean(runState.reused),
@@ -340,13 +405,21 @@ function registerMaterialDrivenRoutes(app, paths, deps = {}) {
         return res.status(404).json({ error: '任务不存在' });
       }
       task.useCache = req.body?.useCache !== false && req.body?.useCache !== 'false';
-      const runState = pipelineRunner.spawnPipeline(jobId, task, 7, {
-        step: 7,
-        progressValue: 90,
-        statusText: '正在根据当前执行计划重新渲染',
-        startLog: '手动触发：重新渲染成片',
-        stepMessage: '步骤7: 重新渲染成片'
-      }) || {};
+      const runState = submitWorkflowRun(
+        jobId,
+        task,
+        () => pipelineRunner.spawnPipeline(jobId, task, 7, {
+          step: 7,
+          progressValue: 90,
+          statusText: '正在根据当前执行计划重新渲染',
+          startLog: '手动触发：重新渲染成片',
+          stepMessage: '步骤7: 重新渲染成片'
+        }),
+        {
+          queuedMessage: '重新渲染排队中，等待空闲执行位',
+          startedMessage: '开始重新渲染成片'
+        }
+      ) || {};
       res.json({
         success: true,
         reused: Boolean(runState.reused),

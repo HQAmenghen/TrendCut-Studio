@@ -184,7 +184,7 @@ describe('vertical queue ASR file URL handoff', () => {
     expect(taskStore.updateTask).not.toHaveBeenCalled();
   });
 
-  test('passes original public video URL to run_asr for Filetrans-capable jobs', async () => {
+  test('does not pass original public video URL to run_asr for Filetrans-capable jobs', async () => {
     const calls = [];
     const runPythonScript = jest.fn(async () => '测试标题');
     const spawnScriptCancellable = jest.fn((scriptPath, args, options = {}) => {
@@ -246,9 +246,9 @@ describe('vertical queue ASR file URL handoff', () => {
 
     const asrCall = calls.find((call) => call.scriptPath.endsWith('run_asr.py'));
     expect(asrCall).toBeTruthy();
+    expect(asrCall.args).not.toContain('--file-url');
+    expect(asrCall.args).not.toContain('https://cdn.example.com/interview.mp4');
     expect(asrCall.args).toEqual(expect.arrayContaining([
-      '--file-url',
-      'https://cdn.example.com/interview.mp4',
       '--translate-subtitles',
       '--refine-subtitles'
     ]));

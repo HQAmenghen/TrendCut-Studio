@@ -107,9 +107,10 @@ function createDefaultNativeClient(deps = {}) {
       const remoteAudioName = await uploadToComfyUI(options.audioPath, baseUrl);
       const remoteImageName = await uploadToComfyUI(options.imagePath, baseUrl);
       const poseNodeId = String(cfg.poseNodeId || process.env.AVATAR_POSE_NODE_ID || '').trim();
-      const remotePoseName = options.posePath && poseNodeId
-        ? await uploadToComfyUI(options.posePath, baseUrl)
-        : '';
+      if (!options.posePath || !poseNodeId) {
+        throw new Error('ComfyUI 数字人合成缺少动作参考视频或姿态节点，已停止提交任务');
+      }
+      const remotePoseName = await uploadToComfyUI(options.posePath, baseUrl);
       const preparedWorkflow = prepareAvatarExternalAudioWorkflow(options.workflow, {
         audioName: remoteAudioName,
         imageName: remoteImageName,
@@ -206,6 +207,9 @@ function createAvatarRenderer(deps = {}) {
       };
       if (!speechAudioPath) {
         throw new Error('缺少 QwenTTS 合成口播音频');
+      }
+      if (!runningHubOptions.posePath && !runningHubOptions.runningHubTaskId && !runningHubOptions.resumeTaskId) {
+        throw new Error('RunningHub 数字人合成缺少动作参考视频，已停止提交任务');
       }
       if (options.runningHubTaskId || options.resumeTaskId) {
         return runningHubClient.render({

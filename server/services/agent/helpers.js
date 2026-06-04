@@ -47,6 +47,7 @@ const AVATAR_CONFIG_KEYS = [
   'runningHubPoseNodeId',
   'runningHubPoseFieldName',
   'runningHubOutputNodeId',
+  'avatarActionPresetDir',
   'trimSeconds',
   'maxDuration',
   'audioPreset',

@@ -115,6 +115,25 @@ def extract_json_from_response(text):
     raise ValueError("无法从响应中提取有效的 JSON")
 
 
+def save_invalid_llm_response(batch_index, attempt, response_text, error):
+    """Persist malformed LLM output so strict-mode failures can be diagnosed."""
+    try:
+        path = Path(f"material_scoring_invalid_response_batch_{batch_index}_attempt_{attempt}.txt")
+        path.write_text(
+            "\n".join([
+                f"batch_index={batch_index}",
+                f"attempt={attempt}",
+                f"error={error}",
+                "",
+                str(response_text or ""),
+            ]),
+            encoding="utf-8",
+        )
+        print(f"   ⚠️ 已保存异常 LLM 原始响应: {path.name}")
+    except Exception as write_error:
+        print(f"   ⚠️ 保存异常 LLM 原始响应失败: {write_error}")
+
+
 SCORING_PROMPT = load_prompt_text("score_material_segments_skill.md")
 
 
@@ -721,6 +740,7 @@ def score_segments_with_llm(segments, client, model, allow_rule_fallback=True):
                     client,
                     model=model,
                     contents=prompt,
+                    response_mime_type="application/json",
                     retries=2,
                     request_timeout=request_timeout,
                     provider=get_scoring_llm_provider(),
@@ -735,6 +755,8 @@ def score_segments_with_llm(segments, client, model, allow_rule_fallback=True):
                 return {"status": "success", "index": batch_index, "scored": batch_scored, "count": len(batch)}
             except Exception as e:
                 last_error = str(e)
+                if "无法从响应中提取有效的 JSON" in last_error:
+                    save_invalid_llm_response(batch_index, attempt + 1, locals().get("response_text", ""), last_error)
                 if attempt < batch_retries:
                     print(f"   ⚠️ LLM 批次 {batch_index} 第 {attempt + 1} 次尝试失败，准备重试: {last_error}")
 

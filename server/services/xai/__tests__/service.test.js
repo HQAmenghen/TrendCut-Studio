@@ -197,4 +197,55 @@ describe('createXaiService', () => {
       })
     }));
   });
+
+  test('importUrl resolves one X link through manual script mode without overwriting leaderboard result', async () => {
+    const importedPayload = {
+      items: [
+        {
+          rank: 1,
+          author: 'alice',
+          author_summary: '@alice - imported post',
+          post_url: 'https://x.com/alice/status/12345',
+          video_url: 'https://video.twimg.com/ext_tw_video/123/vid/avc1/1280x720/video.mp4'
+        }
+      ]
+    };
+    const { deps, resultPath, service } = createTempXaiService({
+      runPythonScript: jest.fn(async () => ({
+        stdout: JSON.stringify(importedPayload),
+        protocol: { result: { message: 'imported' } }
+      }))
+    });
+    const req = {
+      body: {
+        url: 'https://x.com/alice/status/12345',
+        partitionId: 'finance'
+      }
+    };
+    const res = {
+      json: jest.fn()
+    };
+
+    await service.importUrl(req, res);
+
+    const [scriptPath, args, options] = deps.runPythonScript.mock.calls[0];
+    expect(scriptPath).toBe(deps.scriptPath);
+    expect(args).toEqual(expect.arrayContaining([
+      '--import-url',
+      'https://x.com/alice/status/12345',
+      '--partition-id',
+      'finance'
+    ]));
+    const resultArgIndex = args.indexOf('--result') + 1;
+    expect(args[resultArgIndex]).toContain('manual_import.finance.');
+    expect(args[resultArgIndex]).not.toBe(resultPath);
+    expect(options).toEqual(expect.objectContaining({ cwd: deps.scriptCwd, timeout: expect.any(Number) }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      item: expect.objectContaining({
+        post_url: 'https://x.com/alice/status/12345',
+        video_url: expect.stringContaining('video.twimg.com')
+      })
+    }));
+  });
 });

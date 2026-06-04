@@ -15,18 +15,13 @@ const MOTION_PLAN_SCRIPT = path.join(__dirname, '../../../python/pipeline/avatar
 const MOTION_SOURCE_BUILDER_SCRIPT = path.join(__dirname, '../../../python/pipeline/avatar_motion_source_builder.py');
 const DEFAULT_ACTION_PRESET_DIR = path.join(__dirname, '../../../config/avatar_actions');
 const DEFAULT_MOTION_IDLE_IMAGE_PATH = path.join(__dirname, '../../../public/presets/image/毕（保守）.png');
-const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_PLAN_TIMEOUT_MS = 8 * 60 * 1000;
+const DEFAULT_SOURCE_TIMEOUT_MS = 4 * 60 * 1000;
 
-function isTruthy(value) {
-  return value === true || value === 'true' || value === '1' || value === 1;
-}
-
-function isAvatarMotionEnabled(config = {}) {
-  return isTruthy(config.avatarMotionEnabled) || isTruthy(process.env.AVATAR_MOTION_ENABLED);
-}
-
-function isAvatarMotionRequired(config = {}) {
-  return isTruthy(config.avatarMotionRequired) || isTruthy(process.env.AVATAR_MOTION_REQUIRED);
+function resolveTimeoutMs(primaryEnvName, fallbackEnvName, defaultValue) {
+  const raw = process.env[primaryEnvName] || process.env[fallbackEnvName] || '';
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
 function readProtocolResult(payload = {}) {
@@ -38,20 +33,18 @@ function hashFile(filePath) {
   return crypto.createHash('sha1').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function isUsableFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.size > 0;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function resolveActionPresetDir(config = {}) {
   return String(config.avatarActionPresetDir || process.env.AVATAR_ACTION_PRESET_DIR || DEFAULT_ACTION_PRESET_DIR).trim();
-}
-
-function resolveMotionPlannerMode(config = {}) {
-  return String(config.avatarMotionPlanner || process.env.AVATAR_MOTION_PLANNER || 'auto').trim() || 'auto';
-}
-
-function resolveMotionLlmProvider(config = {}) {
-  return String(config.avatarMotionLlmProvider || process.env.AVATAR_MOTION_LLM_PROVIDER || '').trim();
-}
-
-function resolveMotionLlmModel(config = {}) {
-  return String(config.avatarMotionLlmModel || process.env.AVATAR_MOTION_LLM_MODEL || '').trim();
 }
 
 function resolveMotionIdleImagePath({ idleImagePath, imagePath } = {}) {
@@ -71,9 +64,6 @@ async function generateAvatarMotion({
   imagePath,
   idleImagePath,
   actionPresetDir,
-  avatarMotionPlanner,
-  avatarMotionLlmProvider,
-  avatarMotionLlmModel,
   speechAlignmentPath,
   fps,
   runPython = runPythonScript
@@ -98,9 +88,6 @@ async function generateAvatarMotion({
   const motionManifestPath = path.join(outputDir, AVATAR_MOTION_MANIFEST_FILE);
   const motionSourcePath = path.join(outputDir, AVATAR_MOTION_SOURCE_FILE);
   const resolvedActionPresetDir = actionPresetDir || DEFAULT_ACTION_PRESET_DIR;
-  const plannerMode = resolveMotionPlannerMode({ avatarMotionPlanner });
-  const llmProvider = resolveMotionLlmProvider({ avatarMotionLlmProvider });
-  const llmModel = resolveMotionLlmModel({ avatarMotionLlmModel });
 
   const planArgs = [
     '--narration-text',
@@ -112,16 +99,8 @@ async function generateAvatarMotion({
     '--fps',
     String(fps || process.env.AVATAR_MOTION_FPS || 25),
     '--action-dir',
-    resolvedActionPresetDir,
-    '--planner-mode',
-    plannerMode
+    resolvedActionPresetDir
   ];
-  if (llmProvider) {
-    planArgs.push('--llm-provider', llmProvider);
-  }
-  if (llmModel) {
-    planArgs.push('--llm-model', llmModel);
-  }
   const resolvedSpeechAlignmentPath = speechAlignmentPath || path.join(outputDir, SPEECH_ALIGNMENT_FILE);
   if (fs.existsSync(resolvedSpeechAlignmentPath)) {
     planArgs.push('--speech-alignment', resolvedSpeechAlignmentPath);
@@ -141,7 +120,7 @@ async function generateAvatarMotion({
 
   const planPayload = await runPython(MOTION_PLAN_SCRIPT, planArgs, {
     cwd: outputDir,
-    timeout: Number(process.env.AVATAR_MOTION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
+    timeout: resolveTimeoutMs('AVATAR_MOTION_PLAN_TIMEOUT_MS', 'AVATAR_MOTION_TIMEOUT_MS', DEFAULT_PLAN_TIMEOUT_MS)
   });
 
   const posePayload = await runPython(MOTION_SOURCE_BUILDER_SCRIPT, [
@@ -159,11 +138,18 @@ async function generateAvatarMotion({
     resolvedIdleImagePath
   ], {
     cwd: outputDir,
-    timeout: Number(process.env.AVATAR_MOTION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
+    timeout: resolveTimeoutMs('AVATAR_MOTION_SOURCE_TIMEOUT_MS', 'AVATAR_MOTION_TIMEOUT_MS', DEFAULT_SOURCE_TIMEOUT_MS)
   });
 
   const planResult = readProtocolResult(planPayload);
   const poseResult = readProtocolResult(posePayload);
+  const poseInputPath = String(poseResult.poseInputPath || motionSourcePath);
+  if (!isUsableFile(motionSourcePath)) {
+    throw new Error(`数字人动作参考视频未生成: ${motionSourcePath}`);
+  }
+  if (!isUsableFile(poseInputPath)) {
+    throw new Error(`数字人姿态输入不存在: ${poseInputPath}`);
+  }
   const motionSignature = [
     String(planResult.signature || hashFile(planPath)),
     String(poseResult.signature || hashFile(motionSourcePath))
@@ -175,7 +161,7 @@ async function generateAvatarMotion({
     poseManifestPath: motionManifestPath,
     motionManifestPath,
     motionSourcePath,
-    poseInputPath: String(poseResult.poseInputPath || motionSourcePath),
+    poseInputPath,
     poseFrameDir: '',
     motionSignature,
     segmentCount: Number(planResult.segmentCount || 0),
@@ -188,6 +174,8 @@ module.exports = {
   AVATAR_MOTION_MANIFEST_FILE,
   AVATAR_MOTION_SOURCE_FILE,
   AVATAR_MOTION_SEGMENTS_DIR,
+  DEFAULT_PLAN_TIMEOUT_MS,
+  DEFAULT_SOURCE_TIMEOUT_MS,
   DEFAULT_ACTION_PRESET_DIR,
   DEFAULT_MOTION_IDLE_IMAGE_PATH,
   SCRIPT_UNITS_FILE,
@@ -195,11 +183,6 @@ module.exports = {
   CLIP_MATCHES_FILE,
   SPEECH_ALIGNMENT_FILE,
   generateAvatarMotion,
-  isAvatarMotionEnabled,
-  isAvatarMotionRequired,
   resolveActionPresetDir,
-  resolveMotionLlmModel,
-  resolveMotionLlmProvider,
-  resolveMotionPlannerMode,
   resolveMotionIdleImagePath
 };

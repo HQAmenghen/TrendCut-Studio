@@ -23,6 +23,11 @@ function createPublishConfigService(deps) {
   const sauPlatformKeys = ['douyin', 'xiaohongshu'];
   const defaultAvatarAudioPreset = '毕.mp3';
   const defaultAvatarImagePreset = '毕（保守）.png';
+  const avatarPipelineConfigKeys = [
+    'audioPreset',
+    'imagePreset',
+    'avatarActionPresetDir'
+  ];
 
   const platformFieldLabels = {
     wechatChannels: {
@@ -413,7 +418,8 @@ function createPublishConfigService(deps) {
         autoPilotPipelineModes: ['vertical'],
         avatarPipelineConfig: {
           audioPreset: defaultAvatarAudioPreset,
-          imagePreset: defaultAvatarImagePreset
+          imagePreset: defaultAvatarImagePreset,
+          avatarActionPresetDir: ''
         }
       },
       wechatChannels: { enabled: false, accounts: [] },
@@ -470,13 +476,7 @@ function createPublishConfigService(deps) {
         ? sanitizeAutoPilotPipelineModes(incomingGlobal.autoPilotPipelineModes, next.global.pipelineMode)
         : sanitizeAutoPilotPipelineModes(next.global.autoPilotPipelineModes, next.global.pipelineMode);
       if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
-        next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
-      }
-      if (!String(next.global.avatarPipelineConfig.audioPreset || '').trim()) {
-        next.global.avatarPipelineConfig.audioPreset = defaultAvatarAudioPreset;
-      }
-      if (!String(next.global.avatarPipelineConfig.imagePreset || '').trim() || next.global.avatarPipelineConfig.imagePreset === '毕.png') {
-        next.global.avatarPipelineConfig.imagePreset = defaultAvatarImagePreset;
+        next.global.avatarPipelineConfig = sanitizeAvatarPipelineConfig(incomingGlobal.avatarPipelineConfig);
       }
     }
 
@@ -516,6 +516,23 @@ function createPublishConfigService(deps) {
       }
     }
 
+    return next;
+  }
+
+  function sanitizeAvatarPipelineConfig(input = {}) {
+    const source = input && typeof input === 'object' ? input : {};
+    const next = {};
+    for (const key of avatarPipelineConfigKeys) {
+      if (source[key] === undefined) continue;
+      next[key] = source[key];
+    }
+    if (!String(next.audioPreset || '').trim()) {
+      next.audioPreset = defaultAvatarAudioPreset;
+    }
+    if (!String(next.imagePreset || '').trim() || next.imagePreset === '毕.png') {
+      next.imagePreset = defaultAvatarImagePreset;
+    }
+    next.avatarActionPresetDir = String(next.avatarActionPresetDir || '').trim();
     return next;
   }
 
@@ -662,13 +679,7 @@ function createPublishConfigService(deps) {
         ? sanitizeAutoPilotPipelineModes(incomingGlobal.autoPilotPipelineModes, next.global.pipelineMode)
         : sanitizeAutoPilotPipelineModes(next.global.autoPilotPipelineModes, next.global.pipelineMode);
       if (incomingGlobal.avatarPipelineConfig && typeof incomingGlobal.avatarPipelineConfig === 'object') {
-        next.global.avatarPipelineConfig = deepClone(incomingGlobal.avatarPipelineConfig);
-      }
-      if (!String(next.global.avatarPipelineConfig.audioPreset || '').trim()) {
-        next.global.avatarPipelineConfig.audioPreset = defaultAvatarAudioPreset;
-      }
-      if (!String(next.global.avatarPipelineConfig.imagePreset || '').trim() || next.global.avatarPipelineConfig.imagePreset === '毕.png') {
-        next.global.avatarPipelineConfig.imagePreset = defaultAvatarImagePreset;
+        next.global.avatarPipelineConfig = sanitizeAvatarPipelineConfig(incomingGlobal.avatarPipelineConfig);
       }
     }
     for (const platform of Object.keys(next)) {
