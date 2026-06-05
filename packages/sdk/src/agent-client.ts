@@ -1,5 +1,5 @@
 export class FastApiAgentClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly internalToken = process.env.INTERNAL_API_TOKEN || 'dev-internal-token') {}
 
   listTools(): Promise<Record<string, unknown>> {
     return this.request('/agents/tools');
@@ -27,6 +27,7 @@ export class FastApiAgentClient {
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
+        'x-trendcut-internal-token': this.internalToken,
         ...(init.headers || {})
       }
     });

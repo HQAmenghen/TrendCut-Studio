@@ -16,9 +16,9 @@ Move long-running video work onto a FastAPI-owned worker job protocol with struc
 
 ## Review Notes
 
-- Database is authoritative; Redis remains best-effort wakeup/event transport.
+- Database is authoritative; Redis remains best-effort wakeup/event transport, not the worker broker. Workers lease through FastAPI HTTP and can still progress if Redis events are missed.
 - Node no longer needs to parse Python stdout for worker state.
-- The first worker executor is an adapter that records manifests and legacy entrypoint metadata. Replacing adapter internals with real FFmpeg/ComfyUI/RunningHub calls does not require a BFF/API contract change.
+- The first worker executor is an adapter that records manifests and legacy entrypoint metadata. This phase completed the worker protocol/control plane, not concrete media script execution. Replacing adapter internals with real FFmpeg/ComfyUI/RunningHub calls does not require a BFF/API contract change.
 - Publish/RPA job types are present for sequencing but remain high risk; Phase 6 owns account state, screenshots, and action audit hardening.
 - No subagents or multi-agent runtime were introduced.
 

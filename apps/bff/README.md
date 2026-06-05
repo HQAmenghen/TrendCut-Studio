@@ -15,6 +15,14 @@ Rules:
 - Do not call Python workers directly.
 - Do not write FastAPI-owned task tables directly.
 - Do not expose FastAPI internals to the frontend.
+- Validate inbound DTOs and derive audit actors from request context instead of trusting request bodies.
+
+Runtime security baseline:
+
+- `BFF_API_TOKEN` optionally requires `Authorization: Bearer <token>` or `x-bff-api-token`.
+- `BFF_RATE_LIMIT_PER_MINUTE` defaults to `120`.
+- `INTERNAL_API_TOKEN` is forwarded to FastAPI as `x-trendcut-internal-token`.
+- If `frontend-dist/` exists, BFF serves it as static frontend assets.
 
 Phase 1 endpoints:
 

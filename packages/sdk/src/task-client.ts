@@ -20,7 +20,7 @@ export interface TaskRecord {
 }
 
 export class FastApiTaskClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly internalToken = process.env.INTERNAL_API_TOKEN || 'dev-internal-token') {}
 
   async createTask(payload: TaskPayload): Promise<TaskRecord> {
     return this.request('/tasks', { method: 'POST', body: JSON.stringify(payload) });
@@ -60,6 +60,7 @@ export class FastApiTaskClient {
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
+        'x-trendcut-internal-token': this.internalToken,
         ...(init.headers || {})
       }
     });

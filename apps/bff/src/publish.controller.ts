@@ -1,5 +1,6 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
 import { PublishApiProvider } from './publish-api.provider';
+import { actorCommand, dispatchCommand, loginCheckCommand, parseLimit, validatePublishJobCreate } from './validation';
 
 @Controller('/publish')
 export class PublishController {
@@ -7,7 +8,7 @@ export class PublishController {
 
   @Post('jobs')
   createJob(@Body() body: Record<string, unknown>) {
-    return this.publishApi.client.createJob(body);
+    return this.publishApi.client.createJob(validatePublishJobCreate(body));
   }
 
   @Get('jobs')
@@ -15,7 +16,7 @@ export class PublishController {
     return this.publishApi.client.listJobs({
       platform,
       status,
-      limit: limit ? Number(limit) : undefined
+      limit: parseLimit(limit)
     });
   }
 
@@ -26,20 +27,20 @@ export class PublishController {
 
   @Post('jobs/:id/confirm')
   @HttpCode(200)
-  confirmJob(@Param('id') id: string, @Body() body: Record<string, unknown>) {
-    return this.publishApi.client.confirmJob(id, body);
+  confirmJob(@Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: any) {
+    return this.publishApi.client.confirmJob(id, actorCommand(body, request.user.actor));
   }
 
   @Post('jobs/:id/dispatch')
   @HttpCode(200)
-  dispatchJob(@Param('id') id: string, @Body() body: Record<string, unknown>) {
-    return this.publishApi.client.dispatchJob(id, body);
+  dispatchJob(@Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: any) {
+    return this.publishApi.client.dispatchJob(id, dispatchCommand(body, request.user.actor));
   }
 
   @Post('jobs/:id/cancel')
   @HttpCode(200)
-  cancelJob(@Param('id') id: string, @Body() body: Record<string, unknown>) {
-    return this.publishApi.client.cancelJob(id, body);
+  cancelJob(@Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: any) {
+    return this.publishApi.client.cancelJob(id, actorCommand(body, request.user.actor));
   }
 
   @Get('jobs/:id/audit')
@@ -54,7 +55,7 @@ export class PublishController {
 
   @Post('accounts/:platform/:accountId/login-check')
   @HttpCode(200)
-  checkLogin(@Param('platform') platform: string, @Param('accountId') accountId: string, @Body() body: Record<string, unknown>) {
-    return this.publishApi.client.checkLogin(platform, accountId, body);
+  checkLogin(@Param('platform') platform: string, @Param('accountId') accountId: string, @Body() body: Record<string, unknown>, @Req() request: any) {
+    return this.publishApi.client.checkLogin(platform, accountId, loginCheckCommand(body, request.user.actor));
   }
 }

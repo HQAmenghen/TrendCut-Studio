@@ -32,7 +32,7 @@ export interface WorkerJobRecord {
 }
 
 export class FastApiWorkerClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly internalToken = process.env.INTERNAL_API_TOKEN || 'dev-internal-token') {}
 
   async listWorkerTypes(): Promise<unknown[]> {
     return this.request('/workers/types');
@@ -76,6 +76,7 @@ export class FastApiWorkerClient {
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
+        'x-trendcut-internal-token': this.internalToken,
         ...(init.headers || {})
       }
     });

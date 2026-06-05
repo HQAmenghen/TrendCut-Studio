@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     litellm_base_url: str | None = None
     litellm_api_key: str | None = None
     llm_model_order: str = 'qwen-plus,deepseek-chat,gemini-2.5-flash,local-template-v1'
+    internal_api_token: str = 'dev-internal-token'
 
 
 @lru_cache

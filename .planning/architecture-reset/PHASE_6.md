@@ -9,16 +9,16 @@ Move publish/RPA control into FastAPI and workers while keeping NestJS as the br
 - Added `publish_jobs`, `publish_audit_logs`, and `publish_account_states` tables.
 - Added FastAPI `/publish` endpoints for job create/list/read/confirm/dispatch/cancel, worker callbacks, audit logs, account state, and login checks.
 - Added publish job dispatch to `rpa_worker` for WeChat/Douyin/Xiaohongshu and `publish_worker` for API-backed platforms.
-- Added worker runner callbacks so completed/failed publish/RPA jobs update publish job status and account state.
+- Added worker runner callbacks so completed/failed publish/RPA adapter jobs update publish job status and account state.
 - Added BFF `/publish` proxy endpoints and SDK `publish-client.ts`.
 - Kept legacy Express publish routes as legacy; no new functionality was added there.
 
 ## Review Notes
 
-- Dispatch is blocked until risk confirmation is recorded.
+- Dispatch is blocked until risk confirmation is recorded. FastAPI publish routes are internal-token protected, and BFF now derives the confirmation actor from request context rather than trusting a free-form body actor.
 - Publish/RPA actions are audited at create, blocked dispatch, confirmation, dispatch, completion, failure, and cancellation.
 - Account state is queryable through NestJS via `/publish/accounts`.
-- The worker executor still runs in adapter mode for this phase; real Playwright scripts can replace adapter internals without changing FastAPI/BFF contracts.
+- The worker executor still runs in adapter mode for this phase; real Playwright scripts can replace adapter internals without changing FastAPI/BFF contracts. This phase completed the governed publish/RPA control plane, not full browser execution migration.
 - Screenshots and recordings are represented as worker artifacts/results today; real browser captures should be emitted by the concrete RPA executor when wired.
 - No subagents or autonomous external publish actions were introduced.
 

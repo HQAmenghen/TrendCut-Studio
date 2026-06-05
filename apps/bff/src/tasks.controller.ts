@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { TaskApiProvider } from './task-api.provider';
+import { parseLimit, validateTaskCreate } from './validation';
 
 @Controller('/tasks')
 export class TasksController {
@@ -7,7 +8,7 @@ export class TasksController {
 
   @Post()
   createTask(@Body() body: Record<string, unknown>) {
-    return this.taskApi.client.createTask(body as { type: string; input?: Record<string, unknown>; metadata?: Record<string, unknown>; status?: string });
+    return this.taskApi.client.createTask(validateTaskCreate(body));
   }
 
   @Get()
@@ -15,7 +16,7 @@ export class TasksController {
     return this.taskApi.client.listTasks({
       type,
       status,
-      limit: limit ? Number(limit) : undefined
+      limit: parseLimit(limit)
     });
   }
 

@@ -1,5 +1,5 @@
 export class FastApiPublishClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly internalToken = process.env.INTERNAL_API_TOKEN || 'dev-internal-token') {}
 
   async createJob(payload: Record<string, unknown>): Promise<unknown> {
     return this.request('/publish/jobs', { method: 'POST', body: JSON.stringify(payload) });
@@ -51,6 +51,7 @@ export class FastApiPublishClient {
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
+        'x-trendcut-internal-token': this.internalToken,
         ...(init.headers || {})
       }
     });

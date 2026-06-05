@@ -24,3 +24,5 @@ Phase 5 runtime:
 - Worker state is reported through FastAPI `/workers/jobs/*`; stdout is not a control protocol.
 - The first executor is an adapter that records structured manifests for ASR, material scoring, script, clip plan, render, review, publish, and RPA job types.
 - High-risk publish/RPA jobs require `confirmed=true` and are hardened in Phase 6.
+- Workers lease jobs through FastAPI HTTP; Redis is currently a wakeup/event hint, not the authoritative queue broker.
+- Worker calls to FastAPI must include `INTERNAL_API_TOKEN`.

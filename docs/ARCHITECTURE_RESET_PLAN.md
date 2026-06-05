@@ -33,11 +33,12 @@ The current `server.js` and `server/` tree remain in place as archived legacy co
 
 - The Vue frontend calls NestJS only.
 - NestJS may call FastAPI through `packages/sdk`.
-- FastAPI is not exposed directly to browser clients.
+- FastAPI is not exposed directly to browser clients. Docker Compose keeps `api:8000` on the internal Compose network and NestJS/worker calls must include `x-trendcut-internal-token`.
 - FastAPI owns task state, task steps, artifacts, agent runs, tool calls, LLM calls, and worker dispatch.
 - NestJS may read task state through FastAPI APIs. It must not double-write the same task tables.
 - Python capabilities move toward FastAPI services or workers. Node child processes remain legacy compatibility only.
 - Dangerous tools such as publishing, deletion, RPA login, and account mutation require a permission/audit layer.
+- The current BFF includes a baseline token/rate-limit/user-context guard and DTO validation. Full enterprise RBAC/session integration remains the next security hardening step.
 
 ## Legacy Freeze
 
@@ -102,11 +103,11 @@ Introduce LangGraph-centered agents, MCP tool registry, permissions, audit logs,
 
 ### Phase 5: Video Pipeline and Workers
 
-Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol.
+Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. The first worker executor is an adapter that records structured manifests; concrete FFmpeg/ComfyUI/RunningHub script execution is intentionally behind this stable worker contract.
 
 ### Phase 6: Publish Center and RPA
 
-Move publish jobs and Playwright RPA execution to workers with structured errors, account state, screenshots/recordings, and audit logs.
+Move publish jobs and Playwright RPA control to workers with structured errors, account state, screenshot/recording artifact slots, and audit logs. The current implementation provides the governed control plane and adapter executor; concrete Playwright execution hardening remains behind the worker contract.
 
 ### Phase 7: Express Shutdown
 

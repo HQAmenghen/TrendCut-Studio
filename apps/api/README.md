@@ -15,6 +15,7 @@ Rules:
 
 - This service owns the canonical task lifecycle.
 - Browser clients must reach it through the NestJS BFF.
+- Non-health API routes require `x-trendcut-internal-token` and should stay on private service networking.
 - Long-running work must be delegated to workers once Phase 2 starts.
 
 Phase 1 endpoints:

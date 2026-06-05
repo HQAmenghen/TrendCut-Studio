@@ -6,7 +6,7 @@ export interface AiGeneratePayload {
 }
 
 export class FastApiAiClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly internalToken = process.env.INTERNAL_API_TOKEN || 'dev-internal-token') {}
 
   async listPrompts(): Promise<Record<string, unknown>> {
     return this.request('/ai/prompts');
@@ -22,6 +22,7 @@ export class FastApiAiClient {
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
+        'x-trendcut-internal-token': this.internalToken,
         ...(init.headers || {})
       }
     });

@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from redis import Redis
 from .database import check_database
 from .settings import get_settings
+from .security import require_internal_token
 from .routers.tasks import router as tasks_router
 from .routers.ai import router as ai_router
 from .routers.agents import router as agents_router
@@ -14,11 +15,12 @@ app = FastAPI(
     version='0.1.0',
     description='FastAPI control plane for tasks, AI orchestration, and workers.'
 )
-app.include_router(tasks_router)
-app.include_router(ai_router)
-app.include_router(agents_router)
-app.include_router(workers_router)
-app.include_router(publish_router)
+internal_dependencies = [Depends(require_internal_token)]
+app.include_router(tasks_router, dependencies=internal_dependencies)
+app.include_router(ai_router, dependencies=internal_dependencies)
+app.include_router(agents_router, dependencies=internal_dependencies)
+app.include_router(workers_router, dependencies=internal_dependencies)
+app.include_router(publish_router, dependencies=internal_dependencies)
 
 
 @app.get('/health')

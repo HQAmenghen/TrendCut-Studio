@@ -13,9 +13,10 @@ import { WorkersController } from './workers.controller';
 import { WorkerApiProvider } from './worker-api.provider';
 import { PublishController } from './publish.controller';
 import { PublishApiProvider } from './publish-api.provider';
+import { BffRequestGuard } from './bff-request.guard';
 
 @Module({
   controllers: [HealthController, TasksController, TaskEventsController, AiController, AgentsController, WorkersController, PublishController],
-  providers: [FastApiClient, TaskApiProvider, TaskEventsService, AiApiProvider, AgentApiProvider, WorkerApiProvider, PublishApiProvider]
+  providers: [FastApiClient, TaskApiProvider, TaskEventsService, AiApiProvider, AgentApiProvider, WorkerApiProvider, PublishApiProvider, BffRequestGuard]
 })
 export class AppModule {}
