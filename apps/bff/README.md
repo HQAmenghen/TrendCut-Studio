@@ -32,3 +32,7 @@ Phase 2 task endpoints:
 - `GET /tasks/:id/steps`: list task steps.
 - `GET /tasks/:id/artifacts`: list artifacts.
 - `GET /tasks/events`: SSE stream backed by Redis channel `trendcut.task-events`.
+Phase 3 AI endpoints:
+
+- `GET /ai/prompts`: proxy FastAPI prompt registry.
+- `POST /ai/generate`: proxy governed FastAPI AI generation.

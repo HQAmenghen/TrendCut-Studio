@@ -85,3 +85,28 @@ Index('idx_tasks_type_status', Task.type, Task.status)
 Index('idx_task_steps_task_status', TaskStep.task_id, TaskStep.status)
 Index('idx_artifacts_task_type', Artifact.task_id, Artifact.type)
 Index('idx_tool_calls_tool_status', ToolCall.tool_name, ToolCall.status)
+
+
+class LlmCall(Base):
+    __tablename__ = 'llm_calls'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey('tasks.id', ondelete='SET NULL'), index=True)
+    capability: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    prompt_version: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(default=0, nullable=False)
+    cost: Mapped[float] = mapped_column(Numeric(12, 6), default=0, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(default=0, nullable=False)
+    trace_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    error: Mapped[dict | None] = mapped_column(JSON)
+    request: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    response: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+Index('idx_llm_calls_task_created', LlmCall.task_id, LlmCall.created_at)
+Index('idx_llm_calls_capability_status', LlmCall.capability, LlmCall.status)

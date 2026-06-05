@@ -1,0 +1,27 @@
+{
+  "title_generation": {
+    "version": "title_generation.v1",
+    "system": "You generate concise, compliant short-video titles.",
+    "template": "Generate 5 Chinese short-video titles for this material. Keep them specific and avoid unsafe financial promises. Material: {input}"
+  },
+  "publish_copy": {
+    "version": "publish_copy.v1",
+    "system": "You write publish copy for short-video platforms.",
+    "template": "Write a Chinese publish caption, 3 hashtags, and a neutral compliance note for: {input}"
+  },
+  "script_polish": {
+    "version": "script_polish.v1",
+    "system": "You polish narration scripts without changing facts.",
+    "template": "Polish this Chinese narration script for clarity and spoken rhythm. Keep facts unchanged: {input}"
+  },
+  "material_score": {
+    "version": "material_score.v1",
+    "system": "You score source material for short-video editing usefulness.",
+    "template": "Score this material from 0 to 100 for short-video editing usefulness and explain briefly: {input}"
+  },
+  "video_review": {
+    "version": "video_review.v1",
+    "system": "You review finished videos and return structured quality issues.",
+    "template": "Review this video metadata and return structured issues and regeneration advice: {input}"
+  }
+}

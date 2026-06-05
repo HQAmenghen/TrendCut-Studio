@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     api_env: str = 'local'
     database_url: str = 'postgresql+psycopg://trendcut:trendcut@127.0.0.1:5432/trendcut'
     redis_url: str = 'redis://127.0.0.1:6379/0'
+    litellm_base_url: str | None = None
+    litellm_api_key: str | None = None
+    llm_model_order: str = 'qwen-plus,deepseek-chat,gemini-2.5-flash,local-template-v1'
 
 
 @lru_cache

@@ -4,6 +4,7 @@ from redis import Redis
 from .database import check_database
 from .settings import get_settings
 from .routers.tasks import router as tasks_router
+from .routers.ai import router as ai_router
 
 app = FastAPI(
     title='TrendCut AI Backend',
@@ -11,6 +12,7 @@ app = FastAPI(
     description='FastAPI control plane for tasks, AI orchestration, and workers.'
 )
 app.include_router(tasks_router)
+app.include_router(ai_router)
 
 
 @app.get('/health')

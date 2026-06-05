@@ -39,3 +39,9 @@ Phase 2 task endpoints:
 - `GET /tasks/{task_id}/artifacts`
 
 Task changes publish best-effort Redis messages to `trendcut.task-events`.
+Phase 3 AI endpoints:
+
+- `GET /ai/prompts`: list prompt registry entries and versions.
+- `POST /ai/generate`: execute a governed AI capability and record an `llm_calls` row.
+
+Supported initial capabilities: `title_generation`, `publish_copy`, `script_polish`, `material_score`, `video_review`.

@@ -5,9 +5,11 @@ import { TasksController } from './tasks.controller';
 import { TaskApiProvider } from './task-api.provider';
 import { TaskEventsController } from './task-events.controller';
 import { TaskEventsService } from './task-events.service';
+import { AiController } from './ai.controller';
+import { AiApiProvider } from './ai-api.provider';
 
 @Module({
-  controllers: [HealthController, TasksController, TaskEventsController],
-  providers: [FastApiClient, TaskApiProvider, TaskEventsService]
+  controllers: [HealthController, TasksController, TaskEventsController, AiController],
+  providers: [FastApiClient, TaskApiProvider, TaskEventsService, AiApiProvider]
 })
 export class AppModule {}
