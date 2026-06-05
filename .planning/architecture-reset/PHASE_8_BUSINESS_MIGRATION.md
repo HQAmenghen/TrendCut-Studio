@@ -95,6 +95,7 @@ Verification:
 
 - `npm run check:legacy-boundary`: passed.
 - `npm run check:bff`: passed.
+- `npm run ci`: passed, including BFF/FastAPI checks, Jest 3 suites / 3 tests, Python 216 tests, frontend build, lint, production audit, and Python lock check.
 - `npm run check:api`: passed.
 - `package.json` parse check: passed.
 - `npm run ci`: passed, including BFF/FastAPI checks, Jest 58 suites / 358 tests, Python 216 tests, frontend build, production audit, and Python lock check. Existing legacy scheduler lint warnings remain warning-only and are outside this runtime-retirement change.
@@ -166,3 +167,26 @@ Verification:
 - `npm test`: passed.
 - `npm run check:legacy-boundary`: passed.
 - `npm run ci`: passed, including BFF/FastAPI checks, Jest 3 suites / 3 tests, Python 216 tests, frontend build, lint, production audit, and Python lock check.
+
+## Wave 6: Deployment Entry Cleanup
+
+Status: completed.
+
+Scope:
+
+- Remove the last deployment entry that still referenced the retired Express runtime.
+
+Changes:
+
+- Reworked the root `Dockerfile` into a BFF image: build frontend, expose `3002`, and run `npm start`.
+- Extended `check:legacy-boundary` to reject root Dockerfile references to `start:legacy`, `node server.js`, or `EXPOSE 3001`.
+
+Review:
+
+- No blocking findings.
+- Compose remains the canonical multi-service deployment path. The root Dockerfile is now a BFF-only fallback image and no longer implies a monolithic Node/Python service.
+
+Verification:
+
+- `npm run check:legacy-boundary`: passed.
+- `npm run check:bff`: passed.

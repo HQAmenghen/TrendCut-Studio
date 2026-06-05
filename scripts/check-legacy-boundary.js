@@ -17,6 +17,8 @@ function main() {
   const legacyStartScript = packageJson?.scripts?.['start:legacy'];
   const composePath = path.join(projectRoot, 'docker-compose.yml');
   const composeText = fs.existsSync(composePath) ? fs.readFileSync(composePath, 'utf8') : '';
+  const dockerfilePath = path.join(projectRoot, 'Dockerfile');
+  const dockerfileText = fs.existsSync(dockerfilePath) ? fs.readFileSync(dockerfilePath, 'utf8') : '';
 
   if (fs.existsSync(path.join(projectRoot, 'server.js')) || fs.existsSync(path.join(projectRoot, 'server'))) {
     console.error('Legacy Express boundary violation: server.js and server/ have been retired from this branch.');
@@ -37,6 +39,11 @@ function main() {
 
   if (/legacy-express\s*:/.test(composeText)) {
     console.error('Legacy Express boundary violation: docker-compose.yml must not define a legacy-express service.');
+    process.exit(1);
+  }
+
+  if (/start:legacy|node\s+server\.js|EXPOSE\s+3001/i.test(dockerfileText)) {
+    console.error('Legacy Express boundary violation: root Dockerfile must target the BFF runtime.');
     process.exit(1);
   }
 
