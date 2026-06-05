@@ -1,0 +1,1 @@
+"""TrendCut FastAPI service."""

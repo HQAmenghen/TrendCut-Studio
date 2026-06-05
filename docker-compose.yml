@@ -1,6 +1,69 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trendcut}
+      POSTGRES_USER: ${POSTGRES_USER:-trendcut}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trendcut}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      API_ENV: ${API_ENV:-local}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://trendcut:trendcut@postgres:5432/trendcut}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bff:
+    build:
+      context: .
+      dockerfile: apps/bff/Dockerfile
+    environment:
+      BFF_HOST: ${BFF_HOST:-0.0.0.0}
+      BFF_PORT: ${BFF_PORT:-3002}
+      FASTAPI_BASE_URL: ${FASTAPI_BASE_URL:-http://api:8000}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${BFF_PORT:-3002}:3002"
+
   trendcut-studio:
     build:
       context: .
@@ -21,3 +84,7 @@ services:
       - ./data/uploads:/app/data/uploads
       - ./python/publish/browser_profiles:/app/python/publish/browser_profiles
       - ./python/publish/publish_jobs.db:/app/python/publish/publish_jobs.db
+
+volumes:
+  postgres-data:
+  redis-data:

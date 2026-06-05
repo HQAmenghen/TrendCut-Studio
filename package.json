@@ -43,21 +43,32 @@
     "check:legacy-boundary": "node scripts/check-legacy-boundary.js",
     "ci": "node scripts/ci.js",
     "install-hooks": "node scripts/install-hooks.js",
-    "postinstall": "node scripts/install-hooks.js"
+    "postinstall": "node scripts/install-hooks.js",
+    "start:bff": "ts-node -P apps/bff/tsconfig.json apps/bff/src/main.ts",
+    "check:bff": "tsc -p apps/bff/tsconfig.json --noEmit",
+    "start:api": "uvicorn trendcut_api.main:app --app-dir apps/api/src --host 0.0.0.0 --port 8000",
+    "migrate:api": "python apps/api/scripts/migrate.py",
+    "check:api": "python -m compileall -q apps/api"
   },
   "dependencies": {
+    "@nestjs/common": "^11.1.24",
+    "@nestjs/core": "^11.1.24",
+    "@nestjs/platform-express": "^11.1.24",
     "axios": "^1.16.0",
     "better-sqlite3": "^12.8.0",
     "express": "^4.19.2",
     "form-data": "^4.0.0",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.1.1",
     "node-cron": "^4.2.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "ws": "^8.19.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",
+    "@types/node": "^22.19.19",
     "@vitejs/plugin-vue": "^6.0.5",
     "autoprefixer": "^10.4.27",
     "eslint": "^8.57.1",
@@ -66,6 +77,8 @@
     "postcss": "^8.5.8",
     "sinon": "^21.0.3",
     "tailwindcss": "^4.2.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
     "vite": "^8.0.2",
     "vue": "^3.5.30"
   },

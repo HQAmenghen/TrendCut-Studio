@@ -63,37 +63,49 @@ function main() {
       required: true
     },
     {
-      name: '2. 运行单元测试',
+      name: '2. 检查 NestJS BFF 编译',
+      command: 'npm',
+      args: ['run', 'check:bff'],
+      required: true
+    },
+    {
+      name: '3. 检查 FastAPI 源码编译',
+      command: 'npm',
+      args: ['run', 'check:api'],
+      required: true
+    },
+    {
+      name: '4. 运行单元测试',
       command: 'npm',
       args: ['test'],
       required: true
     },
     {
-      name: '3. 运行 Python 单元测试',
+      name: '5. 运行 Python 单元测试',
       command: 'npm',
       args: ['run', 'test:py'],
       required: true
     },
     {
-      name: '4. 构建前端',
+      name: '6. 构建前端',
       command: 'npm',
       args: ['run', 'build:front'],
       required: true
     },
     {
-      name: '5. 代码风格检查',
+      name: '7. 代码风格检查',
       command: 'npm',
       args: ['run', 'lint'],
       required: true
     },
     {
-      name: '6. 生产依赖安全审计',
+      name: '8. 生产依赖安全审计',
       command: 'npm',
       args: ['run', 'audit:prod'],
       required: true
     },
     {
-      name: '7. Python 依赖锁检查',
+      name: '9. Python 依赖锁检查',
       command: 'npm',
       args: ['run', 'check:py-lock'],
       required: true
