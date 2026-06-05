@@ -38,7 +38,7 @@ The current `server.js` and `server/` tree remain in place as archived legacy co
 - NestJS may read task state through FastAPI APIs. It must not double-write the same task tables.
 - Python capabilities move toward FastAPI services or workers. Node child processes remain legacy compatibility only.
 - Dangerous tools such as publishing, deletion, RPA login, and account mutation require a permission/audit layer.
-- The current BFF includes a baseline token/rate-limit/user-context guard and DTO validation. Full enterprise RBAC/session integration remains the next security hardening step.
+- The current BFF requires token-backed principals by default, maps tokens to actor/roles/tenant context, applies rate limits, validates DTOs, and enforces role gates at controller entrypoints. Full enterprise SSO/session integration remains a later security hardening step.
 
 ## Legacy Freeze
 
@@ -103,7 +103,7 @@ Introduce LangGraph-centered agents, MCP tool registry, permissions, audit logs,
 
 ### Phase 5: Video Pipeline and Workers
 
-Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. The first worker executor is an adapter that records structured manifests; concrete FFmpeg/ComfyUI/RunningHub script execution is intentionally behind this stable worker contract.
+Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. `script_worker` now calls the legacy Python `ScriptRewriterSkill` through the worker runtime; heavier FFmpeg/ComfyUI/RunningHub/review executors remain behind the stable worker contract.
 
 ### Phase 6: Publish Center and RPA
 

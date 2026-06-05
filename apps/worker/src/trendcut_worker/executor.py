@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,12 +30,13 @@ def execute_job(job: dict[str, Any], artifact_root: Path) -> dict[str, Any]:
         raise PermissionError(f'{job_type} requires confirmed=true')
 
     now = datetime.now(timezone.utc).isoformat()
+    legacy_output = _execute_legacy(job_type, payload)
     result = {
         'job_type': job_type,
         'status': 'succeeded',
-        'executor': 'trendcut_worker.adapter',
+        'executor': legacy_output.get('executor', 'trendcut_worker.adapter'),
         'legacy_entrypoint': LEGACY_ENTRYPOINTS[job_type],
-        'structured_output': _structured_output(job_type, payload),
+        'structured_output': legacy_output.get('structured_output', _structured_output(job_type, payload)),
         'completed_at': now
     }
     manifest_path = _write_manifest(job, result, artifact_root)
@@ -46,10 +49,48 @@ def execute_job(job: dict[str, Any], artifact_root: Path) -> dict[str, Any]:
             'mime_type': 'application/json',
             'metadata': {
                 'job_type': job_type,
-                'executor': 'trendcut_worker.adapter',
+                'executor': result['executor'],
                 'created_at': now
             }
         }]
+    }
+
+
+def _execute_legacy(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if job_type == 'script_worker':
+        return _execute_script_worker(payload)
+    return {
+        'executor': 'trendcut_worker.adapter',
+        'structured_output': _structured_output(job_type, payload)
+    }
+
+
+def _execute_script_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    project_root = Path(__file__).resolve().parents[4]
+    python_root = project_root / 'python'
+    if str(python_root) not in sys.path:
+        sys.path.insert(0, str(python_root))
+
+    from pipeline.skills.script_rewriter_skill import ScriptRewriterSkill
+
+    skill_result = ScriptRewriterSkill().run(payload)
+    if is_dataclass(skill_result):
+        serialized = asdict(skill_result)
+    else:
+        serialized = {
+            'skill': getattr(skill_result, 'skill', 'script_rewriter_skill'),
+            'version': getattr(skill_result, 'version', 'unknown'),
+            'output': getattr(skill_result, 'output', {}),
+            'meta': getattr(skill_result, 'meta', {})
+        }
+    return {
+        'executor': 'trendcut_worker.legacy.script_worker',
+        'structured_output': {
+            'script': serialized.get('output', {}),
+            'legacy_skill': serialized.get('skill'),
+            'legacy_version': serialized.get('version'),
+            'legacy_meta': serialized.get('meta', {})
+        }
     }
 
 

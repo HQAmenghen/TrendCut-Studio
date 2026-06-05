@@ -61,6 +61,8 @@ services:
       FASTAPI_BASE_URL: ${FASTAPI_BASE_URL:-http://api:8000}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token}
+      BFF_API_TOKEN: ${BFF_API_TOKEN:-dev-bff-token}
+      BFF_ROLES: ${BFF_ROLES:-admin}
     depends_on:
       api:
         condition: service_healthy

@@ -19,7 +19,11 @@ Rules:
 
 Runtime security baseline:
 
-- `BFF_API_TOKEN` optionally requires `Authorization: Bearer <token>` or `x-bff-api-token`.
+- API routes require a BFF token by default; set `BFF_AUTH_DISABLED=true` only for local development.
+- `BFF_API_KEYS` may map tokens to `{ actor, roles, tenant_id }`; otherwise `BFF_API_TOKEN` maps to `BFF_ACTOR`, `BFF_ROLES`, and `BFF_TENANT_ID`.
+- Caller-supplied `x-user-id` / `x-actor` headers are ignored unless `BFF_AUTH_DISABLED=true` and `BFF_TRUSTED_ACTOR_HEADERS=true`.
+- AI, Agent, Worker, Task, and Publish controllers validate DTOs before calling FastAPI.
+- Controller entrypoints enforce role gates such as `ai:write`, `agent:write`, `worker:write`, and `worker:runtime`; `admin` bypasses role-specific checks.
 - `BFF_RATE_LIMIT_PER_MINUTE` defaults to `120`.
 - `INTERNAL_API_TOKEN` is forwarded to FastAPI as `x-trendcut-internal-token`.
 - If `frontend-dist/` exists, BFF serves it as static frontend assets.

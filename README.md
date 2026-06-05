@@ -81,7 +81,7 @@ flowchart TB
 | Python Worker | `apps/worker/` | 长任务执行器，通过 FastAPI worker 协议回报状态、artifact 和错误。 |
 | Legacy Express | `server.js`, `server/` | 已下线为显式 legacy 入口，只保留归档旧功能和测试参考。 |
 
-FastAPI 在 Docker Compose 中只暴露到服务内网，BFF 和 worker 通过 `x-trendcut-internal-token` 访问。BFF 可用 `BFF_API_TOKEN`、`BFF_RATE_LIMIT_PER_MINUTE` 提供基础入口保护；完整企业级身份、RBAC 和租户权限仍应接入正式认证系统。
+FastAPI 在 Docker Compose 中只暴露到服务内网，BFF 和 worker 通过 `x-trendcut-internal-token` 访问。BFF 默认要求 token-backed principal，可通过 `BFF_API_KEYS` 映射 actor、roles 和 tenant；`BFF_AUTH_DISABLED=true` 仅用于本地开发。`script_worker` 已通过 worker runtime 调用 legacy `ScriptRewriterSkill`，更重的媒体/RPA executor 仍在 worker contract 后逐步迁移。
 | 路由层 | `server/routes/` | 对外暴露素材生产、审核、发布、系统设置、竖屏队列、热点榜单、登录状态和 Agent API。 |
 | 服务层 | `server/services/` | 工作流编排、数据访问、外部服务集成、账号看板、调度、清理和恢复。 |
 | 基础运行层 | `server/core/` | Python 进程执行、任务存储、进度流、结构化错误、清理、恢复和任务协议。 |
