@@ -103,11 +103,11 @@ Introduce LangGraph-centered agents, MCP tool registry, permissions, audit logs,
 
 ### Phase 5: Video Pipeline and Workers
 
-Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. `script_worker` now calls the legacy Python `ScriptRewriterSkill` through the worker runtime; heavier FFmpeg/ComfyUI/RunningHub/review executors remain behind the stable worker contract.
+Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. Worker jobs now call legacy Python skills or CLI entrypoints through the Python worker runtime and record structured manifests around real execution results.
 
 ### Phase 6: Publish Center and RPA
 
-Move publish jobs and Playwright RPA control to workers with structured errors, account state, screenshot/recording artifact slots, and audit logs. The current implementation provides the governed control plane and adapter executor; concrete Playwright execution hardening remains behind the worker contract.
+Move publish jobs and Playwright RPA control to workers with structured errors, account state, screenshot/recording artifact slots, and audit logs. Publish/RPA worker jobs now invoke the legacy Python adapters behind confirmation gates; account-state hardening and platform-specific artifact enrichment remain the next migration layer.
 
 ### Phase 7: Express Shutdown
 
