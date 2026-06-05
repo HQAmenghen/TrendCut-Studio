@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trendcut.local/contracts/task-core.schema.json",
+  "title": "TrendCut Task Core Contracts",
+  "type": "object",
+  "required": ["task", "taskStep", "artifact", "agentRun", "toolCall"],
+  "properties": {
+    "task": { "$ref": "#/$defs/task" },
+    "taskStep": { "$ref": "#/$defs/taskStep" },
+    "artifact": { "$ref": "#/$defs/artifact" },
+    "agentRun": { "$ref": "#/$defs/agentRun" },
+    "toolCall": { "$ref": "#/$defs/toolCall" }
+  },
+  "$defs": {
+    "taskStatus": {
+      "type": "string",
+      "enum": [
+        "created",
+        "queued",
+        "running",
+        "waiting_user",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "retrying"
+      ]
+    },
+    "stepStatus": {
+      "type": "string",
+      "enum": [
+        "created",
+        "queued",
+        "running",
+        "waiting_user",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "retrying",
+        "skipped"
+      ]
+    },
+    "toolCallStatus": {
+      "type": "string",
+      "enum": ["pending", "running", "succeeded", "failed", "cancelled", "blocked"]
+    },
+    "jsonObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "type", "status", "input", "created_at", "updated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/taskStatus" },
+        "input": { "$ref": "#/$defs/jsonObject" },
+        "output": { "$ref": "#/$defs/jsonObject" },
+        "error": { "$ref": "#/$defs/error" },
+        "metadata": { "$ref": "#/$defs/jsonObject" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "taskStep": {
+      "type": "object",
+      "required": ["id", "task_id", "name", "status", "created_at", "updated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/stepStatus" },
+        "logs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "error": { "$ref": "#/$defs/error" },
+        "metadata": { "$ref": "#/$defs/jsonObject" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["id", "task_id", "type", "path", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "task_step_id": { "type": "string" },
+        "type": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "mime_type": { "type": "string" },
+        "metadata": { "$ref": "#/$defs/jsonObject" },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "agentRun": {
+      "type": "object",
+      "required": ["id", "task_id", "graph_name", "state", "trace_id", "created_at", "updated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "graph_name": { "type": "string", "minLength": 1 },
+        "state": { "$ref": "#/$defs/jsonObject" },
+        "trace_id": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/taskStatus" },
+        "metadata": { "$ref": "#/$defs/jsonObject" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["id", "agent_run_id", "tool_name", "input", "status", "created_at", "updated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "agent_run_id": { "type": "string", "minLength": 1 },
+        "task_step_id": { "type": "string" },
+        "tool_name": { "type": "string", "minLength": 1 },
+        "input": { "$ref": "#/$defs/jsonObject" },
+        "output": { "$ref": "#/$defs/jsonObject" },
+        "status": { "$ref": "#/$defs/toolCallStatus" },
+        "cost": {
+          "type": "number",
+          "minimum": 0
+        },
+        "error": { "$ref": "#/$defs/error" },
+        "metadata": { "$ref": "#/$defs/jsonObject" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": true,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "stage": { "type": "string" },
+        "details": {}
+      }
+    }
+  }
+}
