@@ -36,8 +36,8 @@
     "test:py": "python -m unittest discover -s python/tests -p \"test_*.py\"",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "lint": "eslint server/ scripts/ --ext .js",
-    "lint:fix": "eslint server/ scripts/ --ext .js --fix",
+    "lint": "eslint scripts/ apps/bff/src/__tests__/ mcp-server/src/ --ext .js",
+    "lint:fix": "eslint scripts/ apps/bff/src/__tests__/ mcp-server/src/ --ext .js --fix",
     "audit:prod": "node scripts/npm-audit-prod.js",
     "check:py-lock": "node scripts/check-python-lock.js",
     "check:legacy-boundary": "node scripts/check-legacy-boundary.js",
@@ -55,17 +55,9 @@
     "@nestjs/core": "^11.1.24",
     "@nestjs/platform-express": "^11.1.24",
     "axios": "^1.16.0",
-    "better-sqlite3": "^12.8.0",
-    "express": "^4.19.2",
-    "form-data": "^4.0.0",
-    "multer": "^2.1.1",
-    "node-cron": "^4.2.1",
     "redis": "^4.7.1",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^6.0.1",
-    "ws": "^8.19.0"
+    "rxjs": "^7.8.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",
@@ -86,10 +78,10 @@
   "jest": {
     "testEnvironment": "node",
     "testMatch": [
-      "**/__tests__/**/*.test.js"
+      "**/apps/bff/src/__tests__/**/*.test.js"
     ],
     "collectCoverageFrom": [
-      "server/**/*.js"
+      "apps/bff/src/**/*.ts"
     ],
     "coveragePathIgnorePatterns": [
       "/node_modules/",

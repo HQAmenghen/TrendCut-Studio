@@ -18,9 +18,12 @@ exit /b 1
 )
 
 echo 3. Opening default browser after server starts...
-start "" cmd /c "timeout /t 3 > nul && start http://localhost:3001"
+start "" cmd /c "timeout /t 5 > nul && start http://localhost:3002"
 
-echo 4. Starting backend server...
-node server.js
+echo 4. Starting FastAPI backend...
+start "TrendCut FastAPI" cmd /k "npm run start:api"
+
+echo 5. Starting NestJS BFF...
+npm start
 
 pause

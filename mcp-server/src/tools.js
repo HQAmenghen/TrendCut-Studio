@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:3001';
+const DEFAULT_BASE_URL = 'http://127.0.0.1:3002';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(MODULE_DIR, '..', '..');
 
@@ -27,7 +27,13 @@ function getBaseUrl() {
 }
 
 function getAgentToken() {
-  return String(process.env.AGENT_API_TOKEN || readProjectEnvValue('AGENT_API_TOKEN') || '').trim();
+  return String(
+    process.env.BFF_API_TOKEN ||
+    process.env.AGENT_API_TOKEN ||
+    readProjectEnvValue('BFF_API_TOKEN') ||
+    readProjectEnvValue('AGENT_API_TOKEN') ||
+    ''
+  ).trim();
 }
 
 function createToolErrorPayload(error) {

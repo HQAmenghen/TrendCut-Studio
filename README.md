@@ -70,7 +70,6 @@ flowchart TB
   Worker --> FFmpeg["FFmpeg / MoviePy"]
   Worker --> RPA["Playwright RPA<br/>微信视频号 / 抖音 / 小红书"]
   Worker --> LLM["Gemini / Qwen / DeepSeek / Vertex"]
-  Legacy["Legacy Express<br/>server.js + server/"] -. explicit start only .-> Py
 ```
 
 | 层级 | 主要位置 | 职责 |
@@ -79,21 +78,17 @@ flowchart TB
 | NestJS BFF | `apps/bff/` | 浏览器入口、DTO 聚合、SSE 网关、调用 FastAPI。 |
 | FastAPI Backend | `apps/api/` | 任务、AI、Agent、Worker、发布/RPA 控制面和数据库记录。 |
 | Python Worker | `apps/worker/` | 长任务执行器，通过 FastAPI worker 协议回报状态、artifact 和错误。 |
-| Legacy Express | `server.js`, `server/` | 已下线为显式 legacy 入口，只保留归档旧功能和测试参考。 |
 
-FastAPI 在 Docker Compose 中只暴露到服务内网，BFF 和 worker 通过 `x-trendcut-internal-token` 访问。BFF 默认要求 token-backed principal，可通过 `BFF_API_KEYS` 映射 actor、roles 和 tenant；`BFF_AUTH_DISABLED=true` 仅用于本地开发。`script_worker` 已通过 worker runtime 调用 legacy `ScriptRewriterSkill`，更重的媒体/RPA executor 仍在 worker contract 后逐步迁移。
-| 路由层 | `server/routes/` | 对外暴露素材生产、审核、发布、系统设置、竖屏队列、热点榜单、登录状态和 Agent API。 |
-| 服务层 | `server/services/` | 工作流编排、数据访问、外部服务集成、账号看板、调度、清理和恢复。 |
-| 基础运行层 | `server/core/` | Python 进程执行、任务存储、进度流、结构化错误、清理、恢复和任务协议。 |
+FastAPI 在 Docker Compose 中只暴露到服务内网，BFF 和 worker 通过 `x-trendcut-internal-token` 访问。BFF 默认要求 token-backed principal，可通过 `BFF_API_KEYS` 映射 actor、roles 和 tenant；`BFF_AUTH_DISABLED=true` 仅用于本地开发。旧 Express 运行时已从当前分支移除，浏览器、MCP 和本地启动脚本统一进入 NestJS BFF。
 | Python 脚本 | `python/pipeline/`, `python/review/`, `python/publish/`, `python/xai/` | ASR、视觉理解、剪辑计划、媒体渲染、审核、RPA 和热点发现。 |
-| MCP 集成 | `server/services/agent/`, `server/routes/agent.js`, `mcp-server/` | 基于 Token 的本地自动化接口和 MCP 工具封装。 |
+| MCP 集成 | `apps/bff/src/agent-compat.controller.ts`, `mcp-server/` | 基于 BFF Token 的本地自动化接口和 MCP 工具封装。 |
 
 ## 技术栈
 
 | 类别 | 技术 |
 | --- | --- |
 | 前端 | Vue 3, Vite, CSS, lucide-vue-next |
-| 后端 | NestJS, FastAPI, PostgreSQL, Redis, legacy Express |
+| 后端 | NestJS, FastAPI, PostgreSQL, Redis |
 | Python | Python 3.10+, MoviePy, faster-whisper, Pillow, Playwright, requests/httpx |
 | AI 与模型服务 | Gemini, Qwen/DashScope, DeepSeek, Vertex AI, xAI 兼容 OpenAI transport |
 | 媒体处理 | FFmpeg, ComfyUI, RunningHub 兼容口播出镜流程 |
@@ -139,7 +134,7 @@ Copy-Item config/env.example .env
 | `LLM_PROVIDER` | 主 LLM Provider 选择。公开模板默认使用 `qwen`。 |
 | `QWEN_API_KEY` / `DASHSCOPE_API_KEY` | Qwen / DashScope 凭证。 |
 | `XAI_API_KEY` | 热点发现凭证。 |
-| `AGENT_API_TOKEN` | Agent API 与 MCP bridge 使用的本地访问 Token。 |
+| `BFF_API_TOKEN` / `BFF_API_KEYS` | BFF、MCP bridge 和本地自动化入口使用的访问凭证。 |
 | `AI_REVIEW_ENABLED` | 是否启用 AI 审核。 |
 | `FEISHU_WEBHOOK_URL` | 可选的飞书通知 Webhook。 |
 | `LOGIN_CHECK_ENABLED` | 是否启用定时登录检测。 |
@@ -178,8 +173,7 @@ npm run build:front
 | 内容 | 是否为运行时代码 | 说明 |
 | --- | --- | --- |
 | `mcp-server/` | 是 | MCP bridge，将本地 Agent API 包装成 MCP tools。 |
-| `server/routes/agent.js` | 是 | Agent API HTTP 路由，路径前缀为 `/api/agent/v1`。 |
-| `server/services/agent/` | 是 | Agent API 的鉴权、能力表、审计日志和业务处理。 |
+| `apps/bff/src/agent-compat.controller.ts` | 是 | Agent API HTTP 兼容路由，路径前缀为 `/api/agent/v1`，内部转为 FastAPI Task/Worker/Publish 调用。 |
 | `.agents/skills/video-assistant-agent/` | 否 | 本地 Skill 使用说明，用来把“找热点、写口播、混剪、审核、发布”这类自然语言任务映射到 MCP tools。公开仓库不依赖该目录运行，但文档保留这套设计。 |
 
 当前 MCP bridge 暴露 53 个工具，覆盖以下类别：
@@ -208,9 +202,7 @@ trendcut-studio/
 ├─ packages/
 │  ├─ contracts/              # OpenAPI / schema / shared contracts
 │  └─ sdk/                    # BFF 调 FastAPI 的 client
-├─ server.js                  # Archived legacy Express reference; not a supported runtime entry
 ├─ frontend/                  # Vue 运营工作台源码
-├─ server/                    # Archived legacy Express routes/services retained for tests and reference
 ├─ python/                    # 素材生产、审核、发布和热点脚本
 ├─ mcp-server/                # Agent API 的 MCP bridge
 ├─ config/                    # 工作流和运行配置

@@ -15,9 +15,10 @@ import { PublishController } from './publish.controller';
 import { PublishApiProvider } from './publish-api.provider';
 import { BffRequestGuard } from './bff-request.guard';
 import { ApiCompatController } from './api-compat.controller';
+import { AgentCompatController } from './agent-compat.controller';
 
 @Module({
-  controllers: [HealthController, TasksController, TaskEventsController, AiController, AgentsController, WorkersController, PublishController, ApiCompatController],
+  controllers: [HealthController, TasksController, TaskEventsController, AiController, AgentsController, WorkersController, PublishController, ApiCompatController, AgentCompatController],
   providers: [FastApiClient, TaskApiProvider, TaskEventsService, AiApiProvider, AgentApiProvider, WorkerApiProvider, PublishApiProvider, BffRequestGuard]
 })
 export class AppModule {}

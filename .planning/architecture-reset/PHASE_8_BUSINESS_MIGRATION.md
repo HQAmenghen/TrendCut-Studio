@@ -98,3 +98,41 @@ Verification:
 - `npm run check:api`: passed.
 - `package.json` parse check: passed.
 - `npm run ci`: passed, including BFF/FastAPI checks, Jest 58 suites / 358 tests, Python 216 tests, frontend build, production audit, and Python lock check. Existing legacy scheduler lint warnings remain warning-only and are outside this runtime-retirement change.
+
+## Wave 4: Legacy Tree Removal And Agent Cutover
+
+Status: completed.
+
+Scope:
+
+- Remove the former Express runtime tree instead of keeping it as archived code.
+- Move MCP `/api/agent/v1/*` compatibility to the NestJS BFF.
+- Point MCP bridge defaults and local launch scripts at BFF.
+- Stop default JS test/lint entrypoints from treating the removed Express tree as maintained code.
+
+Changes:
+
+- Added `apps/bff/src/agent-compat.controller.ts` for MCP Agent API compatibility over FastAPI task, worker, and publish clients.
+- Registered the Agent compatibility controller in the BFF module.
+- Updated `mcp-server/src/tools.js` to default to BFF port `3002` and prefer `BFF_API_TOKEN`.
+- Updated `一键启动.bat` to start FastAPI and BFF, then open the BFF port.
+- Updated `package.json` JS test and lint scopes to the BFF compatibility tests, scripts, and MCP bridge.
+- Removed direct root dependencies that belonged to the deleted Express service stack; kept `redis` because the BFF SSE event service still imports it.
+- Deleted `server.js` and `server/`.
+- Strengthened `check:legacy-boundary` to reject restored `server.js` or `server/`.
+- Rewrote stale docs that still described Express as the current API owner.
+
+Review:
+
+- No blocking findings.
+- Key residual risk is semantic depth of BFF Agent compatibility: it preserves the old MCP URL surface and `success` / `jobId` response style, but deeper tool-specific payload richness should be hardened as real users exercise MCP workflows. Execution ownership is correct: BFF routes to FastAPI task, worker, and publish clients instead of calling deleted Express handlers.
+- Deleting the Express tree removes a large legacy Jest suite from default `npm test`. Python worker tests still cover media/AI execution paths, and BFF smoke tests now cover the compatibility translation layer.
+
+Verification:
+
+- `npm run check:legacy-boundary`: passed.
+- `npm run check:bff`: passed.
+- `npx jest apps/bff/src/__tests__/agent-compat.test.js --runInBand`: passed.
+- Residual scan for old current-implementation paths: passed; `server/` and `server.js` no longer exist, remaining matches are boundary-ban text or `mcp-server/src/server.js`.
+- Root dependency scan: passed; deleted direct legacy service dependencies are gone and `redis` remains for BFF events.
+- `npm run ci`: passed after dependency cleanup, including BFF/FastAPI checks, Jest 3 suites / 3 tests, Python 216 tests, frontend build, lint, production audit, and Python lock check.

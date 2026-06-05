@@ -23,11 +23,9 @@ apps/
 packages/
   contracts/        OpenAPI specs, JSON Schema, and generated/shared contract inputs.
   sdk/              Clients used by NestJS to call FastAPI. Frontend must not use this directly.
-server.js / server/
-  archived legacy reference and test coverage only; no supported runtime entry.
 ```
 
-The current `server.js` and `server/` tree remain in place as archived legacy code. New API features must not be added under `server/routes`. The default and only supported runtime entry in this branch is NestJS BFF plus FastAPI and workers; `start:legacy` and the Compose `legacy-express` service have been removed.
+The former `server.js` and `server/` Express tree has been removed from this branch. The default and only supported runtime entry is NestJS BFF plus FastAPI and workers; `start:legacy`, root launch scripts that call `node server.js`, and the Compose `legacy-express` service are forbidden.
 
 ## Access Rules
 
@@ -36,27 +34,24 @@ The current `server.js` and `server/` tree remain in place as archived legacy co
 - FastAPI is not exposed directly to browser clients. Docker Compose keeps `api:8000` on the internal Compose network and NestJS/worker calls must include `x-trendcut-internal-token`.
 - FastAPI owns task state, task steps, artifacts, agent runs, tool calls, LLM calls, and worker dispatch.
 - NestJS may read task state through FastAPI APIs. It must not double-write the same task tables.
-- Python capabilities move toward FastAPI services or workers. Node child processes remain legacy compatibility only.
+- Python capabilities run through FastAPI services or Python workers.
 - Dangerous tools such as publishing, deletion, RPA login, and account mutation require a permission/audit layer.
 - The current BFF requires token-backed principals by default, maps tokens to actor/roles/tenant context, applies rate limits, validates DTOs, and enforces role gates at controller entrypoints. Full enterprise SSO/session integration remains a later security hardening step.
 
-## Legacy Freeze
+## Legacy Ban
 
-Allowed in archived legacy Express code:
+Not allowed:
 
-- Test fixture maintenance.
-- Documentation/reference reads during migration verification.
-- Bug fixes only if needed to keep existing legacy tests meaningful.
-
-Not allowed in archived legacy Express code:
-
+- Restoring `server.js` or `server/`.
+- Restoring `start:legacy`.
+- Restoring a Compose `legacy-express` service.
 - New user-facing API domains.
 - New task orchestration logic.
-- New Python subprocess protocols as the primary integration style.
+- New Node-managed Python subprocess protocols as the primary integration style.
 - New AI provider integrations.
 - New publish/RPA capability surfaces.
 
-The boundary is enforced by `npm run check:legacy-boundary`. That check prevents `npm start` from being pointed back at Express and rejects any reintroduced `start:legacy` script or `legacy-express` Compose service.
+The boundary is enforced by `npm run check:legacy-boundary`. That check fails if `server.js` or `server/` are restored, if `npm start` points back at Express, if launch scripts call `node server.js`, or if `start:legacy` / Compose `legacy-express` are reintroduced.
 
 ## Core Protocols
 
@@ -83,7 +78,7 @@ Each phase must end with:
 
 ### Phase 0: Freeze and Boundary
 
-Define architecture rules, create the new directory skeleton, add core protocol schema, and prevent new Express route sprawl.
+Define architecture rules, create the new directory skeleton, add core protocol schema, and prevent Express route sprawl.
 
 ### Phase 1: Infrastructure
 
@@ -103,12 +98,12 @@ Introduce LangGraph-centered agents, MCP tool registry, permissions, audit logs,
 
 ### Phase 5: Video Pipeline and Workers
 
-Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. Worker jobs now call legacy Python skills or CLI entrypoints through the Python worker runtime and record structured manifests around real execution results.
+Split media work into worker jobs, register artifacts consistently, and remove Node stdout parsing as the primary protocol. Worker jobs call Python skills or CLI entrypoints through the Python worker runtime and record structured manifests around real execution results.
 
 ### Phase 6: Publish Center and RPA
 
-Move publish jobs and Playwright RPA control to workers with structured errors, account state, screenshot/recording artifact slots, and audit logs. Publish/RPA worker jobs now invoke the legacy Python adapters behind confirmation gates; account-state hardening and platform-specific artifact enrichment remain the next migration layer.
+Move publish jobs and Playwright RPA control to workers with structured errors, account state, screenshot/recording artifact slots, and audit logs. Publish/RPA worker jobs invoke Python adapters behind confirmation gates; account-state hardening and platform-specific artifact enrichment remain the next hardening layer.
 
 ### Phase 7: Express Shutdown
 
-Switch default startup and new frontend API prefixes to NestJS, move Express behind explicit legacy startup/profile, remove Express as a default dependency, update CI and docs.
+Switch default startup and frontend API prefixes to NestJS, remove the Express runtime tree, update CI and docs, and enforce the ban with boundary checks.
