@@ -29,4 +29,4 @@ RUN mkdir -p data/uploads public/presets/audio public/presets/image
 
 EXPOSE 3001
 
-CMD ["npm", "start"]
+CMD ["npm", "run", "start:legacy"]

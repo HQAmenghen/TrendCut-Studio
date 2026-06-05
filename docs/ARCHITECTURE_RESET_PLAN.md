@@ -27,7 +27,7 @@ legacy/
   express-server/   Future archive location for the current Express runtime.
 ```
 
-The current `server.js` and `server/` tree remain in place during migration, but they are legacy. New API features must not be added under `server/routes`.
+The current `server.js` and `server/` tree remain in place as archived legacy code. New API features must not be added under `server/routes`. The default runtime entry is NestJS BFF; Express requires the explicit `npm run start:legacy` command or Docker Compose `legacy` profile.
 
 ## Access Rules
 
@@ -55,7 +55,7 @@ Not allowed in legacy Express:
 - New AI provider integrations.
 - New publish/RPA capability surfaces.
 
-The boundary is enforced by `npm run check:legacy-boundary`.
+The boundary is enforced by `npm run check:legacy-boundary`. That check also prevents `npm start` from being pointed back at Express.
 
 ## Core Protocols
 
@@ -110,4 +110,4 @@ Move publish jobs and Playwright RPA execution to workers with structured errors
 
 ### Phase 7: Express Shutdown
 
-Switch frontend API base to NestJS, remove Express proxy dependencies, archive or delete legacy routes, update CI and docs.
+Switch default startup and new frontend API prefixes to NestJS, move Express behind explicit legacy startup/profile, remove Express as a default dependency, update CI and docs.

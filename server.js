@@ -1,6 +1,11 @@
 // 日志记录（必须在最开始引入）
 require('./server/core/logger');
 
+if (process.env.ENABLE_LEGACY_EXPRESS !== 'true') {
+    console.error('Express legacy server is disabled by default. Use `npm run start:legacy` only for archived legacy operation.');
+    process.exit(1);
+}
+
 const express = require('express');
 const axios = require('axios');
 const multer = require('multer');

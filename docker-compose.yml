@@ -82,7 +82,9 @@ services:
       - ./data/worker-artifacts:/app/data/worker-artifacts
       - ./data/uploads:/app/data/uploads
 
-  trendcut-studio:
+  legacy-express:
+    profiles:
+      - legacy
     build:
       context: .
       dockerfile: Dockerfile
@@ -90,6 +92,7 @@ services:
       - "3001:3001"
     environment:
       HOST: ${HOST:-0.0.0.0}
+      ENABLE_LEGACY_EXPRESS: "true"
       AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
       AGENT_ENABLE_REAL_PUBLISH: ${AGENT_ENABLE_REAL_PUBLISH:-false}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}

@@ -61,25 +61,25 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-  UI["Vue 运营工作台<br/>frontend/src"] --> API["Express 组合入口<br/>server.js"]
-  API --> Routes["路由层<br/>server/routes"]
-  Routes --> Services["业务服务层<br/>server/services"]
-  Services --> Core["运行时基础能力<br/>server/core"]
-  Services --> Py["Python 工作脚本<br/>python/"]
-  Services --> DB["SQLite 存储<br/>data/*.db"]
-  Services --> Files["运行产物<br/>projects / data / public"]
-  Py --> FFmpeg["FFmpeg / MoviePy"]
-  Py --> LLM["Gemini / Qwen / DeepSeek / Vertex"]
-  Services --> Comfy["ComfyUI / RunningHub"]
-  Services --> RPA["Playwright RPA<br/>微信视频号 / 抖音 / 小红书"]
-  MCP["MCP bridge<br/>mcp-server"] --> AgentAPI["Agent API<br/>/api/agent/v1"]
-  AgentAPI --> Services
+  UI["Vue 运营工作台<br/>frontend/src"] --> BFF["NestJS BFF<br/>apps/bff"]
+  BFF --> API["FastAPI AI Backend<br/>apps/api"]
+  API --> Worker["Python Workers<br/>apps/worker"]
+  API --> Pg["PostgreSQL / pgvector"]
+  API --> Redis["Redis"]
+  Worker --> Py["Python pipeline adapters<br/>python/"]
+  Worker --> FFmpeg["FFmpeg / MoviePy"]
+  Worker --> RPA["Playwright RPA<br/>微信视频号 / 抖音 / 小红书"]
+  Worker --> LLM["Gemini / Qwen / DeepSeek / Vertex"]
+  Legacy["Legacy Express<br/>server.js + server/"] -. explicit start only .-> Py
 ```
 
 | 层级 | 主要位置 | 职责 |
 | --- | --- | --- |
 | 前端工作台 | `frontend/src/App.vue`, `frontend/src/components/AutomationDashboard.vue`, `frontend/src/composables/` | 操作界面、任务状态、SSE 进度、审核、发布和本地恢复状态。 |
-| Express 入口 | `server.js` | 环境加载、中间件、静态资源、服务装配、路由注册、调度器和恢复服务启动。 |
+| NestJS BFF | `apps/bff/` | 浏览器入口、DTO 聚合、SSE 网关、调用 FastAPI。 |
+| FastAPI Backend | `apps/api/` | 任务、AI、Agent、Worker、发布/RPA 控制面和数据库记录。 |
+| Python Worker | `apps/worker/` | 长任务执行器，通过 FastAPI worker 协议回报状态、artifact 和错误。 |
+| Legacy Express | `server.js`, `server/` | 已下线为显式 legacy 入口，只保留归档旧功能和测试参考。 |
 | 路由层 | `server/routes/` | 对外暴露素材生产、审核、发布、系统设置、竖屏队列、热点榜单、登录状态和 Agent API。 |
 | 服务层 | `server/services/` | 工作流编排、数据访问、外部服务集成、账号看板、调度、清理和恢复。 |
 | 基础运行层 | `server/core/` | Python 进程执行、任务存储、进度流、结构化错误、清理、恢复和任务协议。 |
@@ -91,7 +91,7 @@ flowchart TB
 | 类别 | 技术 |
 | --- | --- |
 | 前端 | Vue 3, Vite, CSS, lucide-vue-next |
-| 后端 | Node.js 18+, Express, better-sqlite3, node-cron, ws, multer |
+| 后端 | NestJS, FastAPI, PostgreSQL, Redis, legacy Express |
 | Python | Python 3.10+, MoviePy, faster-whisper, Pillow, Playwright, requests/httpx |
 | AI 与模型服务 | Gemini, Qwen/DashScope, DeepSeek, Vertex AI, xAI 兼容 OpenAI transport |
 | 媒体处理 | FFmpeg, ComfyUI, RunningHub 兼容口播出镜流程 |
@@ -147,13 +147,20 @@ Copy-Item config/env.example .env
 ### 启动服务
 
 ```powershell
+npm run start:api
 npm start
 ```
 
-默认访问地址：
+默认 BFF 地址：
 
 ```text
-http://localhost:3001
+http://localhost:3002
+```
+
+旧 Express 只作为 legacy 运行：
+
+```powershell
+npm run start:legacy
 ```
 
 前端开发模式：
@@ -198,9 +205,16 @@ npm run build:front
 
 ```text
 trendcut-studio/
-├─ server.js                  # Express 组合入口
+├─ apps/
+│  ├─ bff/                    # NestJS 浏览器入口
+│  ├─ api/                    # FastAPI AI/backend 控制面
+│  └─ worker/                 # Python worker 运行时
+├─ packages/
+│  ├─ contracts/              # OpenAPI / schema / shared contracts
+│  └─ sdk/                    # BFF 调 FastAPI 的 client
+├─ server.js                  # Legacy Express 入口，需显式 start:legacy
 ├─ frontend/                  # Vue 运营工作台源码
-├─ server/                    # 路由、服务和运行时基础模块
+├─ server/                    # Legacy Express 路由、服务和运行时基础模块
 ├─ python/                    # 素材生产、审核、发布和热点脚本
 ├─ mcp-server/                # Agent API 的 MCP bridge
 ├─ config/                    # 工作流和运行配置
