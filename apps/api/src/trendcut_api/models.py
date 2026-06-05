@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -110,3 +110,32 @@ class LlmCall(Base):
 
 Index('idx_llm_calls_task_created', LlmCall.task_id, LlmCall.created_at)
 Index('idx_llm_calls_capability_status', LlmCall.capability, LlmCall.status)
+
+
+class WorkerJob(Base):
+    __tablename__ = 'worker_jobs'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey('tasks.id', ondelete='CASCADE'), nullable=False, index=True)
+    task_step_id: Mapped[str | None] = mapped_column(ForeignKey('task_steps.id', ondelete='SET NULL'), index=True)
+    job_type: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    queue_name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[dict | None] = mapped_column(JSON)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
+    locked_by: Mapped[str | None] = mapped_column(String(160))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    run_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    metadata_: Mapped[dict] = mapped_column('metadata', JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+Index('idx_worker_jobs_queue_status', WorkerJob.queue_name, WorkerJob.status, WorkerJob.run_after)
+Index('idx_worker_jobs_task_status', WorkerJob.task_id, WorkerJob.status)

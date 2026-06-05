@@ -43,3 +43,14 @@ Phase 4 Agent endpoints:
 - `GET /agents/runs/:id`
 - `POST /agents/runs/:id/resume`
 - `POST /agents/runs/:id/tool-calls`
+Phase 5 Worker endpoints:
+
+- `GET /workers/types`
+- `POST /workers/jobs`
+- `GET /workers/jobs/:id`
+- `POST /workers/jobs/lease`
+- `POST /workers/jobs/:id/heartbeat`
+- `POST /workers/jobs/:id/complete`
+- `POST /workers/jobs/:id/fail`
+- `POST /workers/jobs/:id/cancel`
+- `POST /workers/jobs/:id/retry`

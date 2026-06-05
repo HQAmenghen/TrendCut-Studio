@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from trendcut_api.database import get_session
 from trendcut_api.schemas import ArtifactRead, TaskCreate, TaskRead, TaskStatus, TaskStepRead
 from trendcut_api.task_service import create_task, get_task, list_artifacts, list_task_steps, list_tasks, set_task_status
+from trendcut_api.worker_service import cancel_open_worker_jobs_for_task, retry_recoverable_worker_jobs_for_task
 
 router = APIRouter(prefix='/tasks', tags=['tasks'])
 
@@ -35,6 +36,7 @@ def cancel_task_endpoint(task_id: str, session: Session = Depends(get_session)):
     task = get_task(session, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail='Task not found')
+    cancel_open_worker_jobs_for_task(session, task_id)
     return set_task_status(session, task, TaskStatus.cancelled)
 
 
@@ -43,6 +45,7 @@ def resume_task_endpoint(task_id: str, session: Session = Depends(get_session)):
     task = get_task(session, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail='Task not found')
+    retry_recoverable_worker_jobs_for_task(session, task_id)
     return set_task_status(session, task, TaskStatus.queued)
 
 
