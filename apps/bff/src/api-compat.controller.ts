@@ -1,11 +1,13 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query, Req, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query, Req, Sse, UploadedFiles, UseInterceptors } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { Observable } from 'rxjs';
 import { FastApiClient } from './fastapi.client';
 import { PublishApiProvider } from './publish-api.provider';
 import { TaskApiProvider } from './task-api.provider';
+import { TaskEventsService } from './task-events.service';
 import { WorkerApiProvider } from './worker-api.provider';
 import { requireRole } from './bff-authz';
 
@@ -15,7 +17,8 @@ export class ApiCompatController {
     private readonly fastApi: FastApiClient,
     private readonly taskApi: TaskApiProvider,
     private readonly workerApi: WorkerApiProvider,
-    private readonly publishApi: PublishApiProvider
+    private readonly publishApi: PublishApiProvider,
+    private readonly taskEvents: TaskEventsService
   ) {}
 
   @Get('system/self-check')
@@ -29,6 +32,25 @@ export class ApiCompatController {
   presets(@Req() request: any) {
     requireRole(request.user, 'worker:read', 'ai:read');
     return { audio: [], image: [], source: 'bff-compat' };
+  }
+
+  @Get('workflow-config')
+  workflowConfig(@Req() request: any) {
+    requireRole(request.user, 'worker:read', 'ai:read');
+    return { success: true, config: {}, source: 'bff-compat' };
+  }
+
+  @Post('workflow-config')
+  @HttpCode(200)
+  saveWorkflowConfig(@Body() body: Record<string, unknown>, @Req() request: any) {
+    requireRole(request.user, 'worker:write');
+    return { success: true, config: body, source: 'bff-compat' };
+  }
+
+  @Sse('progress')
+  progress(@Req() request: any): Observable<MessageEvent> {
+    requireRole(request.user, 'worker:read', 'ai:read');
+    return this.taskEvents.stream();
   }
 
   @Get('system/tasks')
@@ -99,6 +121,19 @@ export class ApiCompatController {
   @Get('material-driven/tasks/:id')
   async materialTask(@Param('id') id: string, @Req() request: any) {
     return this.materialStatus(id, request);
+  }
+
+  @Delete('material-driven/tasks/:id')
+  async deleteMaterialTask(@Param('id') id: string, @Req() request: any) {
+    requireRole(request.user, 'worker:write');
+    const task = await this.taskApi.client.cancelTask(id);
+    return { success: true, task };
+  }
+
+  @Sse('material-driven/progress/:id')
+  materialProgress(@Req() request: any): Observable<MessageEvent> {
+    requireRole(request.user, 'worker:read');
+    return this.taskEvents.stream();
   }
 
   @Get('material-driven/active')
@@ -204,6 +239,13 @@ export class ApiCompatController {
     return { success: true, config: { partitions: [] } };
   }
 
+  @Post('xai-top10/config')
+  @HttpCode(200)
+  saveXaiConfig(@Body() body: Record<string, unknown>, @Req() request: any) {
+    requireRole(request.user, 'ai:write');
+    return { success: true, config: body };
+  }
+
   @Post('xai-top10/run')
   async runXai(@Body() body: Record<string, unknown>, @Req() request: any) {
     requireRole(request.user, 'ai:write', 'worker:write');
@@ -279,6 +321,13 @@ export class ApiCompatController {
   reviewConfig(@Req() request: any) {
     requireRole(request.user, 'worker:read');
     return { success: true, config: { min_pass_score: 60, runtime: 'worker' } };
+  }
+
+  @Post('review/config')
+  @HttpCode(200)
+  saveReviewConfig(@Body() body: Record<string, unknown>, @Req() request: any) {
+    requireRole(request.user, 'worker:write', 'ai:write');
+    return { success: true, config: body, source: 'bff-compat' };
   }
 
   @Get('review/history')

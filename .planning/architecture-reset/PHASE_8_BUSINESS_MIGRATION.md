@@ -136,3 +136,33 @@ Verification:
 - Residual scan for old current-implementation paths: passed; `server/` and `server.js` no longer exist, remaining matches are boundary-ban text or `mcp-server/src/server.js`.
 - Root dependency scan: passed; deleted direct legacy service dependencies are gone and `redis` remains for BFF events.
 - `npm run ci`: passed after dependency cleanup, including BFF/FastAPI checks, Jest 3 suites / 3 tests, Python 216 tests, frontend build, lint, production audit, and Python lock check.
+
+## Wave 5: Frontend Compatibility Gap Closure
+
+Status: completed.
+
+Scope:
+
+- Audit actual frontend `/api/*` usage after Express deletion.
+- Close BFF compatibility gaps that would have produced 404s.
+
+Changes:
+
+- Added BFF SSE compatibility for `/api/progress` and `/api/material-driven/progress/:id`.
+- Added `GET/POST /api/workflow-config`.
+- Added `POST /api/xai-top10/config`.
+- Added `POST /api/review/config`.
+- Added `DELETE /api/material-driven/tasks/:id`.
+- Extended BFF API compatibility smoke coverage for the new routes.
+
+Review:
+
+- No blocking findings.
+- These routes are intentionally thin compatibility adapters. Durable configuration persistence can be moved into FastAPI settings tables later, but deleting Express required preserving the current frontend call surface first.
+
+Verification:
+
+- `npm run check:bff`: passed.
+- `npm test`: passed.
+- `npm run check:legacy-boundary`: passed.
+- `npm run ci`: passed, including BFF/FastAPI checks, Jest 3 suites / 3 tests, Python 216 tests, frontend build, lint, production audit, and Python lock check.

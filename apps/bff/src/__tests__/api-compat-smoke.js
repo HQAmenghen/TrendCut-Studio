@@ -39,6 +39,9 @@ async function main() {
         listAccounts: async () => [],
         checkLogin: async () => ({ success: true })
       }
+    },
+    {
+      stream: () => 'event-stream'
     }
   );
 
@@ -58,6 +61,13 @@ async function main() {
   const xai = await controller.runXai({ partitionId: 'crypto' }, request);
   assert.strictEqual(xai.success, true);
   assert.strictEqual(calls.jobs[1].job_type, 'xai_worker');
+
+  assert.strictEqual(controller.progress(request), 'event-stream');
+  assert.strictEqual(controller.materialProgress(request), 'event-stream');
+  assert.strictEqual(controller.saveXaiConfig({ partitions: ['crypto'] }, request).success, true);
+  assert.strictEqual(controller.saveReviewConfig({ min_pass_score: 70 }, request).success, true);
+  assert.strictEqual(controller.workflowConfig(request).success, true);
+  assert.strictEqual(controller.saveWorkflowConfig({ mode: 'worker' }, request).success, true);
 }
 
 main().catch((error) => {
