@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,9 +15,11 @@ LEGACY_ENTRYPOINTS = {
     'asr_worker': 'python/pipeline/run_asr.py',
     'material_score_worker': 'python/pipeline/score_material_segments.py',
     'script_worker': 'python/pipeline/skills/script_rewriter_skill.py',
+    'material_driven_worker': 'python/pipeline/run_material_driven.py',
     'clip_plan_worker': 'python/pipeline/skills/clip_selector.py',
     'render_worker': 'python/pipeline/make_vertical_video.py',
     'review_worker': 'python/review/ai_video_review.py',
+    'xai_worker': 'python/xai/run_xai_top10.py',
     'publish_worker': 'python/publish/social_auto_upload_adapter.py',
     'rpa_worker': 'python/publish/browser_platform_rpa.py'
 }
@@ -69,12 +72,16 @@ def _execute_legacy(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _execute_material_score_worker(payload)
     if job_type == 'script_worker':
         return _execute_script_worker(payload)
+    if job_type == 'material_driven_worker':
+        return _execute_material_driven_worker(payload)
     if job_type == 'clip_plan_worker':
         return _execute_clip_plan_worker(payload)
     if job_type == 'render_worker':
         return _execute_render_worker(payload)
     if job_type == 'review_worker':
         return _execute_review_worker(payload)
+    if job_type == 'xai_worker':
+        return _execute_xai_worker(payload)
     if job_type == 'publish_worker':
         return _execute_publish_worker(payload)
     if job_type == 'rpa_worker':
@@ -133,6 +140,23 @@ def _required_path(payload: dict[str, Any], *keys: str) -> Path:
                 raise FileNotFoundError(f'{key} not found: {path}')
             return path
     raise ValueError(f'Missing required path: {"/".join(keys)}')
+
+
+def _material_input_path(payload: dict[str, Any], workspace: Path) -> Path:
+    for key in ('material_path', 'input', 'input_video', 'source_path', 'video_path'):
+        value = str(payload.get(key) or '').strip()
+        if value:
+            path = Path(value).resolve()
+            if not path.exists():
+                raise FileNotFoundError(f'{key} not found: {path}')
+            return path
+    material_url = str(payload.get('material_url') or payload.get('video_url') or '').strip()
+    if material_url:
+        target = workspace / 'material.mp4'
+        with urllib.request.urlopen(material_url, timeout=120) as response:
+            target.write_bytes(response.read())
+        return target
+    raise ValueError('Missing material_path or material_url')
 
 
 def _run_python(script: str, args: list[str], cwd: Path, timeout_seconds: int = 900) -> dict[str, Any]:
@@ -266,6 +290,45 @@ def _execute_script_worker(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _execute_material_driven_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    workspace = _workspace(payload, 'material_driven_worker')
+    material_path = _material_input_path(payload, workspace)
+    source_post = payload.get('source_post')
+    if isinstance(source_post, dict):
+        _write_json(workspace / 'source_post.json', source_post)
+    manual_script = str(payload.get('manual_script') or '').strip()
+    if manual_script:
+        (workspace / 'manual_narration.txt').write_text(manual_script, encoding='utf-8')
+    args = ['--output-dir', str(workspace)]
+    if payload.get('use_smart_clip') is False:
+        args.append('--no-smart-clip')
+    if payload.get('use_cache') is True:
+        args.append('--use-cache')
+    if payload.get('allow_rule_fallback') is True:
+        args.append('--allow-rule-fallback')
+    if payload.get('start_from'):
+        args.extend(['--start-from', str(payload['start_from'])])
+    if payload.get('end_at'):
+        args.extend(['--end-at', str(payload['end_at'])])
+    args.append(str(material_path))
+    run = _run_python('python/pipeline/run_material_driven.py', args, workspace, int(payload.get('timeout_seconds') or 7200))
+    output_path = workspace / 'output_final.mp4'
+    return {
+        'executor': 'trendcut_worker.legacy.material_driven_worker',
+        'structured_output': {
+            'output_dir': str(workspace),
+            'output_video': str(output_path),
+            'exists': output_path.exists(),
+            'files': {
+                'output_dir': str(workspace),
+                'output_video': str(output_path),
+                'source_post_json': str(workspace / 'source_post.json')
+            },
+            'run': run
+        }
+    }
+
+
 def _execute_clip_plan_worker(payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_python_path()
 
@@ -285,6 +348,38 @@ def _execute_clip_plan_worker(payload: dict[str, Any]) -> dict[str, Any]:
             'legacy_skill': serialized.get('skill'),
             'legacy_version': serialized.get('version'),
             'legacy_meta': serialized.get('meta', {})
+        }
+    }
+
+
+def _execute_xai_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    workspace = _workspace(payload, 'xai_worker')
+    result_path = workspace / 'result.json'
+    partial_path = workspace / 'result.partial.json'
+    log_path = workspace / 'run_log.txt'
+    error_log_path = workspace / 'run_error.log'
+    args = [
+        '--partition-id', str(payload.get('partition_id') or payload.get('partitionId') or 'crypto'),
+        '--result', str(result_path),
+        '--partial', str(partial_path),
+        '--log', str(log_path),
+        '--error-log', str(error_log_path)
+    ]
+    import_url = str(payload.get('import_url') or payload.get('url') or '').strip()
+    if import_url:
+        args.extend(['--import-url', import_url])
+    run = _run_python('python/xai/run_xai_top10.py', args, workspace, int(payload.get('timeout_seconds') or 3600))
+    return {
+        'executor': 'trendcut_worker.legacy.xai_worker',
+        'structured_output': {
+            'result': _read_json(result_path, {}),
+            'files': {
+                'result_json': str(result_path),
+                'partial_json': str(partial_path),
+                'log': str(log_path),
+                'error_log': str(error_log_path)
+            },
+            'run': run
         }
     }
 
@@ -393,12 +488,16 @@ def _structured_output(job_type: str, payload: dict[str, Any]) -> dict[str, Any]
         return {'segments': payload.get('segments', []), 'score_threshold': payload.get('score_threshold')}
     if job_type == 'script_worker':
         return {'script': payload.get('script', ''), 'version': payload.get('script_version', 'adapter-v1')}
+    if job_type == 'material_driven_worker':
+        return {'output_dir': payload.get('workdir'), 'output_video': payload.get('output_video')}
     if job_type == 'clip_plan_worker':
         return {'clips': payload.get('clips', []), 'strategy': payload.get('strategy', 'material-driven')}
     if job_type == 'render_worker':
         return {'output_video': payload.get('output_video'), 'render_provider': payload.get('render_provider', 'adapter')}
     if job_type == 'review_worker':
         return {'approved': payload.get('approved', True), 'findings': payload.get('findings', [])}
+    if job_type == 'xai_worker':
+        return {'result': payload.get('result', {})}
     if job_type == 'publish_worker':
         return {'platform': payload.get('platform'), 'publish_status': 'deferred_to_phase_6_executor'}
     if job_type == 'rpa_worker':

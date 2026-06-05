@@ -14,6 +14,11 @@ WORKER_TYPES: dict[str, dict] = {
         'risk': 'low',
         'description': 'Generate or polish structured scripts for a material-driven task.'
     },
+    'material_driven_worker': {
+        'queue': 'video',
+        'risk': 'medium',
+        'description': 'Run the material-driven production pipeline through the Python worker runtime.'
+    },
     'clip_plan_worker': {
         'queue': 'video',
         'risk': 'low',
@@ -28,6 +33,11 @@ WORKER_TYPES: dict[str, dict] = {
         'queue': 'video',
         'risk': 'low',
         'description': 'Review generated video artifacts and produce structured findings.'
+    },
+    'xai_worker': {
+        'queue': 'ai',
+        'risk': 'low',
+        'description': 'Run xAI Top10 discovery or single-post import through the Python worker runtime.'
     },
     'publish_worker': {
         'queue': 'publish',

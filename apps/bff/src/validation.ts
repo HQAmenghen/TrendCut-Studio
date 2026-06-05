@@ -4,7 +4,7 @@ const TASK_STATUSES = new Set(['created', 'queued', 'running', 'waiting_user', '
 const PUBLISH_MODES = new Set(['draft', 'publish', 'login_check']);
 const AI_CAPABILITIES = new Set(['title_generation', 'publish_copy', 'script_polish', 'material_score', 'video_review']);
 const AGENT_GRAPHS = new Set(['script_agent', 'material_agent', 'review_agent']);
-const WORKER_TYPES = new Set(['asr_worker', 'material_score_worker', 'script_worker', 'clip_plan_worker', 'render_worker', 'review_worker', 'publish_worker', 'rpa_worker']);
+const WORKER_TYPES = new Set(['asr_worker', 'material_score_worker', 'script_worker', 'material_driven_worker', 'clip_plan_worker', 'render_worker', 'review_worker', 'xai_worker', 'publish_worker', 'rpa_worker']);
 const HIGH_RISK_WORKERS = new Set(['publish_worker', 'rpa_worker']);
 const HIGH_RISK_TOOLS = new Set(['publish.execute', 'file.delete']);
 

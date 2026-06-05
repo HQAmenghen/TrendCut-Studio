@@ -100,6 +100,49 @@ class WorkerExecutorTests(unittest.TestCase):
         self.assertEqual(result["result"]["executor"], "trendcut_worker.legacy.clip_plan_worker")
         self.assertEqual(result["result"]["structured_output"]["clip_plan"]["clips"][0]["segment_id"], "seg-1")
 
+    def test_material_driven_worker_runs_pipeline_cli(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            material_path = Path(temp_dir) / "material.mp4"
+            material_path.write_bytes(b"fake")
+
+            def fake_run(_script, args, _cwd, _timeout):
+                output_dir = Path(args[args.index("--output-dir") + 1])
+                Path(output_dir, "output_final.mp4").write_bytes(b"video")
+                return {"protocol_events": [{"type": "result", "message": "ok"}]}
+
+            with patch("trendcut_worker.executor._run_python", side_effect=fake_run):
+                result = execute_job({
+                    "id": "job-material-1",
+                    "task_id": "task-material-1",
+                    "job_type": "material_driven_worker",
+                    "payload": {
+                        "material_path": str(material_path),
+                        "source_post": {"title": "demo"},
+                        "allow_rule_fallback": True,
+                    },
+                }, Path(temp_dir))
+
+        self.assertEqual(result["result"]["executor"], "trendcut_worker.legacy.material_driven_worker")
+        self.assertTrue(result["result"]["structured_output"]["exists"])
+
+    def test_xai_worker_runs_top10_cli_and_reads_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            def fake_run(_script, args, _cwd, _timeout):
+                result_path = Path(args[args.index("--result") + 1])
+                result_path.write_text(json.dumps({"items": [{"rank": 1}]}), encoding="utf-8")
+                return {"protocol_events": [{"type": "result", "message": "ok"}]}
+
+            with patch("trendcut_worker.executor._run_python", side_effect=fake_run):
+                result = execute_job({
+                    "id": "job-xai-1",
+                    "task_id": "task-xai-1",
+                    "job_type": "xai_worker",
+                    "payload": {"partitionId": "crypto"},
+                }, Path(temp_dir))
+
+        self.assertEqual(result["result"]["executor"], "trendcut_worker.legacy.xai_worker")
+        self.assertEqual(result["result"]["structured_output"]["result"]["items"][0]["rank"], 1)
+
     def test_review_worker_runs_legacy_review_script_and_reads_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = Path(temp_dir) / "video.mp4"

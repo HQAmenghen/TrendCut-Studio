@@ -16,6 +16,7 @@ Rules:
 - Do not write FastAPI-owned task tables directly.
 - Do not expose FastAPI internals to the frontend.
 - Validate inbound DTOs and derive audit actors from request context instead of trusting request bodies.
+- Legacy frontend `/api/*` URLs are owned by the BFF compatibility controller and must map to FastAPI task, worker, AI, or publish control-plane APIs.
 
 Runtime security baseline:
 
@@ -77,3 +78,11 @@ Phase 6 Publish endpoints:
 - `GET /publish/jobs/:id/audit`
 - `GET /publish/accounts`
 - `POST /publish/accounts/:platform/:accountId/login-check`
+Phase 8 compatibility endpoints:
+
+- `GET/POST /api/material-driven/*`: frontend compatibility over FastAPI tasks and `material_driven_worker`.
+- `GET/POST /api/xai-top10/*`: frontend compatibility over `xai_worker` and task status.
+- `POST /api/generate-vertical-standalone`: frontend compatibility over `render_worker`.
+- `GET/POST /api/review/*`: frontend compatibility over `review_worker`.
+- `GET/POST /api/publish/*` and `/api/login-status/*`: frontend compatibility over FastAPI publish control plane.
+- `GET /api/system/self-check`, `/api/system/tasks`, `/api/presets`: compatibility reads from BFF/FastAPI runtime state.
