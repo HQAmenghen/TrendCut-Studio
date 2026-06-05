@@ -70,10 +70,31 @@ Verification:
 
 ## Wave 3: Legacy Express Retirement
 
-Status: pending.
+Status: completed in this phase slice.
 
 Scope:
 
 - Remove default frontend dependency on `/api/*` Express routes.
 - Delete or archive legacy route registration from runtime.
 - Keep old code only as archived reference or tests until final deletion commit.
+
+Changes:
+
+- Removed `npm run start:legacy`.
+- Deleted `scripts/start-legacy-express.js`.
+- Removed `legacy-express` from Docker Compose.
+- Strengthened `check:legacy-boundary` to reject any reintroduced `start:legacy` script or Compose `legacy-express` service.
+- Updated docs to state that `server.js` and `server/` are archived reference/test code, not supported runtime entries.
+
+Review:
+
+- No blocking findings.
+- `server/` remains in the repo because the current test suite still uses it heavily as reference coverage. Runtime ownership is removed; physical deletion can happen after equivalent tests are ported to `apps/`.
+
+Verification:
+
+- `npm run check:legacy-boundary`: passed.
+- `npm run check:bff`: passed.
+- `npm run check:api`: passed.
+- `package.json` parse check: passed.
+- `npm run ci`: passed, including BFF/FastAPI checks, Jest 58 suites / 358 tests, Python 216 tests, frontend build, production audit, and Python lock check. Existing legacy scheduler lint warnings remain warning-only and are outside this runtime-retirement change.

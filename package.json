@@ -28,7 +28,6 @@
   "main": "apps/bff/src/main.ts",
   "scripts": {
     "start": "npm run start:bff",
-    "start:legacy": "node scripts/start-legacy-express.js",
     "dev:front": "vite --config vite.config.mjs",
     "build:front": "vite build --config vite.config.mjs",
     "preview:front": "vite preview --config vite.config.mjs",

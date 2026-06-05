@@ -30,7 +30,9 @@ function main() {
   const unexpected = routeFiles.filter((file) => !allowedRouteFiles.has(file));
   const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
   const startScript = String(packageJson?.scripts?.start || '');
-  const legacyStartScript = String(packageJson?.scripts?.['start:legacy'] || '');
+  const legacyStartScript = packageJson?.scripts?.['start:legacy'];
+  const composePath = path.join(projectRoot, 'docker-compose.yml');
+  const composeText = fs.existsSync(composePath) ? fs.readFileSync(composePath, 'utf8') : '';
 
   if (unexpected.length > 0) {
     console.error('Legacy Express boundary violation: new route files are not allowed under server/routes.');
@@ -47,8 +49,13 @@ function main() {
     process.exit(1);
   }
 
-  if (!/start-legacy-express\.js/.test(legacyStartScript)) {
-    console.error('Legacy Express boundary violation: start:legacy must be the only explicit legacy Express entry.');
+  if (legacyStartScript) {
+    console.error('Legacy Express boundary violation: start:legacy has been retired from this branch.');
+    process.exit(1);
+  }
+
+  if (/legacy-express\s*:/.test(composeText)) {
+    console.error('Legacy Express boundary violation: docker-compose.yml must not define a legacy-express service.');
     process.exit(1);
   }
 

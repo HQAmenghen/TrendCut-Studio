@@ -1,6 +1,6 @@
 # Architecture Reset Plan
 
-This document freezes the architecture boundary for the NestJS + FastAPI reset. It is the source of truth for new work while the legacy Express runtime remains available.
+This document freezes the architecture boundary for the NestJS + FastAPI reset. It is the source of truth for new work after the legacy Express runtime has been retired from this branch.
 
 ## Target Shape
 
@@ -23,11 +23,11 @@ apps/
 packages/
   contracts/        OpenAPI specs, JSON Schema, and generated/shared contract inputs.
   sdk/              Clients used by NestJS to call FastAPI. Frontend must not use this directly.
-legacy/
-  express-server/   Future archive location for the current Express runtime.
+server.js / server/
+  archived legacy reference and test coverage only; no supported runtime entry.
 ```
 
-The current `server.js` and `server/` tree remain in place as archived legacy code. New API features must not be added under `server/routes`. The default runtime entry is NestJS BFF; Express requires the explicit `npm run start:legacy` command or Docker Compose `legacy` profile.
+The current `server.js` and `server/` tree remain in place as archived legacy code. New API features must not be added under `server/routes`. The default and only supported runtime entry in this branch is NestJS BFF plus FastAPI and workers; `start:legacy` and the Compose `legacy-express` service have been removed.
 
 ## Access Rules
 
@@ -42,13 +42,13 @@ The current `server.js` and `server/` tree remain in place as archived legacy co
 
 ## Legacy Freeze
 
-Allowed in legacy Express:
+Allowed in archived legacy Express code:
 
-- Bug fixes for currently shipped routes.
-- Compatibility adapters while a module is being migrated.
-- Read-only proxies needed for gradual cutover.
+- Test fixture maintenance.
+- Documentation/reference reads during migration verification.
+- Bug fixes only if needed to keep existing legacy tests meaningful.
 
-Not allowed in legacy Express:
+Not allowed in archived legacy Express code:
 
 - New user-facing API domains.
 - New task orchestration logic.
@@ -56,7 +56,7 @@ Not allowed in legacy Express:
 - New AI provider integrations.
 - New publish/RPA capability surfaces.
 
-The boundary is enforced by `npm run check:legacy-boundary`. That check also prevents `npm start` from being pointed back at Express.
+The boundary is enforced by `npm run check:legacy-boundary`. That check prevents `npm start` from being pointed back at Express and rejects any reintroduced `start:legacy` script or `legacy-express` Compose service.
 
 ## Core Protocols
 

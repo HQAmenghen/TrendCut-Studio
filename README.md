@@ -159,12 +159,6 @@ npm start
 http://localhost:3002
 ```
 
-旧 Express 只作为 legacy 运行：
-
-```powershell
-npm run start:legacy
-```
-
 前端开发模式：
 
 ```powershell
@@ -214,9 +208,9 @@ trendcut-studio/
 ├─ packages/
 │  ├─ contracts/              # OpenAPI / schema / shared contracts
 │  └─ sdk/                    # BFF 调 FastAPI 的 client
-├─ server.js                  # Legacy Express 入口，需显式 start:legacy
+├─ server.js                  # Archived legacy Express reference; not a supported runtime entry
 ├─ frontend/                  # Vue 运营工作台源码
-├─ server/                    # Legacy Express 路由、服务和运行时基础模块
+├─ server/                    # Archived legacy Express routes/services retained for tests and reference
 ├─ python/                    # 素材生产、审核、发布和热点脚本
 ├─ mcp-server/                # Agent API 的 MCP bridge
 ├─ config/                    # 工作流和运行配置
