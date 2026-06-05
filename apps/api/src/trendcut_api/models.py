@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -139,3 +139,62 @@ class WorkerJob(Base):
 
 Index('idx_worker_jobs_queue_status', WorkerJob.queue_name, WorkerJob.status, WorkerJob.run_after)
 Index('idx_worker_jobs_task_status', WorkerJob.task_id, WorkerJob.status)
+
+
+class PublishJob(Base):
+    __tablename__ = 'publish_jobs'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey('tasks.id', ondelete='CASCADE'), nullable=False, index=True)
+    worker_job_id: Mapped[str | None] = mapped_column(ForeignKey('worker_jobs.id', ondelete='SET NULL'), index=True)
+    platform: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    account_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    account_label: Mapped[str | None] = mapped_column(String(240))
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    asset: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    publish_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[dict | None] = mapped_column(JSON)
+    risk_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    risk_confirmed_by: Mapped[str | None] = mapped_column(String(160))
+    risk_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_: Mapped[dict] = mapped_column('metadata', JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PublishAuditLog(Base):
+    __tablename__ = 'publish_audit_logs'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    publish_job_id: Mapped[str | None] = mapped_column(ForeignKey('publish_jobs.id', ondelete='CASCADE'), index=True)
+    action: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    actor: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PublishAccountState(Base):
+    __tablename__ = 'publish_account_states'
+
+    id: Mapped[str] = mapped_column(String(260), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    account_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    account_label: Mapped[str | None] = mapped_column(String(240))
+    login_status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status_message: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_: Mapped[dict] = mapped_column('metadata', JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+Index('idx_publish_jobs_platform_status', PublishJob.platform, PublishJob.status)
+Index('idx_publish_jobs_account_status', PublishJob.platform, PublishJob.account_id, PublishJob.status)
+Index('idx_publish_audit_job_created', PublishAuditLog.publish_job_id, PublishAuditLog.created_at)
+Index('idx_publish_account_platform_account', PublishAccountState.platform, PublishAccountState.account_id)

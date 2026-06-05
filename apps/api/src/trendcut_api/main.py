@@ -6,6 +6,7 @@ from .settings import get_settings
 from .routers.tasks import router as tasks_router
 from .routers.ai import router as ai_router
 from .routers.agents import router as agents_router
+from .routers.publish import router as publish_router
 from .routers.workers import router as workers_router
 
 app = FastAPI(
@@ -17,6 +18,7 @@ app.include_router(tasks_router)
 app.include_router(ai_router)
 app.include_router(agents_router)
 app.include_router(workers_router)
+app.include_router(publish_router)
 
 
 @app.get('/health')

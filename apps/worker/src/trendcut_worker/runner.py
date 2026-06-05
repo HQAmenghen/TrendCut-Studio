@@ -40,9 +40,14 @@ def run_once(client: FastApiWorkerControlClient, worker_id: str, queue_name: str
     try:
         client.heartbeat_job(job['id'], worker_id)
         output = execute_job(job, artifact_root)
+        _record_publish_success_if_needed(client, job, worker_id, output['result'])
         client.complete_job(job['id'], worker_id, output['result'], output['artifacts'])
     except Exception as exc:
         error = _serialize_exception(exc)
+        try:
+            _record_publish_failure_if_needed(client, job, worker_id, error)
+        except Exception:
+            pass
         try:
             client.fail_job(job['id'], worker_id, error, retry=True)
         except Exception:
@@ -55,6 +60,23 @@ def _serialize_exception(exc: Exception) -> dict[str, Any]:
         'type': exc.__class__.__name__,
         'message': str(exc)
     }
+
+
+def _record_publish_success_if_needed(client: FastApiWorkerControlClient, job: dict[str, Any], worker_id: str, result: dict[str, Any]) -> None:
+    publish_job_id = _publish_job_id(job)
+    if publish_job_id:
+        client.complete_publish_job(publish_job_id, worker_id, result)
+
+
+def _record_publish_failure_if_needed(client: FastApiWorkerControlClient, job: dict[str, Any], worker_id: str, error: dict[str, Any]) -> None:
+    publish_job_id = _publish_job_id(job)
+    if publish_job_id:
+        client.fail_publish_job(publish_job_id, worker_id, error)
+
+
+def _publish_job_id(job: dict[str, Any]) -> str:
+    payload = job.get('payload') if isinstance(job, dict) else {}
+    return str((payload or {}).get('publish_job_id') or '').strip()
 
 
 if __name__ == '__main__':

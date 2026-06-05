@@ -54,3 +54,14 @@ Phase 5 Worker endpoints:
 - `POST /workers/jobs/:id/fail`
 - `POST /workers/jobs/:id/cancel`
 - `POST /workers/jobs/:id/retry`
+Phase 6 Publish endpoints:
+
+- `POST /publish/jobs`
+- `GET /publish/jobs`
+- `GET /publish/jobs/:id`
+- `POST /publish/jobs/:id/confirm`
+- `POST /publish/jobs/:id/dispatch`
+- `POST /publish/jobs/:id/cancel`
+- `GET /publish/jobs/:id/audit`
+- `GET /publish/accounts`
+- `POST /publish/accounts/:platform/:accountId/login-check`

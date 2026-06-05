@@ -44,3 +44,21 @@ class FastApiWorkerControlClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def complete_publish_job(self, publish_job_id: str, worker_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        response = httpx.post(
+            f'{self.base_url}/publish/jobs/{publish_job_id}/worker-complete',
+            json={'worker_id': worker_id, 'result': result},
+            timeout=self.timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def fail_publish_job(self, publish_job_id: str, worker_id: str, error: dict[str, Any]) -> dict[str, Any]:
+        response = httpx.post(
+            f'{self.base_url}/publish/jobs/{publish_job_id}/worker-fail',
+            json={'worker_id': worker_id, 'error': error},
+            timeout=self.timeout
+        )
+        response.raise_for_status()
+        return response.json()

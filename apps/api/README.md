@@ -63,3 +63,16 @@ Phase 5 Worker endpoints:
 - `POST /workers/jobs/{job_id}/fail`: record structured error and optional retry.
 - `POST /workers/jobs/{job_id}/cancel`: cancel queued/running work.
 - `POST /workers/jobs/{job_id}/retry`: manually requeue recoverable work.
+Phase 6 Publish endpoints:
+
+- `POST /publish/jobs`: create a FastAPI-owned publish job.
+- `GET /publish/jobs`: list publish jobs.
+- `GET /publish/jobs/{publish_job_id}`: read publish state.
+- `POST /publish/jobs/{publish_job_id}/confirm`: confirm high-risk publish/RPA action.
+- `POST /publish/jobs/{publish_job_id}/dispatch`: enqueue `publish_worker` or `rpa_worker`.
+- `POST /publish/jobs/{publish_job_id}/cancel`: cancel publish job and worker job.
+- `POST /publish/jobs/{publish_job_id}/worker-complete`: worker result callback.
+- `POST /publish/jobs/{publish_job_id}/worker-fail`: worker failure callback.
+- `GET /publish/jobs/{publish_job_id}/audit`: read audit log.
+- `GET /publish/accounts`: read account login/status records.
+- `POST /publish/accounts/{platform}/{account_id}/login-check`: enqueue RPA login check.

@@ -11,9 +11,11 @@ import { AgentsController } from './agents.controller';
 import { AgentApiProvider } from './agent-api.provider';
 import { WorkersController } from './workers.controller';
 import { WorkerApiProvider } from './worker-api.provider';
+import { PublishController } from './publish.controller';
+import { PublishApiProvider } from './publish-api.provider';
 
 @Module({
-  controllers: [HealthController, TasksController, TaskEventsController, AiController, AgentsController, WorkersController],
-  providers: [FastApiClient, TaskApiProvider, TaskEventsService, AiApiProvider, AgentApiProvider, WorkerApiProvider]
+  controllers: [HealthController, TasksController, TaskEventsController, AiController, AgentsController, WorkersController, PublishController],
+  providers: [FastApiClient, TaskApiProvider, TaskEventsService, AiApiProvider, AgentApiProvider, WorkerApiProvider, PublishApiProvider]
 })
 export class AppModule {}
