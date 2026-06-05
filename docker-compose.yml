@@ -58,6 +58,7 @@ services:
       BFF_HOST: ${BFF_HOST:-0.0.0.0}
       BFF_PORT: ${BFF_PORT:-3002}
       FASTAPI_BASE_URL: ${FASTAPI_BASE_URL:-http://api:8000}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       api:
         condition: service_healthy

@@ -7,3 +7,7 @@ Rules:
 - Generate clients from `packages/contracts` OpenAPI documents.
 - Keep browser clients out of this package.
 - Surface typed errors and trace ids so BFF logs can correlate with FastAPI and worker records.
+
+Phase 2:
+
+- `src/task-client.ts` contains the BFF-side FastAPI task client.

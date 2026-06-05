@@ -22,3 +22,13 @@ Phase 1 endpoints:
 - `GET /internal/health`: BFF plus FastAPI dependency health.
 
 Run locally with `npm run start:bff` after installing root Node dependencies.
+Phase 2 task endpoints:
+
+- `POST /tasks`: create a FastAPI-owned task.
+- `GET /tasks`: list tasks through FastAPI.
+- `GET /tasks/:id`: read one task.
+- `POST /tasks/:id/cancel`: cancel task.
+- `POST /tasks/:id/resume`: resume task.
+- `GET /tasks/:id/steps`: list task steps.
+- `GET /tasks/:id/artifacts`: list artifacts.
+- `GET /tasks/events`: SSE stream backed by Redis channel `trendcut.task-events`.

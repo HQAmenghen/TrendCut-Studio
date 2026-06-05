@@ -28,3 +28,14 @@ Local commands:
 - `pip install -r apps/api/requirements.lock.txt`
 - `npm run migrate:api`
 - `npm run start:api`
+Phase 2 task endpoints:
+
+- `POST /tasks`
+- `GET /tasks`
+- `GET /tasks/{task_id}`
+- `POST /tasks/{task_id}/cancel`
+- `POST /tasks/{task_id}/resume`
+- `GET /tasks/{task_id}/steps`
+- `GET /tasks/{task_id}/artifacts`
+
+Task changes publish best-effort Redis messages to `trendcut.task-events`.
