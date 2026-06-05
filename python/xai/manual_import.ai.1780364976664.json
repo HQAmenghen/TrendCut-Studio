@@ -1,0 +1,55 @@
+{
+  "title": "手动导入 X 链接",
+  "partition": {
+    "id": "ai",
+    "label": "AI",
+    "description": "AI 模型、应用和研究账号池"
+  },
+  "items": [
+    {
+      "rank": 1,
+      "author": "Vivek4real_",
+      "author_summary": "@Vivek4real_ - THAT MOMENT WHEN NVIDIA CEO JENSEN HUANG WAS ASKED ABOUT HIS COMMENTS ON CHINA BEATING THE U.S. IN THE AI RACE:\n\n“THAT’S NOT WHAT I SAID.\n\nWHAT I SAID WAS THAT CHINA HAS VERY GOOD AI TECHNOLOGY. THEY HAVE MANY AI RESEARCHERS. IN FACT, 50% OF THE WORLD’S AI RESEARCHERS ARE IN https://t.co/onVND3bMGw",
+      "followers": 259328,
+      "followers_source": "官方接口",
+      "post_id": "2061603451470246295",
+      "published_at": "2026-06-02 08:19",
+      "published_at_iso": "2026-06-02T08:19:00+08:00",
+      "views": 13817,
+      "views_display": "14K",
+      "likes": 102,
+      "reposts": 11,
+      "replies": 5,
+      "engagement_rate": 0.0085,
+      "over_follower_ratio": 0.0533,
+      "ratio_display": "5.33%",
+      "account_avg_views": null,
+      "breakout_ratio": null,
+      "breakout_display": null,
+      "hot_score": 25,
+      "post_url": "https://x.com/Vivek4real_/status/2061603451470246295",
+      "video_url": "https://video.twimg.com/amplify_video/2061342774767783936/vid/avc1/886x494/FDIPTNgzCseZceRL.mp4",
+      "video_resolution": "886x494",
+      "video_meets_720p": false,
+      "video_variant_count": 3,
+      "source_partition_id": "ai",
+      "source_partition_label": "AI",
+      "source_type": "x_manual_url",
+      "manual_import_url": "https://x.com/Vivek4real_/status/2061603451470246295"
+    }
+  ],
+  "total_items": 1,
+  "cost_estimate": {
+    "xai_requests_observed": 0,
+    "xai_request_count": 0,
+    "xai_input_tokens": 0,
+    "xai_cached_input_tokens": 0,
+    "xai_output_tokens": 0,
+    "xai_reasoning_tokens": 0,
+    "xai_token_cost_usd": 0.0,
+    "xai_x_search_tool_usd": 0.0,
+    "estimated_total_cost_usd": 0.0,
+    "xapi_request_count_est": 2,
+    "notes": "manual X URL import uses direct X API/page lookup; xAI search is not used"
+  }
+}

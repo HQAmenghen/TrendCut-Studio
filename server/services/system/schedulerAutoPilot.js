@@ -48,6 +48,7 @@ function createAutoPilotScheduler({
   const autoPilotActiveKeys = new Set();
   const fetchState = { lastFetchedDate: '' };
   const SERVER_PORT = process.env.PORT || 3001;
+  let autoPilotTickRunning = false;
 
   function enqueueAvatarReplacement(config, meta = {}, reason = '') {
     const rank = normalizeNonNegativeInteger(meta.rank, 0);
@@ -616,6 +617,12 @@ function createAutoPilotScheduler({
   }
 
   cron.schedule('* * * * *', async () => {
+    if (autoPilotTickRunning) {
+      logWarn('[AutoPilot] 上一轮调度仍在执行，本轮跳过以避免重复触发');
+      return;
+    }
+    autoPilotTickRunning = true;
+    try {
     const config = publishStore?.readPublishConfig() || {};
     const nowParts = getLocalParts();
     const fetchTime = String(config?.global?.autoPilotFetchTime || '07:30').trim();
@@ -1096,6 +1103,9 @@ function createAutoPilotScheduler({
     }
 
     await publishScheduler.processDueScheduledJobs();
+    } finally {
+      autoPilotTickRunning = false;
+    }
   });
 
   return {

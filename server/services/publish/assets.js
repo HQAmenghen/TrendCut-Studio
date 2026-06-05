@@ -1,3 +1,5 @@
+const Database = require('better-sqlite3');
+
 function createPublishAssetsService(deps) {
   const {
     fs,
@@ -9,10 +11,146 @@ function createPublishAssetsService(deps) {
     getVerticalJobById,
     readJsonIfExists,
     readMediaMetadata,
-    sanitizePublishDescriptionText
+    sanitizePublishDescriptionText,
+    assetIndexDbPath
   } = deps;
 
   let publishAssetsCache = { expiresAt: 0, assets: [] };
+  const assetEntryCache = new Map();
+  const metadataCache = new Map();
+  const MAX_ENTRY_CACHE_SIZE = 500;
+  const indexDbPath = assetIndexDbPath || (
+    process.env.NODE_ENV === 'test'
+      ? ':memory:'
+      : path.join(projectRoot, 'data', 'publish_assets.db')
+  );
+  let indexDb = null;
+  let indexStatements = null;
+
+  function getIndexDb() {
+    if (indexDb) return indexDb;
+    try {
+      if (indexDbPath !== ':memory:') {
+        fs.mkdirSync(path.dirname(indexDbPath), { recursive: true });
+      }
+      indexDb = new Database(indexDbPath);
+      indexDb.pragma('journal_mode = WAL');
+      indexDb.pragma('synchronous = NORMAL');
+      indexDb.pragma('busy_timeout = 5000');
+      indexDb.exec(`
+        CREATE TABLE IF NOT EXISTS publish_assets (
+          id TEXT PRIMARY KEY,
+          path TEXT NOT NULL UNIQUE,
+          sourceType TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          assetJson TEXT NOT NULL,
+          updatedAt TEXT,
+          lastSeenAt TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_publish_assets_source_updated ON publish_assets(sourceType, updatedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_publish_assets_updated ON publish_assets(updatedAt DESC);
+      `);
+      indexStatements = {
+        getByPath: indexDb.prepare('SELECT signature, assetJson FROM publish_assets WHERE path = ?'),
+        upsert: indexDb.prepare(`
+          INSERT INTO publish_assets (id, path, sourceType, signature, assetJson, updatedAt, lastSeenAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(path) DO UPDATE SET
+            id = excluded.id,
+            sourceType = excluded.sourceType,
+            signature = excluded.signature,
+            assetJson = excluded.assetJson,
+            updatedAt = excluded.updatedAt,
+            lastSeenAt = excluded.lastSeenAt
+        `),
+        deleteByPath: indexDb.prepare('DELETE FROM publish_assets WHERE path = ?'),
+        deleteMissing: indexDb.prepare('DELETE FROM publish_assets WHERE path NOT IN (SELECT value FROM json_each(?))')
+      };
+    } catch (err) {
+      console.warn('[publish-assets] 索引库初始化失败，回退到内存缓存:', err.message);
+      indexDb = null;
+      indexStatements = null;
+    }
+    return indexDb;
+  }
+
+  function readIndexedAsset(fullPath, signature) {
+    if (!getIndexDb() || !indexStatements) return null;
+    try {
+      const row = indexStatements.getByPath.get(fullPath);
+      if (!row || row.signature !== signature) return null;
+      return JSON.parse(row.assetJson);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function writeIndexedAsset(asset, signature) {
+    if (!asset || !getIndexDb() || !indexStatements) return;
+    try {
+      indexStatements.upsert.run(
+        asset.id,
+        asset.path,
+        asset.sourceType,
+        signature,
+        JSON.stringify(asset),
+        asset.updatedAt || '',
+        new Date().toISOString()
+      );
+    } catch (_err) {}
+  }
+
+  function deleteIndexedAsset(fullPath) {
+    if (!fullPath || !getIndexDb() || !indexStatements) return;
+    try {
+      indexStatements.deleteByPath.run(fullPath);
+    } catch (_err) {}
+  }
+
+  function deleteMissingIndexedAssets(seenPaths) {
+    if (!getIndexDb() || !indexStatements || !Array.isArray(seenPaths) || !seenPaths.length) return;
+    try {
+      indexStatements.deleteMissing.run(JSON.stringify(seenPaths));
+    } catch (_err) {}
+  }
+
+  function safeStat(filePath) {
+    try {
+      if (!filePath || !fs.existsSync(filePath)) return null;
+      return fs.statSync(filePath);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function statFingerprint(filePath) {
+    const stat = safeStat(filePath);
+    if (!stat) return `${filePath}:missing`;
+    return `${filePath}:${stat.isFile() ? 'f' : 'd'}:${stat.size}:${Math.floor(stat.mtimeMs)}`;
+  }
+
+  function filesFingerprint(filePaths = []) {
+    return filePaths.map((filePath) => statFingerprint(filePath)).join('|');
+  }
+
+  function rememberCacheEntry(cache, key, entry) {
+    cache.set(key, entry);
+    if (cache.size <= MAX_ENTRY_CACHE_SIZE) return entry;
+    const firstKey = cache.keys().next().value;
+    if (firstKey) cache.delete(firstKey);
+    return entry;
+  }
+
+  function getCachedMetadata(key, dependencyPaths, builder) {
+    const signature = filesFingerprint(dependencyPaths);
+    const cached = metadataCache.get(key);
+    if (cached && cached.signature === signature) {
+      return cached.value;
+    }
+    const value = builder();
+    rememberCacheEntry(metadataCache, key, { signature, value });
+    return value;
+  }
 
   function findPreferredVideoFile(dirPath, preferredBaseName) {
     if (!fs.existsSync(dirPath)) return null;
@@ -208,7 +346,8 @@ function createPublishAssetsService(deps) {
   }
 
   function buildStandaloneRuntimeMetadata(jobDir) {
-    const mediaMeta = readMediaMetadata(path.join(jobDir, 'standalone_output_vertical.mp4'));
+    const videoPath = path.join(jobDir, 'standalone_output_vertical.mp4');
+    const mediaMeta = readMediaMetadata(videoPath);
     const content = readJsonIfExists(path.join(jobDir, 'content.json'), {});
     const context = readJsonIfExists(path.join(jobDir, 'original_context.json'), {});
     const subtitles = readJsonIfExists(path.join(jobDir, 'subtitles.json'), []);
@@ -228,6 +367,50 @@ function createPublishAssetsService(deps) {
     };
   }
 
+  function buildStandaloneRuntimeMetadataCached(jobDir) {
+    return getCachedMetadata(
+      `standalone_runtime:${jobDir}`,
+      [
+        path.join(jobDir, 'standalone_output_vertical.mp4.meta.json'),
+        path.join(jobDir, 'content.json'),
+        path.join(jobDir, 'original_context.json'),
+        path.join(jobDir, 'subtitles.json')
+      ],
+      () => buildStandaloneRuntimeMetadata(jobDir)
+    );
+  }
+
+  function buildQueueMetadataCached(dirName, filePath, runtimeJob = null) {
+    const jobDir = path.join(verticalQueueRoot, dirName);
+    const runtimeSignature = [
+      runtimeJob?.updatedAt || '',
+      runtimeJob?.title || '',
+      runtimeJob?.summary || '',
+      runtimeJob?.postUrl || '',
+      runtimeJob?.author || ''
+    ].join(':');
+    return getCachedMetadata(
+      `xai_queue:${dirName}:${runtimeSignature}`,
+      [
+        `${filePath}.meta.json`,
+        path.join(jobDir, 'content.json'),
+        path.join(jobDir, 'subtitles.json')
+      ],
+      () => {
+        const content = readJsonIfExists(path.join(jobDir, 'content.json'), {});
+        const subtitles = readJsonIfExists(path.join(jobDir, 'subtitles.json'), []);
+        return buildPublishMetadata({
+          title: content?.title || runtimeJob?.title,
+          subtitles,
+          summary: runtimeJob?.summary,
+          sourceType: 'xai_queue',
+          sourceUrl: runtimeJob?.postUrl,
+          author: runtimeJob?.author
+        });
+      }
+    );
+  }
+
   function hasStandaloneRuntimeOutput(taskDir) {
     const normalizedTaskDir = String(taskDir || '').trim();
     if (!normalizedTaskDir) return false;
@@ -235,76 +418,109 @@ function createPublishAssetsService(deps) {
     return fs.existsSync(outputPath) && fs.statSync(outputPath).isFile();
   }
 
+  function buildAsset(label, fullPath, publicUrl, sourceType, metadata, stat) {
+    const savedMetadata = readMediaMetadata(fullPath) || {};
+    if (isReviewCenterHidden(savedMetadata) || isReviewCenterHidden(metadata)) {
+      return null;
+    }
+    const mergedSubtitles = Array.isArray(savedMetadata.subtitles) && savedMetadata.subtitles.length
+      ? savedMetadata.subtitles
+      : (Array.isArray(metadata.subtitles) ? metadata.subtitles : []);
+    const metadataTitle = pickString(metadata.title, metadata.suggestedTitle, metadata.suggestedShortTitle);
+    const savedTitle = pickString(
+      savedMetadata.title,
+      savedMetadata.suggestedTitle,
+      savedMetadata.suggestedShortTitle
+    );
+    const preservedTitle = !isDefaultFileTitle(savedTitle, label) || !metadataTitle
+      ? pickString(savedTitle, metadataTitle)
+      : metadataTitle;
+    const computedMetadata = buildPublishMetadata({
+      title: preservedTitle,
+      subtitles: mergedSubtitles,
+      summary: savedMetadata.sourceSummary || metadata.sourceSummary || '',
+      sourceType,
+      sourceUrl: savedMetadata.sourceUrl || metadata.sourceUrl || '',
+      author: savedMetadata.author || metadata.author || ''
+    });
+    const shouldPreferSubtitleSummary = computedMetadata.descriptionSource === 'subtitles';
+    const mergedMetadata = {
+      ...metadata,
+      ...savedMetadata,
+      title: preservedTitle,
+      subtitles: mergedSubtitles,
+      aiReview: savedMetadata.aiReview || metadata.aiReview || null,
+      sourceSummary: shouldPreferSubtitleSummary
+        ? computedMetadata.sourceSummary
+        : (savedMetadata.sourceSummary || metadata.sourceSummary || computedMetadata.sourceSummary || ''),
+      descriptionSource: shouldPreferSubtitleSummary
+        ? computedMetadata.descriptionSource
+        : (savedMetadata.descriptionSource || metadata.descriptionSource || computedMetadata.descriptionSource || 'none'),
+      suggestedTitle: savedMetadata.suggestedTitle || metadata.suggestedTitle || computedMetadata.suggestedTitle || '',
+      suggestedShortTitle: savedMetadata.suggestedShortTitle || metadata.suggestedShortTitle || computedMetadata.suggestedShortTitle || '',
+      suggestedDescription: savedMetadata.suggestedDescription || metadata.suggestedDescription || computedMetadata.suggestedDescription || '',
+      suggestedTags: Array.isArray(savedMetadata.suggestedTags) && savedMetadata.suggestedTags.length
+        ? savedMetadata.suggestedTags
+        : (metadata.suggestedTags || computedMetadata.suggestedTags || [])
+    };
+    const typeLabel = getPublishAssetTypeLabel(sourceType);
+    const titleText = truncateDisplayText(
+      mergedMetadata?.title ||
+      mergedMetadata?.suggestedTitle ||
+      mergedMetadata?.suggestedShortTitle ||
+      label,
+      34
+    ).replace(/\s+/g, ' ').trim();
+    const authorText = mergedMetadata?.author ? `@${mergedMetadata.author}` : '';
+    return {
+      id: crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12),
+      label,
+      displayLabel: titleText ? `${typeLabel}｜${titleText}` : typeLabel,
+      compactLabel: titleText || label,
+      typeLabel,
+      sourceMetaLine: [typeLabel, authorText].filter(Boolean).join(' · '),
+      sourceType,
+      path: fullPath,
+      url: publicUrl ? `${publicUrl}?t=${stat.mtimeMs}` : '',
+      sizeBytes: stat.size,
+      updatedAt: stat.mtime.toISOString(),
+      metadata: mergedMetadata
+    };
+  }
+
   function collectPublishAssets() {
     const assets = [];
-    const addAsset = (label, fullPath, publicUrl, sourceType, metadata = {}) => {
-      if (!fs.existsSync(fullPath)) return;
-      const stat = fs.statSync(fullPath);
-      const savedMetadata = readMediaMetadata(fullPath) || {};
-      if (isReviewCenterHidden(savedMetadata) || isReviewCenterHidden(metadata)) return;
-      const mergedSubtitles = Array.isArray(savedMetadata.subtitles) && savedMetadata.subtitles.length
-        ? savedMetadata.subtitles
-        : (Array.isArray(metadata.subtitles) ? metadata.subtitles : []);
-      const metadataTitle = pickString(metadata.title, metadata.suggestedTitle, metadata.suggestedShortTitle);
-      const savedTitle = pickString(
-        savedMetadata.title,
-        savedMetadata.suggestedTitle,
-        savedMetadata.suggestedShortTitle
-      );
-      const preservedTitle = !isDefaultFileTitle(savedTitle, label) || !metadataTitle
-        ? pickString(savedTitle, metadataTitle)
-        : metadataTitle;
-      const computedMetadata = buildPublishMetadata({
-        title: preservedTitle,
-        subtitles: mergedSubtitles,
-        summary: savedMetadata.sourceSummary || metadata.sourceSummary || '',
-        sourceType,
-        sourceUrl: savedMetadata.sourceUrl || metadata.sourceUrl || '',
-        author: savedMetadata.author || metadata.author || ''
-      });
-      const shouldPreferSubtitleSummary = computedMetadata.descriptionSource === 'subtitles';
-      const mergedMetadata = {
-        ...metadata,
-        ...savedMetadata,
-        title: preservedTitle,
-        subtitles: mergedSubtitles,
-        aiReview: savedMetadata.aiReview || metadata.aiReview || null,
-        sourceSummary: shouldPreferSubtitleSummary
-          ? computedMetadata.sourceSummary
-          : (savedMetadata.sourceSummary || metadata.sourceSummary || computedMetadata.sourceSummary || ''),
-        descriptionSource: shouldPreferSubtitleSummary
-          ? computedMetadata.descriptionSource
-          : (savedMetadata.descriptionSource || metadata.descriptionSource || computedMetadata.descriptionSource || 'none'),
-        suggestedTitle: savedMetadata.suggestedTitle || metadata.suggestedTitle || computedMetadata.suggestedTitle || '',
-        suggestedShortTitle: savedMetadata.suggestedShortTitle || metadata.suggestedShortTitle || computedMetadata.suggestedShortTitle || '',
-        suggestedDescription: savedMetadata.suggestedDescription || metadata.suggestedDescription || computedMetadata.suggestedDescription || '',
-        suggestedTags: Array.isArray(savedMetadata.suggestedTags) && savedMetadata.suggestedTags.length
-          ? savedMetadata.suggestedTags
-          : (metadata.suggestedTags || computedMetadata.suggestedTags || [])
-      };
-      const typeLabel = getPublishAssetTypeLabel(sourceType);
-      const titleText = truncateDisplayText(
-        mergedMetadata?.title ||
-        mergedMetadata?.suggestedTitle ||
-        mergedMetadata?.suggestedShortTitle ||
-        label,
-        34
-      ).replace(/\s+/g, ' ').trim();
-      const authorText = mergedMetadata?.author ? `@${mergedMetadata.author}` : '';
-      assets.push({
-        id: crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12),
-        label,
-        displayLabel: titleText ? `${typeLabel}｜${titleText}` : typeLabel,
-        compactLabel: titleText || label,
-        typeLabel,
-        sourceMetaLine: [typeLabel, authorText].filter(Boolean).join(' · '),
-        sourceType,
-        path: fullPath,
-        url: publicUrl ? `${publicUrl}?t=${stat.mtimeMs}` : '',
-        sizeBytes: stat.size,
-        updatedAt: stat.mtime.toISOString(),
-        metadata: mergedMetadata
-      });
+    const seenPaths = [];
+    const addAsset = (label, fullPath, publicUrl, sourceType, metadataInput = {}, dependencyPaths = [], signatureSalt = '') => {
+      const stat = safeStat(fullPath);
+      if (!stat || !stat.isFile()) return;
+      seenPaths.push(fullPath);
+      const cacheKey = `${sourceType}:${fullPath}`;
+      const signature = [
+        filesFingerprint([fullPath, `${fullPath}.meta.json`, ...dependencyPaths]),
+        String(signatureSalt || '')
+      ].join('||');
+      const cached = assetEntryCache.get(cacheKey);
+      if (cached && cached.signature === signature) {
+        if (cached.asset) assets.push(cached.asset);
+        return;
+      }
+      const indexedAsset = readIndexedAsset(fullPath, signature);
+      if (indexedAsset) {
+        rememberCacheEntry(assetEntryCache, cacheKey, { signature, asset: indexedAsset });
+        assets.push(indexedAsset);
+        return;
+      }
+      const metadata = typeof metadataInput === 'function' ? metadataInput() : (metadataInput || {});
+      const asset = buildAsset(label, fullPath, publicUrl, sourceType, metadata, stat);
+      if (!asset) {
+        deleteIndexedAsset(fullPath);
+        rememberCacheEntry(assetEntryCache, cacheKey, { signature, asset: null });
+        return;
+      }
+      writeIndexedAsset(asset, signature);
+      rememberCacheEntry(assetEntryCache, cacheKey, { signature, asset });
+      assets.push(asset);
     };
 
     const pipelineVideoPath = path.join(projectRoot, 'public', 'output_final.mp4');
@@ -319,44 +535,52 @@ function createPublishAssetsService(deps) {
       pipelineVideoPath,
       '/output_final.mp4',
       'pipeline',
-      buildPublishMetadata({
+      () => buildPublishMetadata({
         title: pipelineMeta?.title,
         subtitles: pipelineMeta?.subtitles || [],
         sourceType: 'pipeline'
-      })
+      }),
+      [],
+      filesFingerprint([`${pipelineVideoPath}.meta.json`])
     );
     addAsset(
       '全链路混剪竖屏成片',
       pipelineVerticalPath,
       '/output_final_vertical.mp4',
       'pipeline',
-      buildPublishMetadata({
+      () => buildPublishMetadata({
         title: pipelineMeta?.title,
         subtitles: pipelineMeta?.subtitles || [],
         sourceType: 'pipeline'
-      })
+      }),
+      [],
+      filesFingerprint([`${pipelineVideoPath}.meta.json`])
     );
     addAsset(
       '全链路混剪转制 9:16',
       pipelineConvertedVerticalPath,
       '/output_9_16.mp4',
       'pipeline',
-      buildPublishMetadata({
+      () => buildPublishMetadata({
         title: pipelineMeta?.title,
         subtitles: pipelineMeta?.subtitles || [],
         sourceType: 'pipeline'
-      })
+      }),
+      [],
+      filesFingerprint([`${pipelineVideoPath}.meta.json`])
     );
     addAsset(
       '全链路混剪转制 16:9',
       pipelineConvertedHorizontalPath,
       '/output_16_9.mp4',
       'pipeline',
-      buildPublishMetadata({
+      () => buildPublishMetadata({
         title: pipelineMeta?.title,
         subtitles: pipelineMeta?.subtitles || [],
         sourceType: 'pipeline'
-      })
+      }),
+      [],
+      filesFingerprint([`${pipelineVideoPath}.meta.json`])
     );
     if (!hasStandaloneRuntimeOutput(standaloneMeta?.taskDir)) {
       addAsset(
@@ -364,11 +588,13 @@ function createPublishAssetsService(deps) {
         standaloneVideoPath,
         '/standalone_output_vertical.mp4',
         'standalone',
-        buildPublishMetadata({
+        () => buildPublishMetadata({
           title: standaloneMeta?.title,
           subtitles: standaloneMeta?.subtitles || [],
           sourceType: 'standalone'
-        })
+        }),
+        [],
+        filesFingerprint([`${standaloneVideoPath}.meta.json`])
       );
     }
 
@@ -385,7 +611,13 @@ function createPublishAssetsService(deps) {
           filePath,
           `/runtime_jobs/${dir.name}/standalone_output_vertical.mp4`,
           'standalone_runtime',
-          buildStandaloneRuntimeMetadata(jobDir)
+          () => buildStandaloneRuntimeMetadataCached(jobDir),
+          [
+            path.join(jobDir, 'content.json'),
+            path.join(jobDir, 'original_context.json'),
+            path.join(jobDir, 'subtitles.json')
+          ],
+          dir.name
         );
       }
     }
@@ -396,27 +628,30 @@ function createPublishAssetsService(deps) {
         const filePath = findPreferredVideoFile(path.join(verticalPublicDir, dir.name), 'vertical_output.mp4');
         if (!filePath) continue;
         const publicFileName = path.basename(filePath);
-        const jobDir = path.join(verticalQueueRoot, dir.name);
-        const content = readJsonIfExists(path.join(jobDir, 'content.json'), {});
-        const subtitles = readJsonIfExists(path.join(jobDir, 'subtitles.json'), []);
         const runtimeJob = typeof getVerticalJobById === 'function' ? getVerticalJobById(dir.name) : null;
         addAsset(
           `XAI 批量竖屏 ${dir.name}`,
           filePath,
           `/xai_vertical_queue/${dir.name}/${publicFileName}`,
           'xai_queue',
-          buildPublishMetadata({
-            title: content?.title || runtimeJob?.title,
-            subtitles,
-            summary: runtimeJob?.summary,
-            sourceType: 'xai_queue',
-            sourceUrl: runtimeJob?.postUrl,
-            author: runtimeJob?.author
-          })
+          () => buildQueueMetadataCached(dir.name, filePath, runtimeJob),
+          [
+            path.join(verticalQueueRoot, dir.name, 'content.json'),
+            path.join(verticalQueueRoot, dir.name, 'subtitles.json')
+          ],
+          [
+            dir.name,
+            runtimeJob?.updatedAt || '',
+            runtimeJob?.title || '',
+            runtimeJob?.summary || '',
+            runtimeJob?.postUrl || '',
+            runtimeJob?.author || ''
+          ].join(':')
         );
       }
     }
 
+    deleteMissingIndexedAssets(seenPaths);
     return assets.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   }
 
@@ -435,6 +670,17 @@ function createPublishAssetsService(deps) {
 
   function resetPublishAssetsCache() {
     publishAssetsCache = { expiresAt: 0, assets: [] };
+    assetEntryCache.clear();
+    metadataCache.clear();
+  }
+
+  function close() {
+    if (!indexDb) return;
+    try {
+      indexDb.close();
+    } catch (_err) {}
+    indexDb = null;
+    indexStatements = null;
   }
 
   function deletePublishAsset(assetId) {
@@ -472,7 +718,8 @@ function createPublishAssetsService(deps) {
     collectPublishAssets,
     getCachedPublishAssets,
     deletePublishAsset,
-    resetPublishAssetsCache
+    resetPublishAssetsCache,
+    close
   };
 }
 

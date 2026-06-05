@@ -102,7 +102,7 @@ describe('system scheduler autopilot safeguards', () => {
 
   function createPublishStore(config, existingJobs = [], overrides = {}) {
     const payload = { jobs: existingJobs };
-    return {
+    const store = {
       readPublishConfig: jest.fn(() => config),
       makeJobId: jest.fn(() => 'job_new'),
       readPublishJobs: jest.fn(() => payload),
@@ -115,10 +115,28 @@ describe('system scheduler autopilot safeguards', () => {
         payload.jobs[index] = updater ? updater(payload.jobs[index]) || payload.jobs[index] : payload.jobs[index];
         return payload.jobs[index];
       }),
+      updatePublishPlatformTask: jest.fn((jobId, platformKey, patch) => {
+        const job = payload.jobs.find((item) => item.id === jobId);
+        if (!job) throw new Error('job not found');
+        const tasks = Array.isArray(job.platformTasks) ? job.platformTasks : [];
+        const index = tasks.findIndex((task) => task.platform === platformKey);
+        if (index === -1) throw new Error('platform task not found');
+        tasks[index] = { ...tasks[index], ...patch };
+        job.platformTasks = tasks;
+        if (tasks.some((task) => ['publishing', 'draft_preparing', 'scheduled_starting'].includes(String(task.status || '')))) {
+          job.status = 'publishing';
+        } else if (job.scheduledAt && tasks.some((task) => String(task.status || '') === 'scheduled_wait')) {
+          job.status = 'scheduled_wait';
+        } else {
+          job.status = 'pending';
+        }
+        return job;
+      }),
       reconcileAndPersistPublishJobs: jest.fn(() => payload),
       getDueScheduledJobs: jest.fn(() => []),
       ...overrides
     };
+    return store;
   }
 
   function createRecoveredAutoPilotTask(overrides = {}) {
@@ -828,10 +846,48 @@ describe('system scheduler autopilot safeguards', () => {
 
     await scheduledTasks[0].callback();
     await Promise.resolve();
+    await Promise.resolve();
 
     expect(wechatRpaService.startWechatRpa).toHaveBeenCalledTimes(2);
     expect(publishStore.updatePublishJob).not.toHaveBeenCalled();
-    expect(publishStore.readPublishJobs().jobs.map((job) => job.status)).toEqual(['scheduled_wait', 'scheduled_wait']);
+    expect(publishStore.readPublishJobs().jobs.map((job) => job.status)).toEqual(['publishing', 'scheduled_wait']);
+  });
+
+  test('claims due scheduled platform tasks before starting RPA to avoid duplicate scans', async () => {
+    const { startScheduler } = require('../scheduler');
+    const config = createBaseConfig();
+    const dueJobs = [
+      {
+        id: 'job_1',
+        status: 'scheduled_wait',
+        scheduledAt: '2026-04-27T00:00:00.000Z',
+        archived: false,
+        publishData: { title: 'job 1' },
+        platformTasks: [{ platform: 'wechatChannels', status: 'scheduled_wait' }]
+      }
+    ];
+    const publishStore = createPublishStore(config, dueJobs, {
+      getDueScheduledJobs: jest.fn(() => dueJobs)
+    });
+    const wechatRpaService = {
+      startWechatRpa: jest.fn().mockResolvedValue(undefined)
+    };
+
+    startScheduler({
+      publishStore,
+      wechatRpaService
+    });
+
+    await scheduledTasks[0].callback();
+    await scheduledTasks[0].callback();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(wechatRpaService.startWechatRpa).toHaveBeenCalledTimes(1);
+    expect(publishStore.updatePublishPlatformTask).toHaveBeenCalledWith('job_1', 'wechatChannels', expect.objectContaining({
+      status: 'publishing'
+    }));
+    expect(publishStore.readPublishJobs().jobs[0].status).toBe('publishing');
   });
 
   test('runs scheduled login checks without sending Feishu alerts', async () => {
