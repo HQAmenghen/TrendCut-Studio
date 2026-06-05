@@ -12,3 +12,4 @@ Phase 2:
 
 - `src/task-client.ts` contains the BFF-side FastAPI task client.
 - `src/ai-client.ts` contains the BFF-side FastAPI AI client.
+- `src/agent-client.ts` contains the BFF-side FastAPI Agent client.

@@ -45,3 +45,10 @@ Phase 3 AI endpoints:
 - `POST /ai/generate`: execute a governed AI capability and record an `llm_calls` row.
 
 Supported initial capabilities: `title_generation`, `publish_copy`, `script_polish`, `material_score`, `video_review`.
+Phase 4 Agent endpoints:
+
+- `GET /agents/tools`: list tool registry, risk, and confirmation requirements.
+- `POST /agents/runs`: create a structured agent run for a task.
+- `GET /agents/runs/{run_id}`: read agent state.
+- `POST /agents/runs/{run_id}/resume`: mark run resumable/running.
+- `POST /agents/runs/{run_id}/tool-calls`: execute or block audited tool calls.

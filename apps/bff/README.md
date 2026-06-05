@@ -36,3 +36,10 @@ Phase 3 AI endpoints:
 
 - `GET /ai/prompts`: proxy FastAPI prompt registry.
 - `POST /ai/generate`: proxy governed FastAPI AI generation.
+Phase 4 Agent endpoints:
+
+- `GET /agents/tools`
+- `POST /agents/runs`
+- `GET /agents/runs/:id`
+- `POST /agents/runs/:id/resume`
+- `POST /agents/runs/:id/tool-calls`

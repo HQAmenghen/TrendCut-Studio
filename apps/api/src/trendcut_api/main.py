@@ -5,6 +5,7 @@ from .database import check_database
 from .settings import get_settings
 from .routers.tasks import router as tasks_router
 from .routers.ai import router as ai_router
+from .routers.agents import router as agents_router
 
 app = FastAPI(
     title='TrendCut AI Backend',
@@ -13,6 +14,7 @@ app = FastAPI(
 )
 app.include_router(tasks_router)
 app.include_router(ai_router)
+app.include_router(agents_router)
 
 
 @app.get('/health')
